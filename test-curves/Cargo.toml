@@ -54,6 +54,7 @@ harness = false
 [[bench]]
 name = "ed_on_bls12_381"
 path = "benches/ed_on_bls12_381.rs"
+required-features = ["ed_on_bls12_381"]
 harness = false
 
 [[bench]]
