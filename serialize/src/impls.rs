@@ -8,8 +8,72 @@ use ark_std::{
     vec::Vec,
 };
 use num_bigint::BigUint;
+use parity_scale_codec::{Compact, Decode, Encode, Error as ScaleError, Input, Output};
 
 use crate::*;
+
+struct WriteOutput<T: Write>(T);
+
+impl<T: Write> Output for WriteOutput<T> {
+    fn write(&mut self, bytes: &[u8]) {
+        let res = self.0.write_all(bytes);
+        debug_assert!(res.is_ok());
+    }
+}
+
+struct ReadInput<T: Read>(T);
+
+impl<T: Read> Input for ReadInput<T> {
+    fn remaining_len(&mut self) -> Result<Option<usize>, ScaleError> {
+        Ok(None)
+    }
+
+    fn read(&mut self, into: &mut [u8]) -> Result<(), ScaleError> {
+        self.0
+            .read_exact(into)
+            .map_err(|_| ScaleError::from("Read error"))
+    }
+}
+
+impl Valid for CompactU64 {
+    fn check(&self) -> Result<(), SerializationError> {
+        Ok(())
+    }
+}
+
+impl CanonicalSerialize for CompactU64 {
+    #[inline]
+    fn serialize_with_mode<W: Write>(
+        &self,
+        writer: W,
+        _compress: Compress,
+    ) -> Result<(), SerializationError> {
+        let mut out = WriteOutput(writer);
+
+        Compact(self.0).encode_to(&mut out);
+        Ok(())
+    }
+
+    #[inline]
+    fn serialized_size(&self, _compress: Compress) -> usize {
+        Compact(self.0).size_hint()
+    }
+}
+
+impl CanonicalDeserialize for CompactU64 {
+    #[inline]
+    fn deserialize_with_mode<R: Read>(
+        reader: R,
+        _compress: Compress,
+        _validate: Validate,
+    ) -> Result<Self, SerializationError> {
+        let mut reader = ReadInput(reader);
+        let len = Compact::<u64>::decode(&mut reader)
+            .map_err(|_| SerializationError::InvalidData)?
+            .0;
+        Ok(Self(len))
+    }
+}
 
 impl Valid for bool {
     fn check(&self) -> Result<(), SerializationError> {
@@ -108,15 +172,15 @@ impl CanonicalSerialize for usize {
     #[inline]
     fn serialize_with_mode<W: Write>(
         &self,
-        mut writer: W,
-        _compress: Compress,
+        writer: W,
+        compress: Compress,
     ) -> Result<(), SerializationError> {
-        Ok(writer.write_all(&(*self as u64).to_le_bytes())?)
+        CompactU64(*self as u64).serialize_with_mode(writer, compress)
     }
 
     #[inline]
     fn serialized_size(&self, _compress: Compress) -> usize {
-        core::mem::size_of::<u64>()
+        CompactU64(*self as u64).serialized_size(_compress)
     }
 }
 
@@ -142,9 +206,8 @@ impl CanonicalDeserialize for usize {
         _compress: Compress,
         _validate: Validate,
     ) -> Result<Self, SerializationError> {
-        let mut bytes = [0u8; core::mem::size_of::<u64>()];
-        reader.read_exact(&mut bytes)?;
-        Ok(<u64>::from_le_bytes(bytes) as usize)
+        let len = CompactU64::deserialize_with_mode(&mut reader, _compress, _validate)?.0;
+        Ok(len as usize)
     }
 }
 
@@ -507,7 +570,7 @@ impl<T: CanonicalDeserialize> CanonicalDeserialize for Vec<T> {
         compress: Compress,
         validate: Validate,
     ) -> Result<Self, SerializationError> {
-        let len = u64::deserialize_with_mode(&mut reader, compress, validate)?;
+        let len = CompactU64::deserialize_with_mode(&mut reader, compress, validate)?.0;
         let mut values = Vec::new();
         for _ in 0..len {
             values.push(T::deserialize_with_mode(
@@ -531,7 +594,7 @@ impl<T: CanonicalSerialize> CanonicalSerialize for [T] {
         mut writer: W,
         compress: Compress,
     ) -> Result<(), SerializationError> {
-        let len = self.len() as u64;
+        let len = CompactU64(self.len() as u64);
         len.serialize_with_mode(&mut writer, compress)?;
         for item in self.iter() {
             item.serialize_with_mode(&mut writer, compress)?;
@@ -661,7 +724,7 @@ where
         mut writer: W,
         compress: Compress,
     ) -> Result<(), SerializationError> {
-        let len = self.len() as u64;
+        let len = CompactU64(self.len() as u64);
         len.serialize_with_mode(&mut writer, compress)?;
         for (k, v) in self.iter() {
             k.serialize_with_mode(&mut writer, compress)?;
@@ -707,7 +770,7 @@ where
         compress: Compress,
         validate: Validate,
     ) -> Result<Self, SerializationError> {
-        let len = u64::deserialize_with_mode(&mut reader, compress, validate)?;
+        let len = CompactU64::deserialize_with_mode(&mut reader, compress, validate)?.0;
         (0..len)
             .map(|_| {
                 Ok((
@@ -726,7 +789,7 @@ impl<V: CanonicalSerialize> CanonicalSerialize for BTreeSet<V> {
         mut writer: W,
         compress: Compress,
     ) -> Result<(), SerializationError> {
-        let len = self.len() as u64;
+        let len = CompactU64(self.len() as u64);
         len.serialize_with_mode(&mut writer, compress)?;
         for v in self {
             v.serialize_with_mode(&mut writer, compress)?;
@@ -769,7 +832,7 @@ where
         compress: Compress,
         validate: Validate,
     ) -> Result<Self, SerializationError> {
-        let len = u64::deserialize_with_mode(&mut reader, compress, validate)?;
+        let len = CompactU64::deserialize_with_mode(&mut reader, compress, validate)?.0;
         (0..len)
             .map(|_| V::deserialize_with_mode(&mut reader, compress, validate))
             .collect()

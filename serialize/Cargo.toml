@@ -18,6 +18,7 @@ ark-serialize-derive = { version = "0.4.2-alpha.1", path = "../serialize-derive"
 ark-std = { version = "0.4.0", default-features = false }
 digest = { version = "0.10", default-features = false }
 num-bigint = { version = "0.4", default-features = false }
+parity-scale-codec = { version = "3.7.5", default-features = false }
 
 [dev-dependencies]
 sha2 = { version = "0.10", default-features = false}
@@ -30,3 +31,4 @@ ark-test-curves = { version = "0.4.2-alpha.1", path = "../test-curves", default-
 default = []
 std = [ "ark-std/std", ]
 derive = [ "ark-serialize-derive" ]
+parallel = []

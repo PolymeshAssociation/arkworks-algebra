@@ -24,6 +24,29 @@ pub use ark_serialize_derive::*;
 
 use digest::{generic_array::GenericArray, Digest, OutputSizeUser};
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CompactU64(pub u64);
+
+impl ark_std::ops::Deref for CompactU64 {
+    type Target = u64;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<usize> for CompactU64 {
+    fn from(value: usize) -> Self {
+        Self(value as u64)
+    }
+}
+
+impl From<u64> for CompactU64 {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 /// Whether to use a compressed version of the serialization algorithm. Specific behavior depends
 /// on implementation. If no compressed version exists (e.g. on `Fp`), mode is ignored.
 #[derive(Copy, Clone, PartialEq, Eq)]
