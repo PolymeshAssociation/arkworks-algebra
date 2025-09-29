@@ -134,7 +134,20 @@ pub trait SWCurveConfig: super::CurveConfig {
         };
 
         match compress {
-            Compress::Yes => x.serialize_with_flags(writer, flags),
+            Compress::Yes => {
+                let (flags, infinity) = flags.compressed();
+                if infinity {
+                    // If the point is at infinity, we serialize x = 0.
+                    // This is a valid encoding because no valid point on the curve
+                    // has x = 0 and y = 0 (since b != 0).
+                    let x = Self::BaseField::zero();
+                    x.serialize_with_flags(&mut writer, flags)
+                } else {
+                    // For a non-infinity point, we serialize the x-coordinate
+                    // and a bit for the sign of the y-coordinate.
+                    x.serialize_with_flags(&mut writer, flags)
+                }
+            },
             Compress::No => {
                 x.serialize_with_mode(&mut writer, compress)?;
                 y.serialize_with_flags(&mut writer, flags)
@@ -150,8 +163,9 @@ pub trait SWCurveConfig: super::CurveConfig {
     ) -> Result<Affine<Self>, SerializationError> {
         let (x, y, flags) = match compress {
             Compress::Yes => {
-                let (x, flags): (_, SWFlags) =
+                let (x, flags): (Self::BaseField, CompressedSWFlags) =
                     CanonicalDeserializeWithFlags::deserialize_with_flags(reader)?;
+                let flags = flags.decompress(x.is_zero());
                 match flags {
                     SWFlags::PointAtInfinity => (
                         Affine::<Self>::identity().x,

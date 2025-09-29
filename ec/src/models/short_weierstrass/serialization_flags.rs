@@ -41,6 +41,14 @@ impl SWFlags {
             SWFlags::YIsNegative => Some(false),
         }
     }
+
+    pub fn compressed(&self) -> (CompressedSWFlags, bool) {
+        match self {
+            SWFlags::PointAtInfinity => (CompressedSWFlags::YIsPositive, true),
+            SWFlags::YIsPositive => (CompressedSWFlags::YIsPositive, false),
+            SWFlags::YIsNegative => (CompressedSWFlags::YIsNegative, false),
+        }
+    }
 }
 
 impl Default for SWFlags {
@@ -76,6 +84,76 @@ impl Flags for SWFlags {
             (false, true) => Some(SWFlags::PointAtInfinity),
             (true, false) => Some(SWFlags::YIsNegative),
             (false, false) => Some(SWFlags::YIsPositive),
+        }
+    }
+}
+
+/// Flags to be encoded into the serialization.
+/// The default flags (empty) should not change the binary representation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CompressedSWFlags {
+    /// Represents a point with positive y-coordinate by setting the MSB to 1.
+    YIsPositive = 0,
+    /// Represents a point with negative y-coordinate by setting all bits to 0.
+    YIsNegative = 1 << 7,
+}
+
+impl CompressedSWFlags {
+    #[inline]
+    pub fn from_y_coordinate(y: impl Field) -> Self {
+        if y <= -y {
+            Self::YIsPositive
+        } else {
+            Self::YIsNegative
+        }
+    }
+
+    #[inline]
+    pub fn is_positive(&self) -> bool {
+        match self {
+            CompressedSWFlags::YIsPositive => true,
+            CompressedSWFlags::YIsNegative => false,
+        }
+    }
+
+    pub fn decompress(&self, x_is_zero: bool) -> SWFlags {
+        if x_is_zero {
+            SWFlags::PointAtInfinity
+        } else if self.is_positive() {
+            SWFlags::YIsPositive
+        } else {
+            SWFlags::YIsNegative
+        }
+    }
+}
+
+impl Default for CompressedSWFlags {
+    #[inline]
+    fn default() -> Self {
+        // YIsNegative doesn't change the serialization
+        CompressedSWFlags::YIsNegative
+    }
+}
+
+impl Flags for CompressedSWFlags {
+    const BIT_SIZE: usize = 1;
+
+    #[inline]
+    fn u8_bitmask(&self) -> u8 {
+        let mut mask = 0;
+        match self {
+            CompressedSWFlags::YIsNegative => mask |= 1 << 7,
+            _ => (),
+        }
+        mask
+    }
+
+    #[inline]
+    fn from_u8(value: u8) -> Option<Self> {
+        let is_negative = (value >> 7) & 1 == 1;
+        match is_negative {
+            true => Some(CompressedSWFlags::YIsNegative),
+            false => Some(CompressedSWFlags::YIsPositive),
         }
     }
 }
