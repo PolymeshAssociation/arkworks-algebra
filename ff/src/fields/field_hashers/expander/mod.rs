@@ -1,5 +1,6 @@
 // The below implementation is a rework of https://github.com/armfazh/h2c-rust-ref
 // With some optimisations
+#![allow(unused)]
 
 use ark_std::vec::Vec;
 use digest::{DynDigest, ExtendableOutput, Update};

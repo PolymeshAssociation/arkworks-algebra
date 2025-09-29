@@ -18,7 +18,7 @@ extern crate derivative;
 
 #[macro_use]
 pub mod biginteger;
-pub use self::biginteger::*;
+pub use self::biginteger::{BigInt, BigInteger};
 
 #[macro_use]
 pub mod fields;
