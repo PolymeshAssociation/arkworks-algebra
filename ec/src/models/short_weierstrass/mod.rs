@@ -137,14 +137,13 @@ pub trait SWCurveConfig: super::CurveConfig {
             Compress::Yes => {
                 let (flags, infinity) = flags.compressed();
                 if infinity {
-                    // If the point is at infinity, we serialize x = 0.
-                    // This is a valid encoding because no valid point on the curve
-                    // has x = 0 and y = 0 (since b != 0).
+                    // For the point at infinity, we serialize x = 0
+                    // and use the flag bit to indicate infinity.
                     let x = Self::BaseField::zero();
                     x.serialize_with_flags(&mut writer, flags)
                 } else {
                     // For a non-infinity point, we serialize the x-coordinate
-                    // and a bit for the sign of the y-coordinate.
+                    // and use a flag bit for the sign of the y-coordinate.
                     x.serialize_with_flags(&mut writer, flags)
                 }
             },

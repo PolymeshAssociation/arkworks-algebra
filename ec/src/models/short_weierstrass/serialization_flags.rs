@@ -44,7 +44,7 @@ impl SWFlags {
 
     pub fn compressed(&self) -> (CompressedSWFlags, bool) {
         match self {
-            SWFlags::PointAtInfinity => (CompressedSWFlags::YIsPositive, true),
+            SWFlags::PointAtInfinity => (CompressedSWFlags::YIsNegative, true),
             SWFlags::YIsPositive => (CompressedSWFlags::YIsPositive, false),
             SWFlags::YIsNegative => (CompressedSWFlags::YIsNegative, false),
         }
@@ -117,12 +117,10 @@ impl CompressedSWFlags {
     }
 
     pub fn decompress(&self, x_is_zero: bool) -> SWFlags {
-        if x_is_zero {
-            SWFlags::PointAtInfinity
-        } else if self.is_positive() {
-            SWFlags::YIsPositive
-        } else {
-            SWFlags::YIsNegative
+        match (self, x_is_zero) {
+            (CompressedSWFlags::YIsNegative, true) => SWFlags::PointAtInfinity,
+            (CompressedSWFlags::YIsNegative, false) => SWFlags::YIsNegative,
+            (CompressedSWFlags::YIsPositive, _) => SWFlags::YIsPositive,
         }
     }
 }
