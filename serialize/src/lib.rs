@@ -10,7 +10,7 @@
 #![doc = include_str!("../README.md")]
 mod error;
 mod flags;
-mod impls;
+pub mod impls;
 
 pub mod serde;
 

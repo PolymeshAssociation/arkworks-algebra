@@ -1,10 +1,9 @@
 use crate::{fq::Fq, fr::Fr};
-use ark_ec::{
-    models::CurveConfig,
-    scalar_mul::glv::GLVConfig,
-    short_weierstrass::{self as sw, SWCurveConfig},
-};
+use ark_ec::{models::CurveConfig, scalar_mul::glv::GLVConfig, short_weierstrass::{self as sw, SWCurveConfig}, AffineRepr};
+use ark_ec::short_weierstrass::SingleBitSWFlags;
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
+use ark_serialize::{CanonicalDeserialize, CanonicalDeserializeWithFlags, CanonicalSerialize, CanonicalSerializeWithFlags, Compress, SerializationError, Valid, Validate};
+use ark_std::io::{Read, Write};
 
 #[cfg(test)]
 mod tests;
@@ -45,6 +44,92 @@ impl SWCurveConfig for VestaConfig {
     #[inline(always)]
     fn mul_by_a(_: Self::BaseField) -> Self::BaseField {
         Self::BaseField::zero()
+    }
+
+    // Following serialization methods could be moved to SWCurveConfig or a trait extending it since
+    // these can be used by multiple curves where x=0 is not a valid point
+
+    /// If uncompressed, serializes both x and y coordinates as well as a bit for whether it is
+    /// infinity. If compressed, serializes x coordinate with 1 bit to encode whether y is
+    /// positive, negative. x=0 means infinity as x=0 is not a valid point
+    #[inline]
+    fn serialize_with_mode<W: Write>(
+        item: &Affine,
+        mut writer: W,
+        compress: Compress,
+    ) -> Result<(), SerializationError> {
+        let (x, y, flags) = match item.is_zero() {
+            true => (
+                Self::BaseField::zero(),
+                Self::BaseField::zero(),
+                SingleBitSWFlags::infinity(),
+            ),
+            false => (item.x, item.y, item.to_single_bit_flags()),
+        };
+
+        match compress {
+            Compress::Yes => x.serialize_with_flags(writer, flags),
+            Compress::No => {
+                x.serialize_with_mode(&mut writer, compress)?;
+                y.serialize_with_flags(&mut writer, flags)
+            },
+        }
+    }
+
+    /// If `validate` is `Yes`, calls `check()` to make sure the element is valid.
+    fn deserialize_with_mode<R: Read>(
+        mut reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Affine, SerializationError> {
+        let mut is_infinity = false;
+        let (x, y, ) = match compress {
+            Compress::Yes => {
+                let (x, flags): (Self::BaseField, SingleBitSWFlags) =
+                    CanonicalDeserializeWithFlags::deserialize_with_flags(reader)?;
+                if x.is_zero() {
+                    is_infinity = true;
+                    let identity = Affine::identity();
+                    (identity.x, identity.y)
+                } else {
+                    let (y, neg_y) = Affine::get_ys_from_x_unchecked(x).ok_or(SerializationError::InvalidData)?;
+                    let is_positive = flags.is_positive();
+                    if is_positive {
+                        (x, y)
+                    } else {
+                        (x, neg_y)
+                    }
+                }
+            },
+            Compress::No => {
+                let x: Self::BaseField =
+                    CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+                let (y, _): (_, SingleBitSWFlags) =
+                    CanonicalDeserializeWithFlags::deserialize_with_flags(&mut reader)?;
+                if x.is_zero() {
+                    is_infinity = true;
+                }
+                (x, y)
+            },
+        };
+        if is_infinity {
+            Ok(Affine::identity())
+        } else {
+            let point = Affine::new_unchecked(x, y);
+            if validate == Validate::Yes {
+                point.check()?;
+            }
+            Ok(point)
+        }
+    }
+
+    #[inline]
+    fn serialized_size(compress: Compress) -> usize {
+        let zero = Self::BaseField::zero();
+        match compress {
+            Compress::Yes => zero.serialized_size_with_flags::<SingleBitSWFlags>(),
+            Compress::No => zero.compressed_size() + zero.serialized_size_with_flags::<SingleBitSWFlags>(),
+        }
     }
 }
 

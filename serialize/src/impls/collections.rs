@@ -1,5 +1,5 @@
 use crate::{
-    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
+    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate
 };
 use ark_std::{
     borrow::*,
@@ -8,6 +8,22 @@ use ark_std::{
     string::*,
     vec::*,
 };
+use crate::impls::compact::CompactU64;
+
+// To avoid pre-allocation of memory based on size_hint
+struct NoSizeHint<I>(I);
+
+impl<I: Iterator> Iterator for NoSizeHint<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, None)  // Lie: we don't know the size
+    }
+}
 
 macro_rules! impl_valid_seq {
     ($type:ty  $( ; $($extra:tt)+ )?) => {
@@ -50,7 +66,7 @@ macro_rules! impl_canonical_serialize_seq {
                 mut writer: W,
                 compress: Compress,
             ) -> Result<(), SerializationError> {
-                let len = self.len() as u64;
+                let len = CompactU64(self.len() as u64);
                 len.serialize_with_mode(&mut writer, compress)?;
                 for item in self.iter() {
                     item.borrow().serialize_with_mode(&mut writer, compress)?;
@@ -60,7 +76,7 @@ macro_rules! impl_canonical_serialize_seq {
 
             #[inline]
             fn serialized_size(&self, compress: Compress) -> usize {
-                8 + self
+                CompactU64(self.len() as u64).serialized_size(compress) + self
                     .iter()
                     .map(|item| item.borrow().serialized_size(compress))
                     .sum::<usize>()
@@ -77,11 +93,14 @@ macro_rules! impl_canonical_deserialize_seq {
         {
             #[inline]
             fn deserialize_with_mode<R: Read>(mut reader: R, compress: Compress, validate: Validate) -> Result<Self, SerializationError> {
-                let len = u64::deserialize_with_mode(&mut reader, compress, validate)?
+                let len: CompactU64 = CompactU64::deserialize_with_mode(&mut reader, compress, validate)?
                     .try_into()
                     .map_err(|_| SerializationError::NotEnoughSpace)?;
+                let len = len.0;
 
-                let values = (0..len)
+                // A malicious actor could provide a large len value like in billions and thus cause a large
+                // pre-allocation. NoSizeHint prevents it.
+                let values = NoSizeHint(0..len)
                     .map(|_| T::deserialize_with_mode(&mut reader, compress, Validate::No))
                     .collect::<Result<Self, SerializationError>>()?;
 
@@ -225,7 +244,7 @@ where
         mut writer: W,
         compress: Compress,
     ) -> Result<(), SerializationError> {
-        let len = self.len() as u64;
+        let len = CompactU64(self.len() as u64);
         len.serialize_with_mode(&mut writer, compress)?;
         for (k, v) in self {
             k.serialize_with_mode(&mut writer, compress)?;
@@ -235,7 +254,7 @@ where
     }
 
     fn serialized_size(&self, compress: Compress) -> usize {
-        8 + self
+        CompactU64(self.len() as u64).serialized_size(compress) + self
             .iter()
             .map(|(k, v)| k.serialized_size(compress) + v.serialized_size(compress))
             .sum::<usize>()
@@ -288,8 +307,8 @@ where
         compress: Compress,
         validate: Validate,
     ) -> Result<Self, SerializationError> {
-        let len = u64::deserialize_with_mode(&mut reader, compress, validate)?;
-        (0..len)
+        let len = CompactU64::deserialize_with_mode(&mut reader, compress, validate)?.0;
+        NoSizeHint(0..len)
             .map(|_| {
                 Ok((
                     K::deserialize_with_mode(&mut reader, compress, validate)?,

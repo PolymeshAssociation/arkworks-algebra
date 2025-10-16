@@ -21,6 +21,7 @@ use zeroize::Zeroize;
 
 use super::{bucket::Bucket, Projective, SWCurveConfig, SWFlags, ZeroFlag};
 use crate::AffineRepr;
+use crate::short_weierstrass::SingleBitSWFlags;
 
 /// Affine coordinates for a point on an elliptic curve in short Weierstrass
 /// form, over the base field `P::BaseField`.
@@ -166,6 +167,15 @@ impl<P: SWCurveConfig> Affine<P> {
         }
     }
 
+    /// This should only be used when the conditions for using `SingleBitSWFlags` are satisfied
+    pub fn to_single_bit_flags(&self) -> SingleBitSWFlags {
+        if self.y <= -self.y {
+            SingleBitSWFlags::YIsPositive
+        } else {
+            SingleBitSWFlags::YIsNegative
+        }
+    }
+
     pub fn double_to_bucket(&self) -> Bucket<P> {
         if self.is_zero() {
             Bucket::ZERO
@@ -262,6 +272,7 @@ impl<P: SWCurveConfig> AffineRepr for Affine<P> {
     }
 
     fn from_random_bytes(bytes: &[u8]) -> Option<Self> {
+        // This will be incorrect when SingleBitSWFlags is used. But currently this function (`from_random_bytes`) is not used anywhere.
         P::BaseField::from_random_bytes_with_flags::<SWFlags>(bytes).and_then(|(x, flags)| {
             // if x is valid and is zero and only the infinity flag is set, then parse this
             // point as infinity. For all other choices, get the original point.

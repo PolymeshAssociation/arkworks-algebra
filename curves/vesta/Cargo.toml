@@ -17,18 +17,18 @@ ark-ff = { workspace = true }
 ark-ec = { workspace = true }
 ark-r1cs-std = { workspace = true, optional = true }
 ark-std = { workspace = true }
+ark-serialize = { workspace = true }
 ark-pallas = { workspace = true, features = [ "scalar_field", "base_field" ] }
 
 [dev-dependencies]
 ark-relations = { workspace = true }
-ark-serialize = { workspace = true }
 ark-algebra-test-templates = { workspace = true }
 ark-algebra-bench-templates = { workspace = true }
 ark-curve-constraint-tests = { path = "../curve-constraint-tests" }
 
 [features]
 default = []
-std = [ "ark-std/std", "ark-ff/std", "ark-ec/std" ]
+std = [ "ark-std/std", "ark-ff/std", "ark-ec/std", "ark-serialize/std", "ark-pallas/std" ]
 r1cs = [ "ark-r1cs-std" ]
 asm = [ "ark-ff/asm" ]
 

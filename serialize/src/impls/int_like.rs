@@ -1,11 +1,12 @@
 use crate::{
-    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
+    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate
 };
 use ark_std::{
     io::{Read, Write},
     vec::*,
 };
 use num_bigint::BigUint;
+use crate::impls::compact::CompactU64;
 
 impl Valid for bool {
     const TRIVIAL_CHECK: bool = true;
@@ -111,15 +112,15 @@ impl CanonicalSerialize for usize {
     #[inline]
     fn serialize_with_mode<W: Write>(
         &self,
-        mut writer: W,
-        _compress: Compress,
+        writer: W,
+        compress: Compress,
     ) -> Result<(), SerializationError> {
-        Ok(writer.write_all(&(*self as u64).to_le_bytes())?)
+        CompactU64(*self as u64).serialize_with_mode(writer, compress)
     }
 
     #[inline]
     fn serialized_size(&self, _compress: Compress) -> usize {
-        core::mem::size_of::<u64>()
+        CompactU64(*self as u64).serialized_size(_compress)
     }
 }
 
@@ -147,9 +148,8 @@ impl CanonicalDeserialize for usize {
         _compress: Compress,
         _validate: Validate,
     ) -> Result<Self, SerializationError> {
-        let mut bytes = [0u8; core::mem::size_of::<u64>()];
-        reader.read_exact(&mut bytes)?;
-        Ok(<u64>::from_le_bytes(bytes) as Self)
+        let len = CompactU64::deserialize_with_mode(&mut reader, _compress, _validate)?.0;
+        Ok(len as usize)
     }
 }
 

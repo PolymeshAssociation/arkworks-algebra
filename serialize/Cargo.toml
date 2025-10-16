@@ -27,6 +27,7 @@ rayon = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde-encoded-bytes = { workspace = true, optional = true, features = ["base64"] }
 serde_with = { workspace = true, optional = true, default-features = false }
+parity-scale-codec = { version = "3.6.0", default-features = false }
 
 [dev-dependencies]
 sha2.workspace = true
