@@ -1,0 +1,33 @@
+[package]
+name = "ark-helios"
+version.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+include.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ark-ff = { workspace = true }
+ark-ec = { workspace = true }
+ark-std = { workspace = true }
+ark-serialize = { workspace = true }
+ark-selene = { workspace = true }
+
+[dev-dependencies]
+ark-algebra-test-templates = { workspace = true }
+ark-algebra-bench-templates = { workspace = true }
+
+[features]
+default = []
+std = [ "ark-std/std", "ark-ff/std", "ark-ec/std", "ark-serialize/std", "ark-selene/std" ]
+asm = [ "ark-ff/asm" ]
+
+[[bench]]
+name = "helios"
+path = "benches/helios.rs"
+harness = false

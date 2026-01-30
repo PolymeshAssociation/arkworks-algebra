@@ -27,6 +27,9 @@ pub use bucket::Bucket;
 mod serialization_flags;
 pub use serialization_flags::*;
 
+mod serialization_x_non_zero;
+pub use serialization_x_non_zero::*;
+
 /// Constants and convenience functions that collectively define the [Short Weierstrass model](https://www.hyperelliptic.org/EFD/g1p/auto-shortw.html)
 /// of the curve.
 ///
@@ -118,6 +121,8 @@ pub trait SWCurveConfig: super::CurveConfig {
             .ok_or_else(|| bases.len().min(scalars.len()))
     }
 
+    // type Serialization: SWCurveSerialization<Self>;
+
     /// If uncompressed, serializes both x and y coordinates as well as a bit for whether it is
     /// infinity. If compressed, serializes x coordinate with two bits to encode whether y is
     /// positive, negative, or infinity.
@@ -125,7 +130,7 @@ pub trait SWCurveConfig: super::CurveConfig {
     fn serialize_with_mode<W: Write>(
         item: &Affine<Self>,
         mut writer: W,
-        compress: ark_serialize::Compress,
+        compress: Compress,
     ) -> Result<(), SerializationError> {
         let (x, y, flags) = match item.is_zero() {
             true => (
@@ -201,6 +206,7 @@ pub trait SWCurveConfig: super::CurveConfig {
         }
     }
 }
+
 
 pub trait ZeroFlag<C: SWCurveConfig>:
     Hash + Ord + Eq + Copy + Sync + Send + Sized + 'static
