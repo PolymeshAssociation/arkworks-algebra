@@ -162,6 +162,9 @@ ark-pallas = { version = "0.5.0", path = "./curves/pallas", default-features = f
 ark-vesta = { version = "0.5.0", path = "./curves/vesta", default-features = false }
 ark-secp256k1 = { version = "0.5.0", path = "./curves/secp256k1", default-features = false }
 ark-secq256k1 = { version = "0.5.0", path = "./curves/secq256k1", default-features = false }
+ark-helios = { version = "0.5.0", path = "./curves/helios", default-features = false }
+ark-selene = { version = "0.5.0", path = "./curves/selene", default-features = false }
+ark-curve25519 = { version = "0.5.0", path = "./curves/curve25519", default-features = false }
 
 num-traits = { version = "0.2", default-features = false }
 num-bigint = { version = "0.4", default-features = false }

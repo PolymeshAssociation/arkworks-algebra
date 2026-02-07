@@ -13,3 +13,4 @@ pub use h2c::*;
 pub use num_bigint;
 pub use num_integer;
 pub use num_traits;
+pub use sha2;

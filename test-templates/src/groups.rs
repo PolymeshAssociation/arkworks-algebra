@@ -462,3 +462,52 @@ macro_rules! test_group {
         }
     };
 }
+
+#[macro_export]
+macro_rules! test_compact_serialization {
+    ($affine: ty; $compressed_size: expr; $uncompressed_size: expr) => {
+        #[test]
+        fn compact_serialization() {
+            use ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
+            use ark_std::{test_rng, vec, UniformRand};
+            use ark_ec::AffineRepr;
+
+            let mut rng = test_rng();
+
+            fn check(g: $affine, compressed_size: usize, uncompressed_size: usize) {
+                assert_eq!(g.compressed_size(), compressed_size);
+
+                let mut compressed_bytes = vec![];
+                g.serialize_compressed(&mut compressed_bytes).unwrap();
+                assert_eq!(compressed_bytes.len(), compressed_size);
+                let g_compressed: $affine =
+                    CanonicalDeserialize::deserialize_compressed(compressed_bytes.as_slice())
+                        .unwrap();
+                assert_eq!(g, g_compressed);
+
+                let mut uncompressed_bytes = vec![];
+                g.serialize_uncompressed(&mut uncompressed_bytes).unwrap();
+                assert_eq!(uncompressed_bytes.len(), uncompressed_size);
+                let g_uncompressed: $affine =
+                    CanonicalDeserialize::deserialize_uncompressed(uncompressed_bytes.as_slice())
+                        .unwrap();
+                assert_eq!(g, g_uncompressed);
+
+                let g_wrong: Result<$affine, _> =
+                    CanonicalDeserialize::deserialize_uncompressed(compressed_bytes.as_slice());
+                assert!(g_wrong.is_err());
+            }
+
+            let iterations = 100;
+            for _ in 0..iterations {
+                let g = <$affine>::rand(&mut rng);
+                assert!(!g.is_zero());
+                check(g, $compressed_size, $uncompressed_size);
+            }
+
+            let g_zero = <$affine>::zero();
+            check(g_zero, $compressed_size, $uncompressed_size);
+        }
+    };
+}
+

@@ -84,3 +84,38 @@ macro_rules! test_h2c {
         }
     };
 }
+
+#[macro_export]
+macro_rules! test_h2c_swu {
+    ($test_name:ident; $group: ty; $config: ty) => {
+        #[test]
+        fn $test_name() {
+            use ark_ec::{
+                hashing::{
+                    curve_maps::swu::SWUMap, map_to_curve_hasher::MapToCurveBasedHasher,
+                    HashToCurve,
+                },
+            };
+            use ark_ff::field_hashers::DefaultFieldHasher;
+            use ark_std::{test_rng, vec, UniformRand};
+            use $crate::sha2::Sha256;
+
+            let hasher = MapToCurveBasedHasher::<
+                $group,
+                DefaultFieldHasher<Sha256, 128>,
+                SWUMap<$config>,
+            >::new(b"test")
+            .unwrap();
+
+            let mut rng = test_rng();
+            for _ in 0..100 {
+                let mut bytes = vec![0u8; rng.gen_range(1..10000)];
+                let hash_result = hasher.hash(&mut bytes).unwrap();
+                assert!(
+                    hash_result.is_on_curve(),
+                    "hash results into a point off the curve"
+                );
+            }
+        }
+    };
+}

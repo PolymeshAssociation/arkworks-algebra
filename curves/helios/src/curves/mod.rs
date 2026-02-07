@@ -3,6 +3,7 @@ use ark_ec::{models::CurveConfig, short_weierstrass::{self as sw, SWCurveConfig,
 use ark_ff::{AdditiveGroup, Field, MontFp};
 use ark_serialize::{Compress, SerializationError, Validate};
 use ark_std::io::{Read, Write};
+use ark_ec::hashing::curve_maps::swu::SWUConfig;
 
 #[cfg(test)]
 mod tests;
@@ -75,7 +76,9 @@ impl SWCurveConfig for HeliosConfig {
 
 impl SWSerializationXNonZero for HeliosConfig {}
 
-
+impl SWUConfig for HeliosConfig {
+    const ZETA: Self::BaseField = MontFp!("8");
+}
 
 /// G_GENERATOR_X = 1
 pub const G_GENERATOR_X: Fq = MontFp!("1");

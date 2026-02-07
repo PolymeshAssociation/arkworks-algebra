@@ -2,6 +2,7 @@ use ark_ec::{models::CurveConfig, short_weierstrass::{self as sw, SWCurveConfig,
 use ark_ff::{AdditiveGroup, Field, MontFp};
 use ark_serialize::{Compress, SerializationError, Validate};
 use ark_std::io::{Read, Write};
+use ark_ec::hashing::curve_maps::swu::SWUConfig;
 use crate::{fq::Fq, fr::Fr};
 
 #[cfg(test)]
@@ -77,6 +78,9 @@ impl SWCurveConfig for SeleneConfig {
 
 impl SWSerializationXNonZero for SeleneConfig {}
 
+impl SWUConfig for SeleneConfig {
+    const ZETA: Self::BaseField = MontFp!("6");
+}
 
 /// G_GENERATOR_X = 1
 /// Both Helios and Selene use x=1 as the generator's x-coordinate
