@@ -39,8 +39,7 @@ members = [
     "secq256k1",
 
     "curve25519",
-    "ed25519",
-
+    "ed25519",    "wei25519",
     "starkcurve",
     "jq255s",
 
