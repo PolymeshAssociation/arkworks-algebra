@@ -32,6 +32,9 @@ zeroize = { workspace = true }
 hashbrown.workspace = true
 itertools.workspace = true
 
+log = { version = "0.4.27", default-features = false }
+ledger_device_sdk = { version = "1.34.0", default-features = false, optional = true }
+
 [target.'cfg(all(target_has_atomic = "8", target_has_atomic = "16", target_has_atomic = "32", target_has_atomic = "64", target_has_atomic = "ptr"))'.dependencies]
 ahash = { version = "0.8", default-features = false }
 
@@ -51,3 +54,5 @@ hex.workspace = true
 default = []
 std = ["ark-std/std", "ark-ff/std", "ark-serialize/std"]
 parallel = ["std", "rayon", "ark-std/parallel", "ark-serialize/parallel"]
+
+low_memory = []

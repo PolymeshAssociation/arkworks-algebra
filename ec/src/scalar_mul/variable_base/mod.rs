@@ -11,6 +11,9 @@ use ark_std::{
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
+#[cfg(feature = "ledger_device_sdk")]
+use ledger_device_sdk::log;
+
 pub mod stream_pippenger;
 pub use stream_pippenger::*;
 
@@ -49,6 +52,7 @@ pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
         + Into<Self>;
 
     const ZERO_BUCKET: Self::Bucket;
+
     /// Computes an inner product between the [`PrimeField`] elements in `scalars`
     /// and the corresponding group elements in `bases`.
     ///
@@ -56,11 +60,32 @@ pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
     /// shortest length between `scalars.len()` and `bases.len()`.
     ///
     /// Reference: [`VariableBaseMSM::msm`]
+    #[cfg(not(feature = "low_memory"))]
     fn msm_unchecked(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Self {
         let bigints = cfg_into_iter!(scalars)
             .map(|s| s.into_bigint())
             .collect::<Vec<_>>();
         Self::msm_bigint(bases, bigints.as_slice())
+    }
+
+    /// Computes an inner product between the [`PrimeField`] elements in `scalars`
+    /// and the corresponding group elements in `bases`.
+    ///
+    /// If the elements have different length, it will chop the slices to the
+    /// shortest length between `scalars.len()` and `bases.len()`.
+    ///
+    /// Reference: [`VariableBaseMSM::msm`]
+    #[cfg(feature = "low_memory")]
+    fn msm_unchecked(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Self {
+        log::debug!(
+            "Performing variable-base MSM with {} pairs of bases and scalars",
+            bases.len().min(scalars.len())
+        );
+        let mut product = Self::zero();
+        for (base, scalar) in bases.iter().zip(scalars) {
+            product += &(*base * *scalar);
+        }
+        product
     }
 
     /// Performs multi-scalar multiplication.
