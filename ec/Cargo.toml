@@ -32,6 +32,8 @@ zeroize = { workspace = true }
 hashbrown.workspace = true
 itertools.workspace = true
 
+ark-host-msm = { workspace = true, optional = true }
+
 [target.'cfg(all(target_has_atomic = "8", target_has_atomic = "16", target_has_atomic = "32", target_has_atomic = "64", target_has_atomic = "ptr"))'.dependencies]
 ahash = { version = "0.8", default-features = false }
 
@@ -49,5 +51,18 @@ hex.workspace = true
 
 [features]
 default = []
-std = ["ark-std/std", "ark-ff/std", "ark-serialize/std"]
+std = ["ark-std/std", "ark-ff/std", "ark-serialize/std", "ark-host-msm?/std"]
 parallel = ["std", "rayon", "ark-std/parallel", "ark-serialize/parallel"]
+
+host_msm = [
+    "ark-host-msm",
+]
+
+polkavm = [
+    "host_msm",
+    "ark-host-msm/polkavm",
+]
+
+substrate = [
+    "host_msm",
+]

@@ -1,0 +1,29 @@
+[package]
+name = "ark-host-msm"
+version.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+include.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ark-std.workspace = true
+ark-serialize.workspace = true
+
+polkavm-derive = { version = "0.32.0", optional = true }
+
+[features]
+default = ["std"]
+std = ["ark-std/std", "ark-serialize/std"]
+
+polkavm = [
+    "polkavm-derive",
+]
