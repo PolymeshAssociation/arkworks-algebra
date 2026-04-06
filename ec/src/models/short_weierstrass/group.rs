@@ -651,6 +651,10 @@ impl<P: SWCurveConfig> VariableBaseMSM for Projective<P> {
     type Bucket = Bucket<P>;
     const ZERO_BUCKET: Self::Bucket = Bucket::ZERO;
 
+    fn curve_name() -> Option<&'static str> {
+        Some(&core::any::type_name::<P>().trim_start_matches("ark_")[..20])
+    }
+
     fn msm(bases: &[Self::MulBase], bigints: &[Self::ScalarField]) -> Result<Self, usize> {
         P::msm(bases, bigints)
     }

@@ -66,6 +66,8 @@ pub trait ScalarMul:
         + Sync
         + Copy
         + Eq
+        + ark_serialize::CanonicalSerialize
+        + ark_serialize::CanonicalDeserialize
         + core::hash::Hash
         + Mul<Self::ScalarField, Output = Self>
         + for<'a> Mul<&'a Self::ScalarField, Output = Self>

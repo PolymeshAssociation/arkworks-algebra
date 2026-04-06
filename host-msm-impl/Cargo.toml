@@ -1,0 +1,29 @@
+[package]
+name = "ark-host-msm-impl"
+version.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+include.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ark-std.workspace = true
+ark-ec.workspace = true
+ark-serialize.workspace = true
+ark-host-msm = { workspace = true, default-features = false }
+
+ark-pallas.workspace = true
+ark-vesta.workspace = true
+
+[features]
+default = ["std"]
+std = ["ark-std/std", "ark-ec/std", "ark-serialize/std"]
+parallel = ["std", "ark-std/parallel", "ark-ec/parallel", "ark-serialize/parallel"]

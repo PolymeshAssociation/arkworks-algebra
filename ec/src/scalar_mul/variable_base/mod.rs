@@ -49,6 +49,14 @@ pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
         + Into<Self>;
 
     const ZERO_BUCKET: Self::Bucket;
+
+    /// This is used by the host MSM implementation to identify the curve type for MSM. If `None` is returned, the host MSM implementation will not be used.
+    ///
+    /// If the host MSM implementation doesn't support the curve, it will fall back to the slower non-host implementation.
+    fn curve_name() -> Option<&'static str> {
+        None
+    }
+
     /// Computes an inner product between the [`PrimeField`] elements in `scalars`
     /// and the corresponding group elements in `bases`.
     ///
@@ -57,6 +65,14 @@ pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
     ///
     /// Reference: [`VariableBaseMSM::msm`]
     fn msm_unchecked(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Self {
+        #[cfg(all(feature = "host_msm", not(feature = "std")))]
+        if let Some(curve_name) = Self::curve_name() {
+            if let Some(res) = ark_host_msm::use_host_msm_unchecked(curve_name, bases, scalars) {
+                return res;
+            }
+            // fallback to non-host implementation if the host doesn't support this curve or if an error occurs during host MSM.
+        }
+
         let bigints = cfg_into_iter!(scalars)
             .map(|s| s.into_bigint())
             .collect::<Vec<_>>();
