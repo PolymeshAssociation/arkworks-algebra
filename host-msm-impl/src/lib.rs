@@ -92,10 +92,11 @@ fn host_msm_unchecked_impl<V: VariableBaseMSM>(buffer: &mut [u8], buf_len: u32) 
     let buf_len = buf_len as usize;
     let mut cursor = ark_std::io::Cursor::new(&buffer[CURVE_ID_LEN..buf_len]);
     let bases: Vec<V::MulBase> =
-        CanonicalDeserialize::deserialize_uncompressed_unchecked(&mut cursor).unwrap();
+        CanonicalDeserialize::deserialize_uncompressed(&mut cursor).unwrap();
     let scalars: Vec<V::ScalarField> =
-        CanonicalDeserialize::deserialize_uncompressed_unchecked(&mut cursor).unwrap();
+        CanonicalDeserialize::deserialize_uncompressed(&mut cursor).unwrap();
     let res = V::msm_unchecked(&bases, &scalars);
+
     let res_len = res.serialized_size(Compress::No);
     res.serialize_uncompressed(&mut buffer[0..res_len]).unwrap();
     res_len as u32
