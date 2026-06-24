@@ -56,7 +56,7 @@ impl SWCurveConfig for VestaConfig {
         let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
         <Self as GLVConfig>::glv_mul_projective(base.into_group(), s)
     }
-    
+
     #[inline]
     fn serialize_with_mode<W: Write>(
         item: &Affine,

@@ -75,6 +75,8 @@ impl<P: SWUConfig> MapToCurve<Projective<P>> for SWUMap<P> {
         let num2_x1 = num_x1.square();
         let div2 = div.square();
         let div3 = div2 * div;
+        let div_inv = div.inverse().unwrap();
+        let div3_inv = div_inv.square() * div_inv;
         let num_gx1 = (num2_x1 + a * div2) * num_x1 + b * div3;
 
         // 5. x2 = Z * u^2 * x1
@@ -91,16 +93,15 @@ impl<P: SWUConfig> MapToCurve<Projective<P>> for SWUMap<P> {
             "we have checked that neither a or ZETA are zero. Q.E.D."
         );
         let y1: P::BaseField = {
-            gx1 = num_gx1 / div3;
-            if gx1.legendre().is_qr() {
+            gx1 = num_gx1 * div3_inv;
+            if let Some(s) = gx1.sqrt() {
                 gx1_square = true;
-                gx1.sqrt()
-                    .expect("We have checked that gx1 is a quadratic residue. Q.E.D")
+                s
             } else {
-                let zeta_gx1 = P::ZETA * gx1;
                 gx1_square = false;
+                let zeta_gx1 = P::ZETA * gx1;
                 zeta_gx1.sqrt().expect(
-                    "ZETA * gx1 is a quadratic residue because legard is multiplicative. Q.E.D",
+                    "ZETA * gx1 is a quadratic residue because Legendre symbol is multiplicative. Q.E.D",
                 )
             }
         };
@@ -117,7 +118,7 @@ impl<P: SWUConfig> MapToCurve<Projective<P>> for SWUMap<P> {
         let num_x = if gx1_square { num_x1 } else { num_x2 };
         let y = if gx1_square { y1 } else { y2 };
 
-        let x_affine = num_x / div;
+        let x_affine = num_x * div_inv;
         let y_affine = if parity(&y) == parity(&element) {
             y
         } else {
