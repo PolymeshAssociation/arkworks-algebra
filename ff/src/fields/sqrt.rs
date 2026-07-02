@@ -83,16 +83,10 @@ pub enum SqrtPrecomputation<F: crate::Field> {
     /// Table-based square root for fields with high 2-adicity.
     ///
     /// Adapted from the `SqrtTables` implementation in `zcash/pasta_curves`
-    /// (the `sqrt_alt` / `sqrt_common` / `SqrtHasher::hash` functions), used here
-    /// under its MIT/Apache-2.0 license (the same dual license as this crate).
+    /// (the `sqrt_alt` / `sqrt_common` / `SqrtHasher::hash` functions),
     /// It in turn implements Sarkar 2020 and BDLSY 2012:
     /// - <https://github.com/zcash/pasta_curves/blob/main/src/arithmetic/fields.rs>
     /// - Sarkar 2020: <https://eprint.iacr.org/2020/1407>
-    /// - BDLSY 2012:  <https://cr.yp.to/papers.html#ed25519>
-    ///
-    /// It replaces the data-dependent Tonelli-Shanks discrete-log search with a
-    /// fixed number of table lookups; for the Pasta fields (2-adicity 32) it is
-    /// roughly 2x faster than [`Self::TonelliShanks`].
     ///
     /// Write `p - 1 = T * 2^S` with `T` odd, and let `g` be a generator of the
     /// order-`2^S` subgroup (i.e. `TWO_ADIC_ROOT_OF_UNITY`). The tables are:
@@ -105,7 +99,6 @@ pub enum SqrtPrecomputation<F: crate::Field> {
     /// This variant is currently only constructed for fields with `S == 32`
     /// (it splits `S` into four 8-bit windows). The tables and `hash_*`
     /// parameters are produced by `curves/pallas/tests/gen_sqrt_tables.rs`
-    /// (an `#[ignore]`d generator test in the `ark-pallas` crate).
     Sarkar2020 {
         /// `(T - 1) / 2` in little-endian limbs.
         trace_minus_one_div_two: &'static [u64],
@@ -314,6 +307,7 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
 
                 t += inv_lookup(&alpha) << 24;
                 t = (((t as u64) + 1) >> 1) as usize;
+                assert!(t <= 0x80000000);
 
                 let res =
                     uv * g0[t & 0xFF] * g1[(t >> 8) & 0xFF] * g2[(t >> 16) & 0xFF] * g3[t >> 24];

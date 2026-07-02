@@ -1,5 +1,4 @@
-//! Quick wall-clock comparison of the installed Sarkar2020 sqrt against the
-//! generic Tonelli-Shanks it replaces, on the same field. Run with:
+//! Run with:
 //! `cargo test --release --manifest-path curves/pallas/Cargo.toml --test sqrt_bench -- --ignored --nocapture`
 
 use ark_ff::{

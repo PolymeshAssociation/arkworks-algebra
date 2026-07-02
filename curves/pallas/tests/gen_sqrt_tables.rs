@@ -2,12 +2,10 @@
 //! `ark_ff::SqrtPrecomputation::Sarkar2020` for the Pasta fields.
 //!
 //! The table-building logic here is adapted from `SqrtTables::new` in
-//! `zcash/pasta_curves`, used under its MIT/Apache-2.0 license (the same dual
-//! license as this crate):
+//! `zcash/pasta_curves`:
 //! <https://github.com/zcash/pasta_curves/blob/main/src/arithmetic/fields.rs>
 //! It produces the same tables that pasta builds lazily at runtime, but emits
 //! them as `const` source so the runtime has no allocation/initialization cost
-//! (important for the no_std / wasm32 Substrate target).
 //!
 //! Run with:
 //! ```text
@@ -20,8 +18,7 @@
 //!
 //! `ark_pallas::Fq` is the Pallas base field (p); `ark_pallas::Fr` is the
 //! Pallas scalar field (q). Vesta reuses Pallas's `FqConfig`/`FrConfig`
-//! (`ark_vesta::Fq == ark_pallas::Fr`, `ark_vesta::Fr == ark_pallas::Fq`), so
-//! wiring the two Pallas configs gives both curves the table-based sqrt.
+//! (`ark_vesta::Fq == ark_pallas::Fr`, `ark_vesta::Fr == ark_pallas::Fq`).
 
 use ark_ff::{FftField, PrimeField};
 use std::fmt::Write as _;
@@ -31,7 +28,7 @@ use std::path::PathBuf;
 /// Perfect-hash parameters taken verbatim from `zcash/pasta_curves` — the
 /// `lazy_static! { FP_TABLES / FQ_TABLES }` definitions in `src/fields/fp.rs`
 /// and `src/fields/fq.rs` — where they are originally produced by the
-/// `squareroottab.sage` search in the `zcash/pasta` repo:
+/// `squareroottab.sage` in the `zcash/pasta` <https://github.com/zcash/pasta/blob/master/squareroottab.sage> repo:
 /// - <https://github.com/zcash/pasta_curves/blob/main/src/fields/fp.rs>
 /// - <https://github.com/zcash/pasta_curves/blob/main/src/fields/fq.rs>
 ///
@@ -61,6 +58,7 @@ fn build<F: PrimeField + FftField>(hash_xor: u32, hash_mod: u32) -> Dataset {
         "the Sarkar2020 variant splits S into four 8-bit windows and assumes S == 32"
     );
 
+    // Follows from `zcash/pasta_curves`'s `SqrtTables`
     let g = F::TWO_ADIC_ROOT_OF_UNITY;
     let row = |base: F, n: usize| -> Vec<F> {
         let mut v = Vec::with_capacity(n);

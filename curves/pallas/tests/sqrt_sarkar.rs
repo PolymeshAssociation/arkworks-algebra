@@ -1,17 +1,7 @@
-//! Correctness cross-check for the Sarkar2020 table-based square root wired
-//! into the Pasta fields. Uses `legendre()` (Euler's criterion via a generic
-//! exponentiation, independent of the sqrt tables) as the oracle:
-//! - a quadratic residue must produce a root `r` with `r^2 == x`;
-//! - a quadratic non-residue must produce `None`.
-//!
-//! Pallas `Fq` (p field) and `Fr` (q field) cover both Pasta moduli, hence both
-//! generated table datasets. Vesta reuses the same configs.
-
 use ark_ff::{Field, LegendreSymbol};
 use ark_std::test_rng;
 
 fn check<F: Field>() {
-    // The variant must actually be installed, else this test is vacuous.
     assert!(F::SQRT_PRECOMP.is_some());
 
     let rng = &mut test_rng();
