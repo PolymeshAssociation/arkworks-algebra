@@ -45,7 +45,6 @@ fn jsf_affine_vs_projective() {
     );
 }
 
-
 #[test]
 #[ignore = "timing comparison; run explicitly with --release --nocapture"]
 fn jsf_vs_shamir() {
@@ -111,3 +110,4 @@ fn fast_decomposition_throughput() {
         generic.as_secs_f64() / fast.as_secs_f64()
     );
 }
+

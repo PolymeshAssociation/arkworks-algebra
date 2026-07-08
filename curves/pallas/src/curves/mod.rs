@@ -48,7 +48,6 @@ impl SWCurveConfig for PallasConfig {
 
     #[inline]
     fn mul_projective(base: &Projective, scalar: &[u64]) -> Projective {
-        // Measure diff b/w checking scalar size for "small" (how small?) scalars and not doing GLV for them
         let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
         GLVConfig::glv_mul_projective(*base, s)
     }
