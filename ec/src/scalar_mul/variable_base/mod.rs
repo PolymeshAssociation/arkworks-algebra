@@ -574,7 +574,7 @@ fn msm_bigint_wnaf<V: VariableBaseMSM>(
 }
 
 /// Optimized implementation of multi-scalar multiplication.
-fn msm_bigint<V: VariableBaseMSM>(
+pub fn msm_bigint<V: VariableBaseMSM>(
     mut bases: &[V::MulBase],
     mut scalars: &[<V::ScalarField as PrimeField>::BigInt],
 ) -> V {
