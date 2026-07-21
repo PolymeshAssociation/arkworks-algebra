@@ -201,17 +201,28 @@ pub fn generic_scalar_decomposition<P: GLVConfig>(
     // The inverse of N is 1/r * Matrix([[n22, -n12], [-n21, n11]]).
     // so β = (k*n22, -k*n12)/r
 
+    // We compute beta_1 = round(scalar * n22 / r) and beta_2 = round(scalar * (-n12) / r).
+    // The `div_rem` method truncates towards zero and returns a remainder with the
+    // same sign as the dividend. To round to the nearest integer, we check if the
+    // absolute value of the remainder is strictly greater than r / 2.
+    // If |rem| * 2 > r, we adjust the quotient away from zero.
     let beta_1 = {
         let (mut div, rem) = (&scalar * &n22).div_rem(&r);
-        if (&rem + &rem) > r {
+        let two_rem = &rem + &rem;
+        if two_rem > r {
             div += BigInt::one();
+        } else if -two_rem > r {
+            div -= BigInt::one();
         }
         div
     };
     let beta_2 = {
         let (mut div, rem) = (&scalar * &n12.clone().neg()).div_rem(&r);
-        if (&rem + &rem) > r {
+        let two_rem = &rem + &rem;
+        if two_rem > r {
             div += BigInt::one();
+        } else if -two_rem > r {
+            div -= BigInt::one();
         }
         div
     };
