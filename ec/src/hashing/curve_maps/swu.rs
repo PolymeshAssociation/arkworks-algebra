@@ -75,6 +75,7 @@ impl<P: SWUConfig> MapToCurve<Projective<P>> for SWUMap<P> {
         let num2_x1 = num_x1.square();
         let div2 = div.square();
         let div3 = div2 * div;
+        // `div` can never be 0 as per the above condition
         let div_inv = div.inverse().unwrap();
         let div3_inv = div_inv.square() * div_inv;
         let num_gx1 = (num2_x1 + a * div2) * num_x1 + b * div3;

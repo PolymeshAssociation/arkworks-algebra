@@ -234,8 +234,8 @@ pub struct PackedIndex(pub u64);
 impl PackedIndex {
     #[inline(always)]
     fn new(index: usize, group: ScalarSize, value: u16) -> Self {
-        // Pack the index, group, and value into a single u64 as [<44 bits for index> || <16 bits for value> || <4 bits for group>]
-        // where LSB is the leftmost bit.
+        // Pack the index, group, and value into a single u64 as [<4 bits for group> || <16 bits for value> || <44 bits for index>]
+        // where group bits are the most significant.
         let index_bits = ((index as u64) << 20) >> 20;
         let group_bits = (group as u64) << 60;
         let value_bits = (value as u64) << 44;
@@ -573,29 +573,22 @@ pub fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
 
     // Bucket-array sizing. `make_digits` is a signed windowed encoding: every digit but the
     // most-significant lies in `[-2^(c-1), 2^(c-1)-1]`, so indexing buckets by `|digit| - 1`
-    // needs only `2^(c-1)` slots. The most-significant window is the exception: it spans only
-    // `ms_window_size = num_bits - c*(digits_count-1)` bits, and its (non-negative) digit can
-    // reach `2^ms_window_size`. When `c` divides `num_bits` `ms_window_size = c`, so that digit can
-    // exceed `2^(c-1)` and index past a half-sized array.
+    // needs only `2^(c-1)` slots. The most-significant window is not recentered, so its
+    // (non-negative) digit can reach `2^read_bits`, where `read_bits` is how many scalar bits
+    // that window actually reads.
 
     // total size of all but most significant window
     let shift = (c * (digits_count - 1)) as u32;
-    // size of most significant window
-    let ms_window_size = num_bits - shift as usize;
-    // value in the most significant window
-    let mut ms_window_max = 1usize << ms_window_size;
 
-    // Since all scalars are always smaller than the modulus, checking if modulus fits in to the
-    // full window. If not then skip the optimization.
-    let mod_shifted = V::ScalarField::MODULUS >> shift;
-    let mod_limbs = mod_shifted.as_ref();
-    if mod_limbs.iter().skip(1).all(|&l| l == 0) && mod_limbs[0] < (1u64 << c) {
-        // +1 for carry
-        ms_window_max = ms_window_max.min(mod_limbs[0] as usize + 1);
-    }
+    // The most-significant window reads `c` bits starting at `shift`, capped by the width of the
+    // `BigInt`. `msm_bigint` accepts any `BigInt`, including non-canonical values `>= MODULUS`,
+    // so size this window for the widest digit `make_digits` can emit (`2^read_bits`); a smaller
+    // (e.g. modulus-derived) bound would be indexed out of bounds by a non-canonical scalar.
+    let total_bits = 64 * <<V::ScalarField as PrimeField>::BigInt as BigInteger>::NUM_LIMBS;
+    let read_bits = c.min(total_bits - shift as usize);
 
     // number of buckets for the most significant window, as per above
-    let ms_window_num_buckets = (1usize << (c - 1)).max(ms_window_max);
+    let ms_window_num_buckets = (1usize << (c - 1)).max(1usize << read_bits);
     // number of buckets for all except the most significant window
     let num_buckets = 1usize << (c - 1);
 
@@ -717,9 +710,10 @@ pub fn msm_bigint<V: VariableBaseMSM>(
     combine_window_sums::<V>(&window_sums, c)
 }
 
-/// Serial (unsigned) Pippenger MSM for scalars that fit in a small unsigned integer. Similar
-/// to [`msm_bigint`] but this drives the window loop serially its callers parallelize over base-chunks
-/// instead and that it processes only the `size_of::<S>() * 8` bits the scalar type can hold.
+/// Serial (unsigned) Pippenger MSM for scalars that fit in a `u64`. Like [`msm_bigint`], but
+/// drives the window loop serially: its callers (`msm_u8`/`msm_u16`/`msm_u32`/`msm_u64`)
+/// parallelize over base-chunks and invoke this once per chunk. It processes a fixed 64-bit width
+/// (`size_of::<u64>() * 8`), not the scalar type's width.
 pub fn msm_serial<V: VariableBaseMSM>(
     bases: &[V::MulBase],
     scalars: &[impl Into<u64> + Copy + Send + Sync],

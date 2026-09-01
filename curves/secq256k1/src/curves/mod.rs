@@ -2,7 +2,6 @@ use ark_ec::{
     models::CurveConfig,
     scalar_mul::glv::GLVConfig,
     short_weierstrass::{self as sw, SWCurveConfig},
-    AffineRepr,
 };
 use ark_ff::{AdditiveGroup, Field, MontFp, Zero};
 
@@ -58,7 +57,7 @@ impl SWCurveConfig for Config {
     #[inline]
     fn mul_affine(base: &Affine, scalar: &[u64]) -> Projective {
         let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
-        <Self as GLVConfig>::glv_mul_projective(base.into_group(), s)
+        <Self as GLVConfig>::glv_mul_affine_projective(*base, s)
     }
 }
 

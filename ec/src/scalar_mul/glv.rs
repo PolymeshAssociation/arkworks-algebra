@@ -88,7 +88,7 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
         binary_scalar_mul_jsf(b1, k1, b2, k2)
     }
 
-    fn glv_mul_affine(p: Affine<Self>, k: Self::ScalarField) -> Affine<Self> {
+    fn glv_mul_affine_projective(p: Affine<Self>, k: Self::ScalarField) -> Projective<Self> {
         let mut b1 = p;
         let mut b2 = Self::endomorphism_affine(&p);
 
@@ -101,7 +101,11 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
             b2 = -b2;
         }
 
-        binary_scalar_mul_jsf_affine(b1, k1, b2, k2).into_affine()
+        binary_scalar_mul_jsf_affine(b1, k1, b2, k2)
+    }
+
+    fn glv_mul_affine(p: Affine<Self>, k: Self::ScalarField) -> Affine<Self> {
+        Self::glv_mul_affine_projective(p, k).into_affine()
     }
 }
 
@@ -111,6 +115,8 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
 /// result is small (below `2^128`)
 fn mul_shift_round<F: PrimeField>(k: &[u64], g: &[u64], shift_limbs: usize) -> F {
     // Accumulator wide enough for the product of `k` and `g` and one more limb
+    // Even a 6 limb scalar is of 384 bits, bigger than any scalar we have to ever deal
+    // with. `debug_assert` will catch this if such a large field is ever used.
     let mut prod = [0u64; 16];
     debug_assert!(k.len() + g.len() < prod.len());
     for (i, &ki) in k.iter().enumerate() {
@@ -330,7 +336,6 @@ pub fn binary_scalar_mul_jsf<G: SWCurveConfig>(
     let sum = b1 + b2;
     let diff = b1 - b2;
     let digits = joint_sparse_form(k1.into_bigint().as_ref(), k2.into_bigint().as_ref());
-    // Projective bases: the single-base digits use full projective additions.
     jsf_fold(b1, b2, sum, diff, digits)
 }
 
@@ -341,10 +346,9 @@ pub fn binary_scalar_mul_jsf_affine<G: SWCurveConfig>(
     b2: Affine<G>,
     k2: G::ScalarField,
 ) -> Projective<G> {
-    let sum = b1 + b2; // Affine + Affine -> Projective
+    let sum = b1 + b2;
     let diff = b1 + (-b2);
     let digits = joint_sparse_form(k1.into_bigint().as_ref(), k2.into_bigint().as_ref());
-    // Affine bases: the single-base digits use mixed (projective += affine) additions.
     jsf_fold(b1, b2, sum, diff, digits)
 }
 

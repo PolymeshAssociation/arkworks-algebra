@@ -190,6 +190,29 @@ pub fn glv_mul_handles_edge_scalars<P: ark_ec::short_weierstrass::SWCurveConfig 
     }
 }
 
+fn compare<T: PartialEq>(
+    n: usize,
+    tag: &str,
+    label_a: &str,
+    a: impl FnOnce() -> T,
+    label_b: &str,
+    b: impl FnOnce() -> T,
+) {
+    let t = Instant::now();
+    let res_a = a();
+    let time_a = t.elapsed();
+
+    let t = Instant::now();
+    let res_b = b();
+    let time_b = t.elapsed();
+
+    assert!(res_a == res_b, "{tag}: implementations disagree");
+    println!(
+        "{tag} over {n}: {label_a} {time_a:?}, {label_b} {time_b:?}  ({:.2}x)",
+        time_a.as_secs_f64() / time_b.as_secs_f64()
+    );
+}
+
 pub fn jsf_affine_vs_projective<P: ark_ec::short_weierstrass::SWCurveConfig + GLVConfig>() {
     let rng = &mut test_rng();
     let n = 1000;
@@ -198,25 +221,25 @@ pub fn jsf_affine_vs_projective<P: ark_ec::short_weierstrass::SWCurveConfig + GL
     let k1: Vec<P::ScalarField> = (0..n).map(|_| P::ScalarField::rand(rng)).collect();
     let k2: Vec<P::ScalarField> = (0..n).map(|_| P::ScalarField::rand(rng)).collect();
 
-    let t = Instant::now();
-    let mut acc = Projective::<P>::zero();
-    for i in 0..n {
-        acc += binary_scalar_mul_jsf(b1[i].into_group(), k1[i], b2[i].into_group(), k2[i]);
-    }
-    let proj = t.elapsed();
-    let g1 = acc;
-
-    let t = Instant::now();
-    let mut acc = Projective::<P>::zero();
-    for i in 0..n {
-        acc += binary_scalar_mul_jsf_affine(b1[i], k1[i], b2[i], k2[i]);
-    }
-    let affine = t.elapsed();
-    assert_eq!(g1, acc);
-
-    println!(
-        "jsf (affine bases) over {n}: projective {proj:?}, mixed-add {affine:?}  ({:.2}x)",
-        proj.as_secs_f64() / affine.as_secs_f64()
+    compare(
+        n,
+        "jsf (affine bases)",
+        "projective",
+        || {
+            let mut acc = Projective::<P>::zero();
+            for i in 0..n {
+                acc += binary_scalar_mul_jsf(b1[i].into_group(), k1[i], b2[i].into_group(), k2[i]);
+            }
+            acc
+        },
+        "mixed-add",
+        || {
+            let mut acc = Projective::<P>::zero();
+            for i in 0..n {
+                acc += binary_scalar_mul_jsf_affine(b1[i], k1[i], b2[i], k2[i]);
+            }
+            acc
+        },
     );
 }
 
@@ -228,56 +251,57 @@ pub fn jsf_vs_shamir<P: ark_ec::short_weierstrass::SWCurveConfig + GLVConfig>() 
     let k1: Vec<P::ScalarField> = (0..n).map(|_| P::ScalarField::rand(rng)).collect();
     let k2: Vec<P::ScalarField> = (0..n).map(|_| P::ScalarField::rand(rng)).collect();
 
-    let t = Instant::now();
-    let mut acc = Projective::<P>::zero();
-    for i in 0..n {
-        acc += binary_scalar_mul_shamir(b1[i], k1[i], b2[i], k2[i]);
-    }
-    let shamir = t.elapsed();
-    let g1 = acc;
-
-    let t = Instant::now();
-    let mut acc = Projective::<P>::zero();
-    for i in 0..n {
-        acc += binary_scalar_mul_jsf(b1[i], k1[i], b2[i], k2[i]);
-    }
-    let jsf = t.elapsed();
-    assert_eq!(g1, acc);
-
-    println!(
-        "b1*k1+b2*k2 over {n}: shamir {shamir:?}, jsf {jsf:?}  ({:.2}x)",
-        shamir.as_secs_f64() / jsf.as_secs_f64()
+    compare(
+        n,
+        "b1*k1+b2*k2",
+        "shamir",
+        || {
+            let mut acc = Projective::<P>::zero();
+            for i in 0..n {
+                acc += binary_scalar_mul_shamir(b1[i], k1[i], b2[i], k2[i]);
+            }
+            acc
+        },
+        "jsf",
+        || {
+            let mut acc = Projective::<P>::zero();
+            for i in 0..n {
+                acc += binary_scalar_mul_jsf(b1[i], k1[i], b2[i], k2[i]);
+            }
+            acc
+        },
     );
 }
 
 pub fn fast_decomposition_throughput<P: ark_ec::short_weierstrass::SWCurveConfig + GLVConfig>() {
+    // Run only when FAST_DECOMP is set.
+    let Some(fd) = P::FAST_DECOMP else { return };
     let rng = &mut test_rng();
     let n = 10000;
     let scalars: Vec<P::ScalarField> = (0..n).map(|_| P::ScalarField::rand(rng)).collect();
-    let fd = P::FAST_DECOMP.unwrap();
     let lambda = P::LAMBDA;
     let signed = |(pos, mag): (bool, P::ScalarField)| if pos { mag } else { -mag };
 
-    let t = Instant::now();
-    let mut acc = P::ScalarField::zero();
-    for s in &scalars {
-        let (k1, k2) = generic_scalar_decomposition::<P>(*s);
-        acc += signed(k1) + lambda * signed(k2);
-    }
-    let generic = t.elapsed();
-    let generic_acc = acc;
-
-    let t = Instant::now();
-    let mut acc = P::ScalarField::zero();
-    for s in &scalars {
-        let (k1, k2) = fast_scalar_decomposition::<P>(*s, &fd);
-        acc += signed(k1) + lambda * signed(k2);
-    }
-    let fast = t.elapsed();
-    assert_eq!(generic_acc, acc);
-
-    println!(
-        "scalar_decomposition over {n}: generic {generic:?}, fast {fast:?}  ({:.2}x)",
-        generic.as_secs_f64() / fast.as_secs_f64()
+    compare(
+        n,
+        "scalar_decomposition",
+        "generic",
+        || {
+            let mut acc = P::ScalarField::zero();
+            for s in &scalars {
+                let (k1, k2) = generic_scalar_decomposition::<P>(*s);
+                acc += signed(k1) + lambda * signed(k2);
+            }
+            acc
+        },
+        "fast",
+        || {
+            let mut acc = P::ScalarField::zero();
+            for s in &scalars {
+                let (k1, k2) = fast_scalar_decomposition::<P>(*s, &fd);
+                acc += signed(k1) + lambda * signed(k2);
+            }
+            acc
+        },
     );
 }

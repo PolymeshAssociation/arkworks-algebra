@@ -307,8 +307,10 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
 
                 t += inv_lookup(&alpha) << 24;
                 t = (((t as u64) + 1) >> 1) as usize;
-                assert!(t <= 0x80000000);
-
+                if t > 0x80000000 {
+                    return None;
+                }
+                
                 let res =
                     uv * g0[t & 0xFF] * g1[(t >> 8) & 0xFF] * g2[(t >> 16) & 0xFF] * g3[t >> 24];
 
