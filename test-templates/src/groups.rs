@@ -430,6 +430,17 @@ macro_rules! __test_group {
         fn test_glv_mul() {
             $crate::glv::glv_projective::<Config>();
             $crate::glv::glv_affine::<Config>();
+            $crate::glv::glv_scalar_decomposition::<Config>();
+            $crate::glv::glv_endomorphism_eigenvalue::<Config>();
+            $crate::glv::jsf_reconstructs_the_scalars::<Config>();
+            $crate::glv::jsf_mul_matches_shamir_and_naive::<Config>();
+            $crate::glv::jsf_recodes_full_width_limbs::<Config>();
+            $crate::glv::jsf_mul_handles_edge_scalars::<Config>();
+            $crate::glv::glv_mul_identity_point::<Config>();
+            $crate::glv::glv_mul_handles_edge_scalars::<Config>();
+            $crate::glv::jsf_affine_vs_projective::<Config>();
+            $crate::glv::jsf_vs_shamir::<Config>();
+            $crate::glv::fast_decomposition_throughput::<Config>();
         }
     }
 }

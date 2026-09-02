@@ -14,7 +14,7 @@ use rayon::prelude::*;
 pub mod stream_pippenger;
 pub use stream_pippenger::*;
 
-use super::ScalarMul;
+use super::{ln_without_floats, ScalarMul};
 
 #[cfg(all(
     target_has_atomic = "8",
@@ -196,19 +196,27 @@ fn sub<B: BigInteger>(m: &B, scalar: &B) -> u64 {
 // 44 zeroes, 1 in the next 16 bits, 0 rest
 const VALUE_MASK: u64 = (u16::MAX as u64) << 44;
 
+/// Represents groups for bit size of scalars.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScalarSize {
+    /// if scalar is at most 1 bit
     U1 = 0,
+    /// if -scalar is at most 1 bit
     NegU1 = 1,
+    /// if scalar is bigger than 1 bit but at most 8 bits
     U8 = 2,
+    /// if -scalar is bigger than 1 bit but at most 8 bits
     NegU8 = 3,
+    /// if scalar is bigger than 8 bits but at most 16 bits
     U16 = 4,
+    /// if -scalar is bigger than 8 bits but at most 16 bits
     NegU16 = 5,
     U32 = 6,
     NegU32 = 7,
     U64 = 8,
     NegU64 = 9,
+    /// scalars in the range `[2^64, M-2^64)` where `M` is the modulus
     BigInt = 10,
 }
 
@@ -226,7 +234,8 @@ pub struct PackedIndex(pub u64);
 impl PackedIndex {
     #[inline(always)]
     fn new(index: usize, group: ScalarSize, value: u16) -> Self {
-        // Pack the index, group, and value into a single u64.
+        // Pack the index, group, and value into a single u64 as [<4 bits for group> || <16 bits for value> || <44 bits for index>]
+        // where group bits are the most significant.
         let index_bits = ((index as u64) << 20) >> 20;
         let group_bits = (group as u64) << 60;
         let value_bits = (value as u64) << 44;
@@ -253,8 +262,9 @@ impl PackedIndex {
 
 /// Computes multi-scalar multiplication where the scalars
 /// can be negative, zero, or positive.
-/// Should be used when the negation is cheap, i.e. when
-/// `V::NEGATION_IS_CHEAP` is `true`.
+/// Tries to convert large scalars to negative (modulus - scalar) so that their bit size is small.
+/// Partitions the scalars based on size and uses different algorithms based on the size
+/// Uses wNAF when `V::NEGATION_IS_CHEAP` is `true`.
 fn msm_signed<V: VariableBaseMSM>(
     bases: &[V::MulBase],
     scalars: &[<V::ScalarField as PrimeField>::BigInt],
@@ -263,7 +273,8 @@ fn msm_signed<V: VariableBaseMSM>(
     let bases = &bases[..size];
     let scalars = &scalars[..size];
 
-    // Partition scalars according to their size.
+    // Partition scalars according to their size. For scalars (or -scalar) that fit in 16 bits,
+    // store the value, rest wont fit in 64-bit PackedIndex.
     let mut grouped = cfg_iter!(scalars)
         .enumerate()
         .filter(|(_, scalar)| !scalar.is_zero())
@@ -277,6 +288,7 @@ fn msm_signed<V: VariableBaseMSM>(
                 17..=32 => U32,
                 33..=64 => U64,
                 _ => {
+                    // take bit size of -scalar
                     let mut p_minus_scalar = V::ScalarField::MODULUS;
                     p_minus_scalar.sub_with_borrow(scalar);
                     let group = match p_minus_scalar.num_bits() {
@@ -305,8 +317,12 @@ fn msm_signed<V: VariableBaseMSM>(
     #[cfg(not(feature = "parallel"))]
     grouped.sort_unstable_by_key(|i| i.group());
 
+    // Split scalars based on their bit sizes
+    // u1s are scalars of 1-bit
     let (u1s, rest) = grouped.split_at(ScalarSize::U1.partition_point(&grouped));
+    // i1s are scalars where negative of them is 1-bit
     let (i1s, rest) = rest.split_at(ScalarSize::NegU1.partition_point(rest));
+    // u8s are scalars bigger than 1 bit but at most 8-bit
     let (u8s, rest) = rest.split_at(ScalarSize::U8.partition_point(rest));
     let (i8s, rest) = rest.split_at(ScalarSize::NegU8.partition_point(rest));
     let (u16s, rest) = rest.split_at(ScalarSize::U16.partition_point(rest));
@@ -315,10 +331,13 @@ fn msm_signed<V: VariableBaseMSM>(
     let (i32s, rest) = rest.split_at(ScalarSize::NegU32.partition_point(rest));
     let (u64s, rest) = rest.split_at(ScalarSize::U64.partition_point(rest));
     let (i64s, rest) = rest.split_at(ScalarSize::NegU64.partition_point(rest));
+    // bigints are scalars in the range `[2^64, M-2^64)` where `M` is the modulus
     let (bigints, _) = rest.split_at(ScalarSize::BigInt.partition_point(rest));
 
     let m = V::ScalarField::MODULUS;
+    // MSM contribution of positive scalars
     let mut add_result: V;
+    // MSM contribution of negative scalars
     let mut sub_result: V;
 
     // Handle the scalars in the range {-1, 0, 1}.
@@ -339,6 +358,7 @@ fn msm_signed<V: VariableBaseMSM>(
     add_result += msm_u16::<V>(&ub, &us);
     sub_result += msm_u16::<V>(&ib, &is);
 
+    // 32 and 64 bit negative scalars are not stored in PackedIndex so calculate them again
     // Handle positive and negative u32 scalars.
     let (ub, us) = large_value_unzip(u32s, |i| (bases[i], scalars[i].as_ref()[0] as u32));
     let (ib, is) = large_value_unzip(i32s, |i| (bases[i], sub(&m, &scalars[i]) as u32));
@@ -449,22 +469,96 @@ fn msm_u64<V: VariableBaseMSM>(mut bases: &[V::MulBase], mut scalars: &[u64]) ->
         .sum()
 }
 
-// Compute msm using windowed non-adjacent form
-fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
+/// Combines per-window bucket sums into the final MSM result using Horner's method.
+pub(crate) fn combine_window_sums<V: VariableBaseMSM>(window_sums: &[V::Bucket], window_size: usize) -> V {
+    // Horner's rule
+    window_sums
+        .iter()
+        .rev()
+        .fold(V::zero(), |mut total, sum_i| {
+            // total = total * 2^window_size
+            for _ in 0..window_size {
+                total.double_in_place();
+            }
+
+            total += sum_i;
+            total
+        })
+}
+
+/// Pippenger's bucket sum: prefix-sum reduction of a window's buckets into a single point:
+/// returns `\sum_i{i * buckets[i-1]}` (bucket `i-1` holds the points whose digit is `i`),
+/// computed by walking the buckets high-to-low while maintaining a running sum.
+/// We do not normalize `buckets` to affine first: for the groups we care about
+/// (Short Weierstrass, Twisted Edwards) mixed addition saves ~4 field muls per
+/// addition, but batch normalization costs ~6 per element, so it is a net loss.
+fn reduce_buckets<V: VariableBaseMSM>(buckets: Vec<V::Bucket>) -> V::Bucket {
+    let mut running_sum = V::ZERO_BUCKET;
+    let mut res = V::ZERO_BUCKET;
+    buckets.into_iter().rev().for_each(|b| {
+        running_sum += &b;
+        res += &running_sum;
+    });
+    res
+}
+
+/// Computes one Pippenger window's contribution. `pairs` must already have the zero scalars filtered
+/// out by the caller.
+fn window_sum<'a, V, S, U, FX>(
+    pairs: impl Iterator<Item = (&'a S, &'a V::MulBase)>,
+    w_start: usize,
+    window_size: usize,
+    is_one: U,
+    extract: FX,
+) -> V::Bucket
+where
+    V: VariableBaseMSM,
+    S: 'a,
+    V::MulBase: 'a,
+    U: Fn(&S) -> bool,
+    FX: Fn(&S, usize, usize) -> u64,
+{
+    let mut res = V::ZERO_BUCKET;
+    // No "zero" bucket: digit `d` in `[1, 2^c)` maps to `buckets[d - 1]`.
+    let mut buckets = vec![V::ZERO_BUCKET; (1 << window_size) - 1];
+    for (s, base) in pairs {
+        if is_one(s) {
+            // scalar = 1 contributes just base to the first window and 0 everywhere else.
+            if w_start == 0 {
+                res += base;
+            }
+        } else {
+            // The `window_size` digit for this window. Its made of `window_size` bits starting from
+            // offset `w_start`
+            let digit = extract(s, w_start, window_size);
+            if digit != 0 {
+                buckets[(digit - 1) as usize] += base;
+            }
+        }
+    }
+    res += &reduce_buckets::<V>(buckets);
+    res
+}
+
+/// Returns `true` if the [`BigInteger`] equals the integer `1`.
+#[inline]
+fn bigint_is_one<B: BigInteger>(b: &B) -> bool {
+    let limbs = b.as_ref();
+    limbs[0] == 1 && limbs[1..].iter().all(|&l| l == 0)
+}
+
+/// Compute msm using windowed non-adjacent form
+pub fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
     bases: &[V::MulBase],
     bigints: &[<V::ScalarField as PrimeField>::BigInt],
 ) -> V {
     let size = bases.len().min(bigints.len());
     let scalars = &bigints[..size];
     let bases = &bases[..size];
-
-    let c = if size < 32 {
-        3
-    } else {
-        super::ln_without_floats(size) + 2
-    };
-
     let num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
+
+    let c = window_size(size);
+
     let digits_count = num_bits.div_ceil(c);
     #[cfg(feature = "parallel")]
     let scalar_digits = scalars
@@ -476,10 +570,34 @@ fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
         .iter()
         .flat_map(|s| make_digits(s, c, num_bits))
         .collect::<Vec<_>>();
-    let zero = V::ZERO_BUCKET;
-    let window_sums: Vec<_> = ark_std::cfg_into_iter!(0..digits_count)
+
+    // Bucket-array sizing. `make_digits` is a signed windowed encoding: every digit but the
+    // most-significant lies in `[-2^(c-1), 2^(c-1)-1]`, so indexing buckets by `|digit| - 1`
+    // needs only `2^(c-1)` slots. The most-significant window is not recentered, so its
+    // (non-negative) digit can reach `2^read_bits`, where `read_bits` is how many scalar bits
+    // that window actually reads.
+
+    // total size of all but most significant window
+    let shift = (c * (digits_count - 1)) as u32;
+
+    // The most-significant window reads `c` bits starting at `shift`, capped by the width of the
+    // `BigInt`. `msm_bigint` accepts any `BigInt`, including non-canonical values `>= MODULUS`,
+    // so size this window for the widest digit `make_digits` can emit (`2^read_bits`); a smaller
+    // (e.g. modulus-derived) bound would be indexed out of bounds by a non-canonical scalar.
+    let total_bits = 64 * <<V::ScalarField as PrimeField>::BigInt as BigInteger>::NUM_LIMBS;
+    let read_bits = c.min(total_bits - shift as usize);
+
+    // number of buckets for the most significant window, as per above
+    let ms_window_num_buckets = (1usize << (c - 1)).max(1usize << read_bits);
+    // number of buckets for all except the most significant window
+    let num_buckets = 1usize << (c - 1);
+
+    let window_sums: Vec<_> = cfg_into_iter!(0..digits_count)
         .map(|i| {
-            let mut buckets = vec![zero; 1 << c];
+            let mut buckets = vec![
+                V::ZERO_BUCKET;
+                if i == (digits_count-1) {ms_window_num_buckets} else {num_buckets}
+            ];
             for (digits, base) in scalar_digits.chunks(digits_count).zip(bases) {
                 use ark_std::cmp::Ordering;
                 let scalar = digits[i];
@@ -490,32 +608,11 @@ fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
                 }
             }
 
-            // prefix sum
-            let mut running_sum = V::ZERO_BUCKET;
-            let mut res = V::ZERO_BUCKET;
-            buckets.into_iter().rev().for_each(|b| {
-                running_sum += &b;
-                res += &running_sum;
-            });
-            res
+            reduce_buckets::<V>(buckets)
         })
         .collect();
 
-    // We store the sum for the lowest window.
-    let lowest: V = (*window_sums.first().unwrap()).into();
-
-    // We're traversing windows from high to low.
-    lowest
-        + (&window_sums[1..])
-            .iter()
-            .rev()
-            .fold(V::zero(), |mut total, sum_i| {
-                total += sum_i;
-                for _ in 0..c {
-                    total.double_in_place();
-                }
-                total
-            })
+    combine_window_sums::<V>(&window_sums, c)
 }
 
 #[cfg(feature = "parallel")]
@@ -525,7 +622,9 @@ const THREADS_PER_CHUNK: usize = 2;
 /// To improve parallelism, when number of threads is at least 2, this
 /// function will split the input into enough chunks so that each chunk
 /// can be processed with 2 threads.
-fn msm_bigint_wnaf<V: VariableBaseMSM>(
+/// Multi-scalar multiplication via windowed non-adjacent form, over the full
+/// scalar width.
+pub fn msm_bigint_wnaf<V: VariableBaseMSM>(
     mut bases: &[V::MulBase],
     mut scalars: &[<V::ScalarField as PrimeField>::BigInt],
 ) -> V {
@@ -582,192 +681,76 @@ pub fn msm_bigint<V: VariableBaseMSM>(
         return V::zero();
     }
     let size = scalars.len();
-    let scalars_and_bases_iter = scalars.iter().zip(bases).filter(|(s, _)| !s.is_zero());
-
-    let c = if size < 32 {
-        3
-    } else {
-        super::ln_without_floats(size) + 2
-    };
-
-    let one = V::ScalarField::one().into_bigint();
-    let zero = V::ZERO_BUCKET;
     let num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
+    let c = window_size(size);
 
-    // Each window is of size `c`.
-    // We divide up the bits 0..num_bits into windows of size `c`, and
-    // in parallel process each such window.
-    let window_sums: Vec<_> = ark_std::cfg_into_iter!(0..num_bits)
+    // Split each scalar into `c`-bit windows and accumulate each window's
+    // contribution.
+    let window_sums = cfg_into_iter!(0..num_bits)
         .step_by(c)
         .map(|w_start| {
-            let mut res = zero;
-            // We don't need the "zero" bucket, so we only have 2^c - 1 buckets.
-            let mut buckets = vec![zero; (1 << c) - 1];
-            // This clone is cheap, because the iterator contains just a
-            // pointer and an index into the original vectors.
-            scalars_and_bases_iter.clone().for_each(|(&scalar, base)| {
-                if scalar == one {
-                    // We only process unit scalars once in the first window.
-                    if w_start == 0 {
-                        res += base;
-                    }
-                } else {
-                    let mut scalar = scalar;
-
-                    // We right-shift by w_start, thus getting rid of the
-                    // lower bits.
-                    scalar >>= w_start as u32;
-
-                    // We mod the remaining bits by 2^{window size}, thus taking `c` bits.
-                    let scalar = scalar.as_ref()[0] % (1 << c);
-
-                    // If the scalar is non-zero, we update the corresponding
-                    // bucket.
-                    // (Recall that `buckets` doesn't have a zero bucket.)
-                    if scalar != 0 {
-                        buckets[(scalar - 1) as usize] += base;
-                    }
-                }
-            });
-
-            // Compute sum_{i in 0..num_buckets} (sum_{j in i..num_buckets} bucket[j])
-            // This is computed below for b buckets, using 2b curve additions.
-            //
-            // We could first normalize `buckets` and then use mixed-addition
-            // here, but that's slower for the kinds of groups we care about
-            // (Short Weierstrass curves and Twisted Edwards curves).
-            // In the case of Short Weierstrass curves,
-            // mixed addition saves ~4 field multiplications per addition.
-            // However normalization (with the inversion batched) takes ~6
-            // field multiplications per element,
-            // hence batch normalization is a slowdown.
-
-            // `running_sum` = sum_{j in i..num_buckets} bucket[j],
-            // where we iterate backward from i = num_buckets to 0.
-            let mut running_sum = V::ZERO_BUCKET;
-            buckets.into_iter().rev().for_each(|b| {
-                running_sum += &b;
-                res += &running_sum;
-            });
-            res
+            window_sum::<V, _, _, _>(
+                scalars
+                    .iter()
+                    .zip(bases)
+                    .filter(|(s, _)| !BigInteger::is_zero(*s)),
+                w_start,
+                c,
+                bigint_is_one,
+                |s, w_start, c| {
+                    // Take the `c` bits at `w_start`: shift them down, keep the low limb mod 2^c.
+                    let mut s = *s;
+                    s >>= w_start as u32;
+                    s.as_ref()[0] % (1u64 << c)
+                },
+            )
         })
-        .collect();
+        .collect::<Vec<_>>();
 
-    // We store the sum for the lowest window.
-    let lowest = window_sums.first().copied().map_or(V::ZERO, Into::into);
-
-    // We're traversing windows from high to low.
-    lowest
-        + &window_sums[1..]
-            .iter()
-            .rev()
-            .fold(V::zero(), |mut total, sum_i| {
-                total += sum_i;
-                for _ in 0..c {
-                    total.double_in_place();
-                }
-                total
-            })
+    combine_window_sums::<V>(&window_sums, c)
 }
 
-fn msm_serial<V: VariableBaseMSM>(
+/// Serial (unsigned) Pippenger MSM for scalars that fit in a `u64`. Like [`msm_bigint`], but
+/// drives the window loop serially: its callers (`msm_u8`/`msm_u16`/`msm_u32`/`msm_u64`)
+/// parallelize over base-chunks and invoke this once per chunk. It processes a fixed 64-bit width
+/// (`size_of::<u64>() * 8`), not the scalar type's width.
+pub fn msm_serial<V: VariableBaseMSM>(
     bases: &[V::MulBase],
     scalars: &[impl Into<u64> + Copy + Send + Sync],
 ) -> V {
-    let c = if bases.len() < 32 {
-        3
-    } else {
-        super::ln_without_floats(bases.len()) + 2
-    };
+    let size = bases.len();
+    let c = window_size(size);
 
-    let zero = V::ZERO_BUCKET;
+    // Scalars are passed as `u64`-convertible, so process the full 64-bit width
+    // (matches the original `msm_serial`).
+    let num_bits = core::mem::size_of::<u64>() * 8;
 
-    // Each window is of size `c`.
-    // We divide up the bits 0..num_bits into windows of size `c`, and
-    // in parallel process each such window.
-    let two_to_c = 1 << c;
-    let window_sums: Vec<_> = (0..(core::mem::size_of::<u64>() * 8))
+    // Split each scalar into windows and compute those scalar's contribution per window
+    let window_sums: Vec<_> = (0..num_bits)
         .step_by(c)
         .map(|w_start| {
-            let mut res = zero;
-            // We don't need the "zero" bucket, so we only have 2^c - 1 buckets.
-            let mut buckets = vec![zero; two_to_c - 1];
-            // This clone is cheap, because the iterator contains just a
-            // pointer and an index into the original vectors.
-            scalars
-                .iter()
-                .zip(bases)
-                .filter_map(|(&s, b)| {
-                    let s = s.into();
-                    (s != 0).then_some((s, b))
-                })
-                .for_each(|(scalar, base)| {
-                    if scalar == 1 {
-                        // We only process unit scalars once in the first window.
-                        if w_start == 0 {
-                            res += base;
-                        }
-                    } else {
-                        let mut scalar = scalar;
-
-                        // We right-shift by w_start, thus getting rid of the
-                        // lower bits.
-                        scalar >>= w_start as u32;
-
-                        // We mod the remaining bits by 2^{window size}, thus taking `c` bits.
-                        scalar %= two_to_c as u64;
-
-                        // If the scalar is non-zero, we update the corresponding
-                        // bucket.
-                        // (Recall that `buckets` doesn't have a zero bucket.)
-                        if scalar != 0 {
-                            buckets[(scalar - 1) as usize] += base;
-                        }
-                    }
-                });
-
-            // Compute sum_{i in 0..num_buckets} (sum_{j in i..num_buckets} bucket[j])
-            // This is computed below for b buckets, using 2b curve additions.
-            //
-            // We could first normalize `buckets` and then use mixed-addition
-            // here, but that's slower for the kinds of groups we care about
-            // (Short Weierstrass curves and Twisted Edwards curves).
-            // In the case of Short Weierstrass curves,
-            // mixed addition saves ~4 field multiplications per addition.
-            // However normalization (with the inversion batched) takes ~6
-            // field multiplications per element,
-            // hence batch normalization is a slowdown.
-
-            // `running_sum` = sum_{j in i..num_buckets} bucket[j],
-            // where we iterate backward from i = num_buckets to 0.
-            let mut running_sum = V::ZERO_BUCKET;
-            buckets.into_iter().rev().for_each(|b| {
-                running_sum += &b;
-                res += &running_sum;
-            });
-            res
+            window_sum::<V, _, _, _>(
+                scalars
+                    .iter()
+                    .zip(bases)
+                    .filter(|(&s, _)| Into::<u64>::into(s) != 0),
+                w_start,
+                c,
+                |&s| Into::<u64>::into(s) == 1,
+                |&s, w_start, c| (Into::<u64>::into(s) >> w_start) % (1u64 << c),
+            )
         })
         .collect();
 
-    // We store the sum for the lowest window.
-    let lowest = window_sums.first().copied().map_or(V::ZERO, Into::into);
-
-    // We're traversing windows from high to low.
-    lowest
-        + &window_sums[1..]
-            .iter()
-            .rev()
-            .fold(V::zero(), |mut total, sum_i| {
-                total += sum_i;
-                for _ in 0..c {
-                    total.double_in_place();
-                }
-                total
-            })
+    combine_window_sums::<V>(&window_sums, c)
 }
 
 // From: https://github.com/arkworks-rs/gemini/blob/main/src/kzg/msm/variable_base.rs#L20
-fn make_digits(a: &impl BigInteger, w: usize, num_bits: usize) -> impl Iterator<Item = i64> + '_ {
+pub(crate) fn make_digits(
+    a: &impl BigInteger,
+    w: usize,
+    num_bits: usize,
+) -> impl Iterator<Item = i64> + '_ {
     let scalar = a.as_ref();
     let radix: u64 = 1 << w;
     let window_mask: u64 = radix - 1;
@@ -807,4 +790,12 @@ fn make_digits(a: &impl BigInteger, w: usize, num_bits: usize) -> impl Iterator<
         }
         digit
     })
+}
+
+const fn window_size(num_scalars: usize) -> usize {
+    if num_scalars < 32 {
+        3
+    } else {
+        ln_without_floats(num_scalars) + 2
+    }
 }
