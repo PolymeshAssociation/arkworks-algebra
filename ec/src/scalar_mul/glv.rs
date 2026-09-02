@@ -115,10 +115,14 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
 /// result is small (below `2^128`)
 fn mul_shift_round<F: PrimeField>(k: &[u64], g: &[u64], shift_limbs: usize) -> F {
     // Accumulator wide enough for the product of `k` and `g` and one more limb
-    // Even a 6 limb scalar is of 384 bits, bigger than any scalar we have to ever deal
-    // with. `debug_assert` will catch this if such a large field is ever used.
-    let mut prod = [0u64; 16];
-    debug_assert!(k.len() + g.len() < prod.len());
+    // Even a 6 limb scalar is of 384 bits, sufficient for any scalar we have to ever deal
+    // with (supports GLV)
+    const PRODUCT_BUFFER_LIMBS: usize = 16;
+    const {
+        // Number of limbs in `g` is always 1 more than in `k`
+        assert!(<F::BigInt as BigInteger>::NUM_LIMBS + <F::BigInt as BigInteger>::NUM_LIMBS + 1 < PRODUCT_BUFFER_LIMBS);
+    }
+    let mut prod = [0u64; PRODUCT_BUFFER_LIMBS];
     for (i, &ki) in k.iter().enumerate() {
         let mut carry = 0u64;
         for (j, &gj) in g.iter().enumerate() {
