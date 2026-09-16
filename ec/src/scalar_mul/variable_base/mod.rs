@@ -547,17 +547,37 @@ fn bigint_is_one<B: BigInteger>(b: &B) -> bool {
     limbs[0] == 1 && limbs[1..].iter().all(|&l| l == 0)
 }
 
-/// Compute msm using windowed non-adjacent form
-pub fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
-    bases: &[V::MulBase],
-    bigints: &[<V::ScalarField as PrimeField>::BigInt],
-) -> V {
-    let size = bases.len().min(bigints.len());
-    let scalars = &bigints[..size];
-    let bases = &bases[..size];
-    let num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
+/// Pippenger setup for the signed-windowed (WNAF) MSM paths.
+pub(crate) struct PippengerSetup {
+    /// Window width in bits.
+    pub c: usize,
+    /// Number of windows per scalar.
+    pub digits_count: usize,
+    /// Signed digits, scalar-major: scalar `i`'s window `w` is `scalar_digits[i * digits_count + w]`.
+    pub scalar_digits: Vec<i64>,
+    /// Bucket count for the most-significant window.
+    pub ms_window_num_buckets: usize,
+    /// Bucket count for every other window.
+    pub num_buckets: usize,
+}
 
-    let c = window_size(size);
+pub(crate) fn pippenger_setup<F: PrimeField>(scalars: &[F::BigInt], size: usize) -> PippengerSetup {
+    pippenger_setup_given_window::<F>(
+        scalars,
+        size,
+        F::MODULUS_BIT_SIZE as usize,
+        window_size(size),
+    )
+}
+
+/// [`pippenger_setup`] over the low `num_bits` bits of each scalar in `c`-bit windows.
+pub(crate) fn pippenger_setup_given_window<F: PrimeField>(
+    scalars: &[F::BigInt],
+    size: usize,
+    num_bits: usize,
+    c: usize,
+) -> PippengerSetup {
+    let scalars = &scalars[..size];
 
     let digits_count = num_bits.div_ceil(c);
     #[cfg(feature = "parallel")]
@@ -584,13 +604,38 @@ pub fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
     // `BigInt`. `msm_bigint` accepts any `BigInt`, including non-canonical values `>= MODULUS`,
     // so size this window for the widest digit `make_digits` can emit (`2^read_bits`); a smaller
     // (e.g. modulus-derived) bound would be indexed out of bounds by a non-canonical scalar.
-    let total_bits = 64 * <<V::ScalarField as PrimeField>::BigInt as BigInteger>::NUM_LIMBS;
+    let total_bits = 64 * <F::BigInt as BigInteger>::NUM_LIMBS;
     let read_bits = c.min(total_bits - shift as usize);
 
     // number of buckets for the most significant window, as per above
     let ms_window_num_buckets = (1usize << (c - 1)).max(1usize << read_bits);
     // number of buckets for all except the most significant window
     let num_buckets = 1usize << (c - 1);
+
+    PippengerSetup {
+        c,
+        digits_count,
+        scalar_digits,
+        ms_window_num_buckets,
+        num_buckets,
+    }
+}
+
+/// Compute msm using windowed non-adjacent form
+pub fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
+    bases: &[V::MulBase],
+    bigints: &[<V::ScalarField as PrimeField>::BigInt],
+) -> V {
+    let size = bases.len().min(bigints.len());
+    let bases = &bases[..size];
+
+    let PippengerSetup {
+        c,
+        digits_count,
+        scalar_digits,
+        ms_window_num_buckets,
+        num_buckets,
+    } = pippenger_setup::<V::ScalarField>(bigints, size);
 
     let window_sums: Vec<_> = cfg_into_iter!(0..digits_count)
         .map(|i| {
