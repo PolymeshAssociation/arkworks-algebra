@@ -116,62 +116,17 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
     pub fn sqrt(&self, elem: &F) -> Option<F> {
         match self {
             Self::TonelliShanks {
-                two_adicity,
-                quadratic_nonresidue_to_trace,
-                trace_of_modulus_minus_one_div_two,
+                trace_of_modulus_minus_one_div_two: trace,
+                ..
+            }
+            | Self::Sarkar2020 {
+                trace_minus_one_div_two: trace,
+                ..
             } => {
-                // https://eprint.iacr.org/2012/685.pdf (page 12, algorithm 5)
-                // Actually this is just normal Tonelli-Shanks; since `P::Generator`
-                // is a quadratic non-residue, `P::ROOT_OF_UNITY = P::GENERATOR ^ t`
-                // is also a quadratic non-residue (since `t` is odd).
                 if elem.is_zero() {
                     return Some(F::zero());
                 }
-                // Try computing the square root (x at the end of the algorithm)
-                // Check at the end of the algorithm if x was a square root
-                // Begin Tonelli-Shanks
-                let mut z = *quadratic_nonresidue_to_trace;
-                let mut w = elem.pow(trace_of_modulus_minus_one_div_two);
-                let mut x = w * elem;
-                let mut b = x * &w;
-
-                let mut v = *two_adicity as usize;
-
-                while !b.is_one() {
-                    let mut k = 0usize;
-
-                    let mut b2k = b;
-                    while !b2k.is_one() {
-                        // invariant: b2k = b^(2^k) after entering this loop
-                        b2k.square_in_place();
-                        k += 1;
-                    }
-
-                    if k == (*two_adicity as usize) {
-                        // We are in the case where self^(T * 2^k) = x^(P::MODULUS - 1) = 1,
-                        // which means that no square root exists.
-                        return None;
-                    }
-                    let j = v - k;
-                    w = z;
-                    for _ in 1..j {
-                        w.square_in_place();
-                    }
-
-                    z = w.square();
-                    b *= &z;
-                    x *= &w;
-                    v = k;
-                }
-                // Is x the square root? If so, return it.
-                if x.square() == *elem {
-                    Some(x)
-                } else {
-                    // Consistency check that if no square root is found,
-                    // it is because none exists.
-                    debug_assert!(!matches!(elem.legendre(), LegendreSymbol::QuadraticResidue));
-                    None
-                }
+                self.sqrt_given_trace_power(elem, elem.pow(trace))
             },
             // Let `x ^ 2 = a mod p` is our quadratic equation where we need
             // to find `x` if one exists. Note that solutions modullo p
@@ -242,8 +197,69 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
 
                 (result.square() == *elem).then_some(result)
             },
+        }
+    }
+
+    /// Square root of a nonzero `elem` given `trace_power = elem^((T - 1) / 2)`, for the
+    /// Tonelli-Shanks and `Sarkar2020` variants.
+    fn sqrt_given_trace_power(&self, elem: &F, trace_power: F) -> Option<F> {
+        match self {
+            Self::TonelliShanks {
+                two_adicity,
+                quadratic_nonresidue_to_trace,
+                ..
+            } => {
+                // https://eprint.iacr.org/2012/685.pdf (page 12, algorithm 5)
+                // Actually this is just normal Tonelli-Shanks; since `P::Generator`
+                // is a quadratic non-residue, `P::ROOT_OF_UNITY = P::GENERATOR ^ t`
+                // is also a quadratic non-residue (since `t` is odd).
+                // Try computing the square root (x at the end of the algorithm)
+                // Check at the end of the algorithm if x was a square root
+                // Begin Tonelli-Shanks
+                let mut z = *quadratic_nonresidue_to_trace;
+                let mut w = trace_power;
+                let mut x = w * elem;
+                let mut b = x * &w;
+
+                let mut v = *two_adicity as usize;
+
+                while !b.is_one() {
+                    let mut k = 0usize;
+
+                    let mut b2k = b;
+                    while !b2k.is_one() {
+                        // invariant: b2k = b^(2^k) after entering this loop
+                        b2k.square_in_place();
+                        k += 1;
+                    }
+
+                    if k == (*two_adicity as usize) {
+                        // We are in the case where self^(T * 2^k) = x^(P::MODULUS - 1) = 1,
+                        // which means that no square root exists.
+                        return None;
+                    }
+                    let j = v - k;
+                    w = z;
+                    for _ in 1..j {
+                        w.square_in_place();
+                    }
+
+                    z = w.square();
+                    b *= &z;
+                    x *= &w;
+                    v = k;
+                }
+                // Is x the square root? If so, return it.
+                if x.square() == *elem {
+                    Some(x)
+                } else {
+                    // Consistency check that if no square root is found,
+                    // it is because none exists.
+                    debug_assert!(!matches!(elem.legendre(), LegendreSymbol::QuadraticResidue));
+                    None
+                }
+            },
             Self::Sarkar2020 {
-                trace_minus_one_div_two,
                 g0,
                 g1,
                 g2,
@@ -251,14 +267,11 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
                 inv,
                 hash_xor,
                 hash_mod,
+                ..
             } => {
                 // Ported from `zcash/pasta_curves`, `SqrtTables::sqrt_alt` and
                 // `SqrtTables::sqrt_common` (plus `SqrtHasher::hash`):
                 // <https://github.com/zcash/pasta_curves/blob/main/src/arithmetic/fields.rs>
-                if elem.is_zero() {
-                    return Some(F::zero());
-                }
-
                 // Canonical low 32 bits of a prime-field element. This variant is
                 // only ever constructed for prime fields, so the (single) base
                 // prime field element is `x` itself.
@@ -281,11 +294,10 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
                     x
                 };
 
-                // v = elem^((T-1)/2), uv = elem * v. This single exponentiation is
-                // the dominant cost and is shared with Tonelli-Shanks; the rest of
-                // the algorithm replaces the data-dependent discrete-log search
-                // with four windowed table lookups.
-                let v = elem.pow(trace_minus_one_div_two);
+                // v = elem^((T-1)/2), uv = elem * v. The exponentiation is the dominant
+                // cost; the rest replaces the data-dependent discrete-log search with
+                // four windowed table lookups.
+                let v = trace_power;
                 let uv = *elem * v;
 
                 // Project `uv * v` (which lies in the order-2^32 subgroup) down to
@@ -318,6 +330,7 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
                 // otherwise the squared candidate disagrees, signalling no root.
                 (res.square() == *elem).then_some(res)
             },
+            _ => unreachable!("only Tonelli-Shanks and Sarkar2020 start from the trace power"),
         }
     }
 }
