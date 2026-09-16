@@ -73,40 +73,53 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
     fn endomorphism_affine(p: &Affine<Self>) -> Affine<Self>;
 
     fn glv_mul_projective(p: Projective<Self>, k: Self::ScalarField) -> Projective<Self> {
-        let mut b1 = p;
-        let mut b2 = Self::endomorphism(&p);
-
-        let ((sgn_k1, k1), (sgn_k2, k2)) = Self::scalar_decomposition(k);
-
-        if !sgn_k1 {
-            b1 = -b1;
-        }
-        if !sgn_k2 {
-            b2 = -b2;
-        }
-
-        binary_scalar_mul_jsf(b1, k1, b2, k2)
+        jsf_mul_projective::<Self>(p, k)
     }
 
     fn glv_mul_affine_projective(p: Affine<Self>, k: Self::ScalarField) -> Projective<Self> {
-        let mut b1 = p;
-        let mut b2 = Self::endomorphism_affine(&p);
-
-        let ((sgn_k1, k1), (sgn_k2, k2)) = Self::scalar_decomposition(k);
-
-        if !sgn_k1 {
-            b1 = -b1;
-        }
-        if !sgn_k2 {
-            b2 = -b2;
-        }
-
-        binary_scalar_mul_jsf_affine(b1, k1, b2, k2)
+        jsf_mul_affine_projective::<Self>(p, k)
     }
 
     fn glv_mul_affine(p: Affine<Self>, k: Self::ScalarField) -> Affine<Self> {
         Self::glv_mul_affine_projective(p, k).into_affine()
     }
+}
+
+/// `k * p` by splitting `k` into GLV halves and folding their joint sparse form. The path
+/// [`GLVConfig::glv_mul_projective`] took before the Eisenstein recoding, kept as its fallback
+/// and its test oracle.
+pub fn jsf_mul_projective<P: GLVConfig>(p: Projective<P>, k: P::ScalarField) -> Projective<P> {
+    let mut b1 = p;
+    let mut b2 = P::endomorphism(&p);
+
+    let ((sgn_k1, k1), (sgn_k2, k2)) = P::scalar_decomposition(k);
+
+    if !sgn_k1 {
+        b1 = -b1;
+    }
+    if !sgn_k2 {
+        b2 = -b2;
+    }
+
+    binary_scalar_mul_jsf(b1, k1, b2, k2)
+}
+
+/// [`jsf_mul_projective`] for an affine base, which lets the single-base digits use mixed
+/// additions.
+pub fn jsf_mul_affine_projective<P: GLVConfig>(p: Affine<P>, k: P::ScalarField) -> Projective<P> {
+    let mut b1 = p;
+    let mut b2 = P::endomorphism_affine(&p);
+
+    let ((sgn_k1, k1), (sgn_k2, k2)) = P::scalar_decomposition(k);
+
+    if !sgn_k1 {
+        b1 = -b1;
+    }
+    if !sgn_k2 {
+        b2 = -b2;
+    }
+
+    binary_scalar_mul_jsf_affine(b1, k1, b2, k2)
 }
 
 /// Computes `round((k * g) / 2^(64 * shift_limbs))`, rounding up, and returns
