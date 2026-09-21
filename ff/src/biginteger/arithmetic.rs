@@ -55,9 +55,19 @@ pub fn sbb_for_sub_with_borrow(a: &mut u64, b: u64, borrow: u8) -> u8 {
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
-        let tmp = (1u128 << 64) + (*a as u128) - (b as u128) - (borrow as u128);
-        *a = tmp as u64;
-        u8::from(tmp >> 64 == 0)
+        // let tmp = (1u128 << 64) + (*a as u128) - (b as u128) - (borrow as u128);
+        // *a = tmp as u64;
+        // u8::from(tmp >> 64 == 0)
+
+        // `overflowing_sub` leads to the CPU's own subtract and borrow.
+        // Reaches the same result without the 128-bit intermediate a single wide
+        // subtraction would make the compiler emulate.
+        let (temp, borrow_b) = (*a).overflowing_sub(b);
+        let (temp, borrow_carry) = temp.overflowing_sub(borrow as u64);
+        *a = temp;
+        // Only one of the borrow flags could be true, as `borrow_b` is false when `a >= b`,
+        // else `borrow_carry` is false since `temp >= 1`
+        u8::from(borrow_b | borrow_carry)
     }
 }
 

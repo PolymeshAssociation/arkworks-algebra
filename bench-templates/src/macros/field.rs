@@ -152,6 +152,22 @@ macro_rules! field_common {
                         + field_elements_right[j] * field_elements_right[i]
                 })
             });
+            let ip_left = (0..4096).map(|_| <$F>::rand(&mut rng)).collect::<Vec<_>>();
+            let ip_right = (0..4096).map(|_| <$F>::rand(&mut rng)).collect::<Vec<_>>();
+            for len in [256usize, 4096] {
+                arithmetic.bench_function(format!("Inner product of size {len}"), |b| {
+                    b.iter(|| <$F>::inner_product(&ip_left[..len], &ip_right[..len]))
+                });
+                arithmetic.bench_function(format!("Naive inner product of size {len}"), |b| {
+                    b.iter(|| {
+                        ip_left[..len]
+                            .iter()
+                            .zip(&ip_right[..len])
+                            .map(|(a, b)| *a * b)
+                            .sum::<$F>()
+                    })
+                });
+            }
         }
 
         fn serialization(c: &mut $crate::criterion::Criterion) {

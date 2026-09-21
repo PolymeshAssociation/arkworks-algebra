@@ -1,6 +1,10 @@
 use super::{bucket::Bucket, Affine, SWCurveConfig};
 use crate::{
-    scalar_mul::{variable_base::VariableBaseMSM, ScalarMul},
+    scalar_mul::{
+        sw_pippenger,
+        variable_base::{msm_bigint_wnaf, VariableBaseMSM},
+        ScalarMul,
+    },
     AffineRepr, CurveGroup, PrimeGroup,
 };
 use ark_ff::{fields::Field, AdditiveGroup, PrimeField, ToConstraintField, UniformRand};
@@ -24,6 +28,11 @@ use educe::Educe;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use zeroize::Zeroize;
+
+/// Fewest points worth converting to affine across threads. The conversion is three multiplies
+/// and a square each, against a fixed rayon fork and join, so short slices lose.
+#[cfg(feature = "parallel")]
+pub(super) const MIN_PARALLEL_POINTS: usize = 4096;
 
 /// Jacobian coordinates for a point on an elliptic curve in short Weierstrass
 /// form, over the base field `P::BaseField`. This struct implements arithmetic
@@ -303,19 +312,20 @@ impl<P: SWCurveConfig> CurveGroup for Projective<P> {
         let mut z_s = v.iter().map(|g| g.z).collect::<Vec<_>>();
         ark_ff::batch_inversion(&mut z_s);
 
-        // Perform affine transformations
-        ark_std::cfg_iter!(v)
-            .zip(z_s)
-            .map(|(g, z)| match g.is_zero() {
-                true => Affine::identity(),
-                false => {
-                    let z2 = z.square();
-                    let x = g.x * z2;
-                    let y = g.y * z2 * z;
-                    Affine::new_unchecked(x, y)
-                },
-            })
-            .collect()
+        let normalize = |(g, z): (&Self, P::BaseField)| match g.is_zero() {
+            true => Affine::identity(),
+            false => {
+                let z2 = z.square();
+                let x = g.x * z2;
+                let y = g.y * z2 * z;
+                Affine::new_unchecked(x, y)
+            },
+        };
+        #[cfg(feature = "parallel")]
+        if v.len() >= MIN_PARALLEL_POINTS {
+            return v.par_iter().zip(z_s).map(normalize).collect();
+        }
+        v.iter().zip(z_s).map(normalize).collect()
     }
 }
 
@@ -659,6 +669,20 @@ impl<P: SWCurveConfig> VariableBaseMSM for Projective<P> {
 
     fn msm(bases: &[Self::MulBase], bigints: &[Self::ScalarField]) -> Result<Self, usize> {
         P::msm(bases, bigints)
+    }
+
+    fn try_msm_small(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Option<Self> {
+        P::try_msm_small(bases, scalars)
+    }
+
+    fn msm_bigint_full_width(
+        bases: &[Self::MulBase],
+        bigints: &[<Self::ScalarField as PrimeField>::BigInt],
+    ) -> Self {
+        if bases.len().min(bigints.len()) >= sw_pippenger::BATCH_AFFINE_MIN_POINTS {
+            return sw_pippenger::msm_batch_affine_bigint::<P>(bases, bigints);
+        }
+        msm_bigint_wnaf(bases, bigints)
     }
 }
 

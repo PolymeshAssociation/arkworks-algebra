@@ -430,6 +430,33 @@ impl<P: SWCurveConfig> Valid for Affine<P> {
             Err(SerializationError::InvalidData)
         }
     }
+
+    fn batch_check<'a>(
+        batch: impl Iterator<Item = &'a Self> + Send,
+    ) -> Result<(), SerializationError>
+    where
+        Self: 'a,
+    {
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            use crate::models::short_weierstrass::group::MIN_PARALLEL_POINTS;
+            // Reuse normalize_batch's floor
+            let pts = batch.collect::<Vec<_>>();
+            if pts.len() < MIN_PARALLEL_POINTS {
+                pts.iter().try_for_each(|e| e.check())
+            } else {
+                pts.into_par_iter().try_for_each(|e| e.check())
+            }
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            for e in batch {
+                e.check()?;
+            }
+            Ok(())
+        }
+    }
 }
 
 impl<P: SWCurveConfig> CanonicalDeserialize for Affine<P> {
