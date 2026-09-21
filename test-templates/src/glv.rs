@@ -305,3 +305,113 @@ pub fn fast_decomposition_throughput<P: ark_ec::short_weierstrass::SWCurveConfig
         },
     );
 }
+
+/// Every table entry, in every rotation and sign, must be the native multiple of the base
+/// point that its digit code names.
+pub fn eisenstein_orbit_points_match_native<P: GLVConfig>() {
+    use ark_ec::scalar_mul::glv::eisenstein::{digit_scalar, Table};
+    let rng = &mut test_rng();
+    for _ in 0..8 {
+        let p = Projective::<P>::rand(rng);
+        let table = Table::<P>::new(&p);
+        for code in 1..=48u8 {
+            assert_eq!(
+                table.digit_point(code),
+                (p * digit_scalar::<P>(code)).into_affine(),
+                "digit {code}"
+            );
+        }
+    }
+}
+
+/// The Eisenstein ladder must return exactly what the joint sparse form it replaced returns,
+/// on random scalars and on the boundary values.
+pub fn eisenstein_matches_jsf<P: GLVConfig>() {
+    use ark_ec::scalar_mul::glv::{
+        eisenstein::Decomposed, jsf_mul_affine_projective, jsf_mul_projective,
+    };
+    let rng = &mut test_rng();
+    let p = Projective::<P>::rand(rng);
+    let affine = p.into_affine();
+
+    let mut cases = ark_std::vec![
+        P::ScalarField::zero(),
+        P::ScalarField::one(),
+        -P::ScalarField::one(),
+        P::LAMBDA,
+        -P::LAMBDA,
+        P::LAMBDA * P::LAMBDA,
+    ];
+    let mut two_k = P::ScalarField::one();
+    for _ in 0..P::ScalarField::MODULUS_BIT_SIZE {
+        cases.push(two_k);
+        two_k.double_in_place();
+    }
+    // Either side of the 128-bit width where `Decomposed::new` stops taking the scalar as its
+    // own half and decomposes instead.
+    let mut two_128 = P::ScalarField::one();
+    for _ in 0..128 {
+        two_128.double_in_place();
+    }
+    for k in [
+        P::ScalarField::from(5u64),
+        P::ScalarField::from(1023u64),
+        two_128 - P::ScalarField::one(),
+        two_128,
+        two_128 + P::ScalarField::one(),
+    ] {
+        cases.push(k);
+        cases.push(-k);
+    }
+    cases.extend((0..2000).map(|_| P::ScalarField::rand(rng)));
+
+    let mut fallbacks = 0;
+    for k in cases {
+        if Decomposed::<P>::new(k).is_none() {
+            fallbacks += 1;
+        }
+        assert_eq!(P::glv_mul_projective(p, k), jsf_mul_projective::<P>(p, k));
+        assert_eq!(
+            P::glv_mul_affine_projective(affine, k),
+            jsf_mul_affine_projective::<P>(affine, k)
+        );
+    }
+    // A GLV half is about half the scalar field's width and the recoding holds 128 bits, so
+    // only fields up to 256 bits reach the ladder at all; wider ones fall back for every
+    // scalar and the equality assertions above are what check that path.
+    if P::ScalarField::MODULUS_BIT_SIZE <= 256 {
+        assert_eq!(fallbacks, 0, "half-width bound missed {fallbacks} times");
+    }
+}
+
+/// One decomposition against many tables, and the batched same-scalar API against the
+/// per-point path.
+pub fn eisenstein_same_scalar_batch<P: GLVConfig>() {
+    use ark_ec::scalar_mul::glv::eisenstein::glv_mul_same_scalar;
+    let rng = &mut test_rng();
+    // 9 and 10 straddle `TABLE_BATCH_AFFINE_MIN_POINTS` once the identity lane is dropped, and
+    // the identities sit on both sides of the live run. 33 stays one below the batch-affine ladder
+    // gate after two identity lanes (31 live); 40 and 64 clear it (38 and 62 live), so this curve's
+    // order and lambda exercise the synchronized affine kernel, not only the fallback.
+    for n in [0usize, 1, 2, 3, 8, 9, 10, 33, 40, 64] {
+        let mut points: Vec<_> = (0..n).map(|_| Projective::<P>::rand(rng).into_affine()).collect();
+        if n > 2 {
+            points[1] = Affine::<P>::zero();
+            points[2] = points[0];
+            points[n - 1] = Affine::<P>::zero();
+        }
+        for k in [
+            P::ScalarField::rand(rng),
+            P::ScalarField::zero(),
+            P::ScalarField::one(),
+            -P::ScalarField::one(),
+        ] {
+            let batched = glv_mul_same_scalar::<P>(&points, k);
+            let expected: Vec<_> = points
+                .iter()
+                .map(|p| P::glv_mul_affine_projective(*p, k))
+                .collect();
+            assert_eq!(batched, expected, "n = {n}");
+        }
+    }
+}

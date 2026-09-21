@@ -1,5 +1,5 @@
 use crate::{fq::Fq, fr::Fr};
-use ark_ec::{models::CurveConfig, scalar_mul::glv::{GLVConfig, GLVFastDecomp}, short_weierstrass::{self as sw, SWCurveConfig, SWSerializationXNonZero}};
+use ark_ec::{models::CurveConfig, scalar_mul::glv::{try_glv_msm_small, GLVConfig, GLVFastDecomp}, short_weierstrass::{self as sw, SWCurveConfig, SWSerializationXNonZero}};
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
 use ark_serialize::{Compress, SerializationError, Validate};
 use ark_std::io::{Read, Write};
@@ -55,6 +55,11 @@ impl SWCurveConfig for VestaConfig {
     fn mul_affine(base: &sw::Affine<Self>, scalar: &[u64]) -> sw::Projective<Self> {
         let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
         <Self as GLVConfig>::glv_mul_affine_projective(*base, s)
+    }
+
+    #[inline]
+    fn try_msm_small(bases: &[sw::Affine<Self>], scalars: &[Self::ScalarField]) -> Option<sw::Projective<Self>> {
+        try_glv_msm_small::<Self>(bases, scalars)
     }
     
     #[inline]

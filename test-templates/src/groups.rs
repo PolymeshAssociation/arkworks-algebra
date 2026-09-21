@@ -188,6 +188,11 @@ macro_rules! __test_group {
     };
     ($group:ty; msm) => {
         #[test]
+        fn test_var_base_msm_small() {
+            $crate::msm::test_var_base_msm_small::<$group>();
+        }
+
+        #[test]
         fn test_var_base_msm() {
             $crate::msm::test_var_base_msm::<$group>();
         }
@@ -285,6 +290,11 @@ macro_rules! __test_group {
     };
     ($group:ty; sw) => {
         $crate::__test_group!($group; curve);
+
+        #[test]
+        fn test_batch_affine_msm() {
+            $crate::msm::test_batch_affine_msm::<<$group as CurveGroup>::Config>();
+        }
 
         #[test]
         fn test_sw_properties() {
@@ -441,6 +451,13 @@ macro_rules! __test_group {
             $crate::glv::jsf_affine_vs_projective::<Config>();
             $crate::glv::jsf_vs_shamir::<Config>();
             $crate::glv::fast_decomposition_throughput::<Config>();
+        }
+
+        #[test]
+        fn test_eisenstein_ladder() {
+            $crate::glv::eisenstein_orbit_points_match_native::<Config>();
+            $crate::glv::eisenstein_matches_jsf::<Config>();
+            $crate::glv::eisenstein_same_scalar_batch::<Config>();
         }
     }
 }

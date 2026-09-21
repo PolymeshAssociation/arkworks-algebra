@@ -1,6 +1,10 @@
 pub mod glv;
 pub mod wnaf;
 
+pub mod sw_pippenger;
+
+pub mod fixed_base;
+
 pub mod variable_base;
 
 use crate::{AffineRepr, PrimeGroup};
