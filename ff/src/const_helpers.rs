@@ -31,7 +31,7 @@ macro_rules! const_for {
 
 /// A buffer to hold values of size 2 * N. This is mostly
 /// a hack that's necessary until `generic_const_exprs` is stable.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 #[repr(C, align(8))]
 pub(super) struct MulBuffer<const N: usize> {
     pub(super) b0: [u64; N],

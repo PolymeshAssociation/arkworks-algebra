@@ -19,12 +19,8 @@ pub(crate) mod utils;
 #[proc_macro]
 pub fn to_sign_and_limbs(input: TokenStream) -> TokenStream {
     let num = utils::parse_string(input).expect("expected decimal string");
-    let (is_positive, limbs) = utils::str_to_limbs(&num);
-
-    let limbs: String = limbs.join(", ");
-    let limbs_and_sign = format!("({is_positive}") + ", [" + &limbs + "])";
-    let tuple: Expr = syn::parse_str(&limbs_and_sign).unwrap();
-    quote::quote!(#tuple).into()
+    let (is_positive, limbs) = utils::str_to_limbs_u64(&num);
+    quote::quote!((#is_positive, [#(#limbs),*])).into()
 }
 
 /// Derive the `MontConfig` trait.
