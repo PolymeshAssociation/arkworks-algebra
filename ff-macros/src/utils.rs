@@ -21,6 +21,7 @@ pub(crate) fn parse_string(input: TokenStream) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn str_to_limbs(num: &str) -> (bool, Vec<String>) {
     let (sign, limbs) = str_to_limbs_u64(num);
     (sign, limbs.into_iter().map(|l| format!("{l}u64")).collect())

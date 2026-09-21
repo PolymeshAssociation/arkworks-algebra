@@ -326,6 +326,16 @@ impl<const N: usize> BigInt<N> {
         let two_pow_n_times_64_square = crate::const_helpers::R2Buffer([0u64; N], [0u64; N], 1);
         const_modulo!(two_pow_n_times_64_square, self)
     }
+
+    /// Computes `2^{64(2N - 1)} mod self`: the weight of the top limb of a `2N`-limb product.
+    #[doc(hidden)]
+    #[inline]
+    pub const fn montgomery_b_high(&self) -> Self {
+        let mut high = [0u64; N];
+        high[N - 1] = 1;
+        let two_pow_2n_minus_1_times_64 = crate::const_helpers::R2Buffer([0u64; N], high, 0);
+        const_modulo!(two_pow_2n_minus_1_times_64, self)
+    }
 }
 
 impl<const N: usize> BigInteger for BigInt<N> {

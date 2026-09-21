@@ -11,6 +11,10 @@
 #![deny(unsafe_code)]
 #![doc = include_str!("../README.md")]
 
+// The `MontConfig` derive emits `ark_ff::` paths; unit tests define their own fields.
+#[cfg(test)]
+extern crate self as ark_ff;
+
 #[macro_use]
 pub mod biginteger;
 pub use biginteger::{

@@ -87,3 +87,76 @@ impl CanonicalDeserialize for CompactU64 {
         Ok(Self(len))
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ark_std::vec::Vec;
+
+    /// SCALE compact vectors either side of each of the four mode boundaries. These are the fork's
+    /// wire format, so they are spelled out rather than derived from the encoder under test, and
+    /// are checkable against the mode table in
+    /// [`parity_scale_codec::Compact`](https://docs.rs/parity-scale-codec/3/parity_scale_codec/struct.Compact.html).
+    const VECTORS: &[(u64, &[u8])] = &[
+        (0, &[0x00]),
+        (1, &[0x04]),
+        (42, &[0xa8]),
+        (63, &[0xfc]),
+        (64, &[0x01, 0x01]),
+        (69, &[0x15, 0x01]),
+        (16383, &[0xfd, 0xff]),
+        (16384, &[0x02, 0x00, 0x01, 0x00]),
+        (1073741823, &[0xfe, 0xff, 0xff, 0xff]),
+        (1073741824, &[0x03, 0x00, 0x00, 0x00, 0x40]),
+        (u64::MAX, &[0x13, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+    ];
+
+    #[test]
+    fn compact_encoding_works() {
+        for (value, expected) in VECTORS {
+            for compress in [Compress::Yes, Compress::No] {
+                let mut bytes = Vec::new();
+                CompactU64(*value)
+                    .serialize_with_mode(&mut bytes, compress)
+                    .unwrap();
+                assert_eq!(bytes, *expected, "value = {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn serialized_size_is_exact() {
+        for (value, expected) in VECTORS {
+            assert_eq!(
+                CompactU64(*value).serialized_size(Compress::Yes),
+                expected.len(),
+                "value = {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn round_trips() {
+        for (value, _) in VECTORS {
+            let mut bytes = Vec::new();
+            CompactU64(*value)
+                .serialize_with_mode(&mut bytes, Compress::Yes)
+                .unwrap();
+            let read =
+                CompactU64::deserialize_with_mode(&bytes[..], Compress::Yes, Validate::Yes).unwrap();
+            assert_eq!(read.0, *value);
+        }
+    }
+
+    #[test]
+    fn slice_works() {
+        let payload = [7u8; 69];
+        let mut bytes = Vec::new();
+        payload
+            .as_slice()
+            .serialize_with_mode(&mut bytes, Compress::Yes)
+            .unwrap();
+        // Check in `VECTORS`
+        assert_eq!(&bytes[..2], &[0x15, 0x01]);
+        assert_eq!(&bytes[2..], &payload);
+    }
+}

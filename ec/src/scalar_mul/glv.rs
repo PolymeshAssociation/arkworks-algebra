@@ -11,6 +11,8 @@ use num_bigint::{BigInt, BigUint, Sign};
 use num_integer::Integer;
 use num_traits::{One, Signed};
 
+pub mod eisenstein;
+
 /// Precomputed constants that let a curve decompose a scalar without any `num_bigint` (heap)
 /// arithmetic.
 /// With `N = ScalarField::BigInt::NUM_LIMBS` and `M = 64 * (N + 2)`, the
@@ -72,12 +74,16 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
 
     fn endomorphism_affine(p: &Affine<Self>) -> Affine<Self>;
 
+    /// `k * p` through the Eisenstein joint recoding of [`eisenstein`], with
+    /// [`jsf_mul_projective`] as the fallback and the test oracle.
     fn glv_mul_projective(p: Projective<Self>, k: Self::ScalarField) -> Projective<Self> {
-        jsf_mul_projective::<Self>(p, k)
+        eisenstein::eisenstein_mul_projective::<Self>(p, k)
     }
 
+    /// `k * p` through the Eisenstein joint recoding of [`eisenstein`], with
+    /// [`jsf_mul_affine_projective`] as the fallback and the test oracle.
     fn glv_mul_affine_projective(p: Affine<Self>, k: Self::ScalarField) -> Projective<Self> {
-        jsf_mul_affine_projective::<Self>(p, k)
+        eisenstein::eisenstein_mul_affine::<Self>(p, k)
     }
 
     fn glv_mul_affine(p: Affine<Self>, k: Self::ScalarField) -> Affine<Self> {
@@ -122,6 +128,35 @@ pub fn jsf_mul_affine_projective<P: GLVConfig>(p: Affine<P>, k: P::ScalarField) 
     binary_scalar_mul_jsf_affine(b1, k1, b2, k2)
 }
 
+/// Largest multi scalar multiplication routed to [`eisenstein::eisenstein_msm`]. The bucket
+/// algorithm pays 255 projective doublings and 85 window reductions whatever `n` is, which the
+/// Straus ladder replaces by about 126 doublings shared across the sum, so it wins while `n` is
+/// small and falls behind as the per-point work grows. On Pallas (`straus` in `msm_small_bench`)
+/// the two tie around `n = 96`; 64 keeps a margin below that. Re-measure before changing it.
+///
+/// Zakura routes the same way from `try_multiexp` into `strauss_multiexp`,
+/// <https://github.com/zakura-core/common/blob/98846ee/crates/pasta_curves/src/glv.rs#L1199-L1236>;
+/// their crossover data is in [PR #143](https://github.com/zakura-core/common/pull/143).
+pub const SMALL_MSM_MAX: usize = 64;
+
+/// `sum(bases_i * scalars_i)` for the sizes where a shared-doubling ladder beats the bucket
+/// algorithm: one GLV multiplication at `n = 1`, [`eisenstein::eisenstein_msm`] up to
+/// [`SMALL_MSM_MAX`]. Declines with `None` above that, and when a decomposition misses the
+/// Eisenstein recoding's bound, which sends the caller back to
+/// [`VariableBaseMSM::msm_bigint`](crate::VariableBaseMSM). Both are cases where this ladder has
+/// nothing to offer rather than cases where the sum is undefined.
+pub fn try_glv_msm_small<P: GLVConfig>(
+    bases: &[Affine<P>],
+    scalars: &[P::ScalarField],
+) -> Option<Projective<P>> {
+    match bases.len().min(scalars.len()) {
+        0 => Some(Projective::zero()),
+        1 => Some(P::glv_mul_affine_projective(bases[0], scalars[0])),
+        n if n <= SMALL_MSM_MAX => eisenstein::eisenstein_msm::<P>(bases, scalars),
+        _ => None,
+    }
+}
+
 /// Computes `round((k * g) / 2^(64 * shift_limbs))`, rounding up, and returns
 /// it as a scalar field element. `k` is the little-endian canonical limbs of the scalar and
 /// `g` is a precomputed multiplier; both are read as unsigned integers. The
@@ -133,7 +168,10 @@ fn mul_shift_round<F: PrimeField>(k: &[u64], g: &[u64], shift_limbs: usize) -> F
     const PRODUCT_BUFFER_LIMBS: usize = 16;
     const {
         // Number of limbs in `g` is always 1 more than in `k`
-        assert!(<F::BigInt as BigInteger>::NUM_LIMBS + <F::BigInt as BigInteger>::NUM_LIMBS + 1 < PRODUCT_BUFFER_LIMBS);
+        assert!(
+            <F::BigInt as BigInteger>::NUM_LIMBS + <F::BigInt as BigInteger>::NUM_LIMBS + 1
+                < PRODUCT_BUFFER_LIMBS
+        );
     }
     let mut prod = [0u64; PRODUCT_BUFFER_LIMBS];
     for (i, &ki) in k.iter().enumerate() {

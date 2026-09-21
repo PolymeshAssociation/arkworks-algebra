@@ -20,10 +20,12 @@ ark-std = { workspace = true }
 ark-serialize = { workspace = true }
 
 [dev-dependencies]
+rayon = "1"
 ark-relations = { workspace = true }
 ark-algebra-test-templates = { workspace = true }
 ark-algebra-bench-templates = { workspace = true }
 ark-curve-constraint-tests = { path = "../curve-constraint-tests" }
+ark-vesta = { path = "../vesta", default-features = false }
 
 [features]
 default = [ "curve" ]
@@ -34,6 +36,7 @@ scalar_field = []
 base_field = []
 r1cs = [ "base_field", "ark-r1cs-std" ]
 asm = [ "ark-ff/asm" ]
+parallel = [ "std", "ark-ff/parallel", "ark-ec/parallel", "ark-std/parallel" ]
 
 [[bench]]
 name = "pallas"

@@ -1,6 +1,6 @@
 use ark_ec::{
     models::CurveConfig,
-    scalar_mul::glv::GLVConfig,
+    scalar_mul::glv::{try_glv_msm_small, GLVConfig},
     short_weierstrass::{self as sw, SWCurveConfig},
 };
 use ark_ff::{AdditiveGroup, Field, MontFp, Zero};
@@ -58,6 +58,11 @@ impl SWCurveConfig for Config {
     fn mul_affine(base: &Affine, scalar: &[u64]) -> Projective {
         let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
         <Self as GLVConfig>::glv_mul_affine_projective(*base, s)
+    }
+
+    #[inline]
+    fn try_msm_small(bases: &[Affine], scalars: &[Self::ScalarField]) -> Option<Projective> {
+        try_glv_msm_small::<Self>(bases, scalars)
     }
 }
 

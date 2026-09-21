@@ -111,6 +111,18 @@ pub trait SWCurveConfig: super::CurveConfig {
         double_and_add_affine(base, scalar)
     }
 
+    /// Offers a tiny multi scalar multiplication to a shared-doubling ladder, tried by
+    /// [`VariableBaseMSM::msm_unchecked`] before the bucket algorithm. `None` declines and the
+    /// caller carries on to the generic path. `bases` and `scalars` are the same length. GLV
+    /// curves supply a ladder through
+    /// [`try_glv_msm_small`](crate::scalar_mul::glv::try_glv_msm_small).
+    fn try_msm_small(
+        _bases: &[Affine<Self>],
+        _scalars: &[Self::ScalarField],
+    ) -> Option<Projective<Self>> {
+        None
+    }
+
     /// Default implementation for multi scalar multiplication
     fn msm(
         bases: &[Affine<Self>],

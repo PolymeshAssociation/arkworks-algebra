@@ -1,4 +1,4 @@
-use super::{Fp, FpConfig};
+use super::{deferred, modinv62, Fp, FpConfig};
 use crate::{
     biginteger::arithmetic as fa, BigInt, BigInteger, PrimeField, SqrtPrecomputation, Zero,
 };
@@ -26,6 +26,15 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     /// INV = -MODULUS^{-1} mod 2^64
     const INV: u64 = inv::<Self, N>();
 
+    /// `2^{64(2N - 1)} mod Self::MODULUS`: the residue of the top limb of a `2N`-limb product,
+    /// used to fold a [`MontAccumulator`] back into Montgomery-reducible range.
+    const B_HIGH: BigInt<N> = Self::MODULUS.montgomery_b_high();
+
+    /// Whether a [`MontAccumulator`] can be folded back below `R * MODULUS`, which is what
+    /// Montgomery reduction needs. The folded value is below `2^{64(2N-1)} + 2^65 * MODULUS`,
+    /// so this asks for `N >= 2` and `MODULUS > 2^{64(N-1)+1}`.
+    const CAN_DEFER: bool = N >= 2 && Self::MODULUS.const_num_bits() > 64 * (N as u32 - 1) + 2;
+
     /// A multiplicative generator of the field.
     /// `Self::GENERATOR` is an element having multiplicative order
     /// `Self::MODULUS - 1`.
@@ -37,7 +46,6 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     /// This optimization applies if
     /// (a) `Self::MODULUS[N-1] < u64::MAX >> 1`, and
     /// (b) the bits of the modulus are not all 1.
-    #[doc(hidden)]
     const CAN_USE_NO_CARRY_MUL_OPT: bool = can_use_no_carry_mul_optimization::<Self, N>();
 
     /// Can we use the no-carry optimization for squaring
@@ -238,9 +246,9 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
             *a = res;
 
             if Self::MODULUS_HAS_SPARE_BIT {
-                a.subtract_modulus_with_carry(carry);
-            } else {
                 a.subtract_modulus();
+            } else {
+                a.subtract_modulus_with_carry(carry);
             }
         }
     }
@@ -316,7 +324,15 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         }
     }
 
+    /// Computes `a^{-1}` if `a` is not zero.
+    ///
+    /// Variable-time in `a`. For 4-limb fields this is the Bernstein-Yang 62-bit divstep
+    /// inversion (safegcd); otherwise the binary extended Euclidean algorithm of
+    /// `Fp::bea_inverse`, which is also the divstep path's test oracle.
     fn inverse(a: &Fp<MontBackend<Self, N>, N>) -> Option<Fp<MontBackend<Self, N>, N>> {
+        if N == 4 {
+            return modinv62::invert::<Self, N>(&a.0).map(Fp::new_unchecked);
+        }
         a.bea_inverse()
     }
 
@@ -352,6 +368,15 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         }
 
         BigInt::new(r)
+    }
+
+    /// `sum(a_i * b_i)` with one Montgomery reduction for the whole sum instead of one per
+    /// term. Worth it only for long sums; [`Self::sum_of_products`] stays the two-term path.
+    fn inner_product(
+        a: &[Fp<MontBackend<Self, N>, N>],
+        b: &[Fp<MontBackend<Self, N>, N>],
+    ) -> Fp<MontBackend<Self, N>, N> {
+        deferred::inner_product::<Self, N>(a, b)
     }
 
     #[unroll_for_loops(12)]
@@ -640,6 +665,10 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
         T::sum_of_products(a, b)
     }
 
+    fn inner_product(a: &[Fp<Self, N>], b: &[Fp<Self, N>]) -> Fp<Self, N> {
+        T::inner_product(a, b)
+    }
+
     #[inline]
     fn square_in_place(a: &mut Fp<Self, N>) {
         T::square_in_place(a)
@@ -864,7 +893,8 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
 
 #[cfg(test)]
 mod test {
-    use ark_std::{str::FromStr, vec::*};
+    use super::{Fp, MontBackend, MontConfig};
+    use ark_std::{str::FromStr, test_rng, vec::*, UniformRand};
     use ark_test_curves::secp256k1::Fr;
     use num_bigint::{BigInt, BigUint, Sign};
 
@@ -901,5 +931,53 @@ mod test {
 
         let sign_is_positive = sign != Sign::Minus;
         (sign_is_positive, limbs)
+    }
+
+    /// secp256k1's base field, which has no spare bit. Implemented by hand, so `mul_assign` is
+    /// the trait default's CIOS fallback rather than derive-generated code.
+    struct NoSpareBitConfig;
+
+    impl MontConfig<4> for NoSpareBitConfig {
+        const MODULUS: crate::BigInt<4> = BigInt!(
+            "115792089237316195423570985008687907853269984665640564039457584007908834671663"
+        );
+        const GENERATOR: Fp<MontBackend<Self, 4>, 4> = Fp::new(BigInt!("3"));
+        const TWO_ADIC_ROOT_OF_UNITY: Fp<MontBackend<Self, 4>, 4> = Fp::new(BigInt!(
+            "115792089237316195423570985008687907853269984665640564039457584007908834671662"
+        ));
+    }
+
+    /// `2^127 - 1`. It has a spare bit, but every lower bit is set, so it also misses the
+    /// no-carry optimization and reaches the CIOS fallback.
+    struct AllOnesConfig;
+
+    impl MontConfig<2> for AllOnesConfig {
+        const MODULUS: crate::BigInt<2> = BigInt!("170141183460469231731687303715884105727");
+        const GENERATOR: Fp<MontBackend<Self, 2>, 2> = Fp::new(BigInt!("43"));
+        const TWO_ADIC_ROOT_OF_UNITY: Fp<MontBackend<Self, 2>, 2> =
+            Fp::new(BigInt!("170141183460469231731687303715884105726"));
+    }
+
+    /// Checks the default `mul_assign` on Montgomery representations `a, b < p` against
+    /// `a * b * R^{-1} mod p`, and that the result is canonical.
+    fn check_default_mul_assign<T: MontConfig<N>, const N: usize>() {
+        assert!(!T::CAN_USE_NO_CARRY_MUL_OPT);
+        let p = BigUint::from(T::MODULUS);
+        let r_inv = (BigUint::from(1u8) << (64 * N)).modpow(&(&p - 2u8), &p);
+        let mut rng = test_rng();
+        for _ in 0..1000 {
+            let a = Fp::<MontBackend<T, N>, N>::rand(&mut rng);
+            let b = Fp::<MontBackend<T, N>, N>::rand(&mut rng);
+            let c = a * b;
+            assert!(c.0 < T::MODULUS);
+            let expected = BigUint::from(a.0) * BigUint::from(b.0) * &r_inv % &p;
+            assert_eq!(BigUint::from(c.0), expected);
+        }
+    }
+
+    #[test]
+    fn test_default_mul_assign_cios_fallback() {
+        check_default_mul_assign::<NoSpareBitConfig, 4>();
+        check_default_mul_assign::<AllOnesConfig, 2>();
     }
 }

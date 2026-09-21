@@ -271,6 +271,42 @@ macro_rules! __test_field {
             }
         }
 
+        /// The fixed-window `pow` must agree with the binary square-and-multiply it replaces
+        /// above 128 bits, at every exponent length and shape.
+        #[test]
+        pub fn test_pow_windowed() {
+            use ark_ff::{pow_binary, pow_windowed, significant_bits};
+            use ark_std::UniformRand;
+            let mut rng = test_rng();
+            for bits in [1usize, 2, 63, 64, 65, 127, 128, 129, 191, 222, 255, 256, 257] {
+                let limbs = bits.div_ceil(64);
+                let mask = |e: &mut Vec<u64>| {
+                    if bits % 64 != 0 {
+                        e[limbs - 1] &= (1u64 << (bits % 64)) - 1;
+                    }
+                    e[(bits - 1) / 64] |= 1u64 << ((bits - 1) % 64);
+                };
+                let mut all_ones = vec![u64::MAX; limbs];
+                mask(&mut all_ones);
+                let mut top_bit = vec![0u64; limbs];
+                mask(&mut top_bit);
+                let mut random: Vec<u64> = (0..limbs).map(|_| u64::rand(&mut rng)).collect();
+                mask(&mut random);
+                for exp in [all_ones, top_bit, random] {
+                    assert_eq!(significant_bits(&exp), bits);
+                    for _ in 0..4 {
+                        let a = <$field>::rand(&mut rng);
+                        let expected = pow_binary(&a, &exp);
+                        assert_eq!(a.pow(&exp), expected, "{bits} bits");
+                        assert_eq!(pow_windowed(&a, &exp, bits), expected, "{bits} bits");
+                    }
+                }
+            }
+            // A zero exponent, and a zero base.
+            assert_eq!(<$field>::rand(&mut rng).pow([0u64; 4]), <$field>::one());
+            assert_eq!(<$field>::zero().pow([1u64, 0, 0, 1]), <$field>::zero());
+        }
+
         #[test]
         fn test_pow() {
             use ark_std::UniformRand;
@@ -501,6 +537,52 @@ macro_rules! __test_field {
     };
     ($field: ty; mont_prime_field) => {
         $crate::__test_field!($field; prime);
+
+        /// The deferred accumulator must return the same canonical element as the naive sum,
+        /// at every length and on the inputs that stress its carry bound.
+        #[test]
+        pub fn test_inner_product() {
+            use ark_ff::BigInteger;
+            let mut rng = test_rng();
+            let mut m = <$field>::MODULUS;
+            m.sub_with_borrow(&<$field as PrimeField>::BigInt::from(1u64));
+            // The largest canonical internal representation, and `p - 1`.
+            let extremes = [<$field>::new_unchecked(m), -<$field>::one()];
+            for len in [0usize, 1, 2, 3, 4, 7, 8, 15, 16, 31, 32, 100, 255, 256, 10_000] {
+                let a: Vec<$field> = (0..len).map(|_| <$field>::rand(&mut rng)).collect();
+                let b: Vec<$field> = (0..len).map(|_| <$field>::rand(&mut rng)).collect();
+                let naive: $field = a.iter().zip(&b).map(|(a, b)| *a * b).sum();
+                assert_eq!(<$field>::inner_product(&a, &b), naive, "random, len {len}");
+                for v in extremes {
+                    let a = vec![v; len];
+                    let naive: $field = a.iter().map(|a| *a * v).sum();
+                    assert_eq!(<$field>::inner_product(&a, &a), naive, "extreme, len {len}");
+                }
+            }
+        }
+
+        /// The divstep inversion installed for 4-limb fields must be bit-identical to the
+        /// BEA it replaced; other limb counts still run the BEA.
+        #[test]
+        pub fn test_inverse_matches_bea() {
+            use ark_ff::BigInteger;
+            let mut rng = test_rng();
+            let mut edge = vec![
+                <$field>::one(),
+                -<$field>::one(),
+                <$field>::new_unchecked(<$field>::R),
+                <$field>::new_unchecked(<$field>::R2),
+            ];
+            let mut m = <$field>::MODULUS;
+            m.sub_with_borrow(&<$field as PrimeField>::BigInt::from(1u64));
+            edge.push(<$field>::new_unchecked(m));
+            for a in edge.into_iter().chain((0..ITERATIONS).map(|_| <$field>::rand(&mut rng))) {
+                assert_eq!(a.inverse(), a.bea_inverse(), "inverse mismatch at {a}");
+                assert_eq!(a * a.inverse().unwrap(), <$field>::one());
+            }
+            assert!(<$field>::zero().inverse().is_none());
+            assert!(<$field>::zero().bea_inverse().is_none());
+        }
 
         #[test]
         pub fn test_montgomery_config() {

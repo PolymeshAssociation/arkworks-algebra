@@ -20,6 +20,11 @@ use core::iter;
 mod montgomery_backend;
 pub use montgomery_backend::*;
 
+mod deferred;
+pub use deferred::MontAccumulator;
+
+mod modinv62;
+
 /// A trait that specifies the configuration of a prime field.
 /// Also specifies how to perform arithmetic on field elements.
 pub trait FpConfig<const N: usize>: Send + Sync + 'static + Sized {
@@ -85,6 +90,12 @@ pub trait FpConfig<const N: usize>: Send + Sync + 'static + Sized {
 
     /// Compute the inner product `<a, b>`.
     fn sum_of_products<const T: usize>(a: &[Fp<Self, N>; T], b: &[Fp<Self, N>; T]) -> Fp<Self, N>;
+
+    /// Compute the inner product `<a, b>` of two slices of equal length.
+    fn inner_product(a: &[Fp<Self, N>], b: &[Fp<Self, N>]) -> Fp<Self, N> {
+        assert_eq!(a.len(), b.len());
+        a.iter().zip(b).map(|(a, b)| *a * b).sum()
+    }
 
     /// Set a *= a.
     fn square_in_place(a: &mut Fp<Self, N>);
@@ -246,6 +257,11 @@ impl<P: FpConfig<N>, const N: usize> Field for Fp<P, N> {
     #[inline]
     fn sum_of_products<const T: usize>(a: &[Self; T], b: &[Self; T]) -> Self {
         P::sum_of_products(a, b)
+    }
+
+    #[inline]
+    fn inner_product(a: &[Self], b: &[Self]) -> Self {
+        P::inner_product(a, b)
     }
 
     #[inline]
