@@ -1,0 +1,71 @@
+{
+  "ciphersuite": "vesta_XMD:SHA-256_SSWU_RO_ (3-isogeny from pasta_curves)",
+  "curve": "vesta",
+  "dst": "QUUX-V01-CS02-with-vesta_XMD:SHA-256_SSWU_RO_",
+  "field": {
+    "m": "0x1",
+    "p": "0x40000000000000000000000000000000224698fc0994a8dd8c46eb2100000001"
+  },
+  "hash": "sha256",
+  "map": {
+    "name": "SSWU"
+  },
+  "randomOracle": true,
+  "vectors": [
+    {
+      "P": {
+        "x": "0x03dd8ee421e44e89c2c088cb46505002e32f8c6566f1d2583a7973d6d69d418d",
+        "y": "0x182ec24db0070de1291b930f0e46aa847a0b7e4a006befba43cafe1a700d0a26"
+      },
+      "msg": "",
+      "u": [
+        "0x198ec85dccc4a327ee1723578c4709a6f0394d4cd8a2a64f8c3ab9edff59e70e",
+        "0x3d0a372628a7431fab01869e78488096b4c7bf53a9f8e47f1219acb262fd5da3"
+      ]
+    },
+    {
+      "P": {
+        "x": "0x39d1ec3185cd0d9923c8c8f510be92501c2209872e88ffcbb61a13ea5ef6a26b",
+        "y": "0x115e8945aa1a8c7d829773b34e559915980533dc3f7e70711465f6776ed4e8bf"
+      },
+      "msg": "abc",
+      "u": [
+        "0x1e92e5c7f5d08048b5a2a5af1b9f136588938db8682c026e0eec5243e9ead0b8",
+        "0x31106be8a100736c256cbdabf506ca1da5bbdd0948fc74c90e92cc33619882be"
+      ]
+    },
+    {
+      "P": {
+        "x": "0x3e04cc434a78eb6d55ee0b6bd738acfdb8e81a770126bb42a90323e7acce3354",
+        "y": "0x0af9003666f04668098993bbdf662aa20c1e8afb08815ea4484c79f58240fc75"
+      },
+      "msg": "abcdef0123456789",
+      "u": [
+        "0x1db82a29ec48900423e2016659f1d6178f48761e3630a63248632e2688142a8e",
+        "0x2c062da9934a157c72a3eb78330a80a352447d1132081d566dc5040c9a49f848"
+      ]
+    },
+    {
+      "P": {
+        "x": "0x1f94518352663d27e2a3f5cad74af1efa39d1e8e8364a7ce95994418ea717e8c",
+        "y": "0x01c381fb60c7a3a99d1958721b9e27b4c1bf05fe2124e750479fddc135232a1d"
+      },
+      "msg": "q128_qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+      "u": [
+        "0x2278cce43d90f3e098e223829bbcd179a16c9ce6bf51a4bd21b8bf91dce0de8e",
+        "0x00eb673dae1ddbdc0a683247762f70887c8aaf38c43591dc1e98a24fbb365da0"
+      ]
+    },
+    {
+      "P": {
+        "x": "0x2d8cab8a78bc9445c1b42355176635bdcd09ca0f6221ad6942358a19dfd5cdde",
+        "y": "0x03e758a2f46827b4201286e2cfc68d2da5c68e8b7ff7c3811076f8ce11dcd91d"
+      },
+      "msg": "a512_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "u": [
+        "0x0a362d6c62881eabcfa5129d1e0c53a5873527fb5c5be3cc24632b699bbe3231",
+        "0x30a3884ebb47e7420c2bdf70acd3be85f6d7352c8aca01688df6696ab32c661c"
+      ]
+    }
+  ]
+}
