@@ -2,14 +2,14 @@
 
 use ark_ec::{
     hashing::{
-        curve_maps::{swu::SWUMap, wb::WBMap},
+        curve_maps::{svdw::SVDWMap, swu::SWUMap, wb::WBMap},
         map_to_curve_hasher::{MapToCurve, MapToCurveBasedHasher},
         HashToCurve,
     },
     short_weierstrass::{Affine, Projective, SWCurveConfig},
     VariableBaseMSM,
 };
-use ark_ff::field_hashers::DefaultFieldHasher;
+use ark_ff::field_hashers::{DefaultFieldHasher, HashToField, LegacyFieldHasher};
 pub use ark_host_msm::{pack_fat_pointer, unpack_fat_pointer, CurveMSMId, CURVE_ID_LEN};
 use ark_serialize::{
     impls::compact::CompactU64, CanonicalDeserialize, CanonicalSerialize, Compress,
@@ -17,26 +17,34 @@ use ark_serialize::{
 use ark_std::vec::Vec;
 use sha2::Sha256;
 
+use ark_bls12_381::{g1::Config as Bls12_381G1Config, g2::Config as Bls12_381G2Config};
+use ark_bn254::{g1::Config as Bn254G1Config, g2::Config as Bn254G2Config};
 use ark_helios::HeliosConfig;
 use ark_pallas::PallasConfig;
 use ark_selene::SeleneConfig;
 use ark_vesta::VestaConfig;
 use ark_wei25519::Wei25519Config;
 
-/// Hash-to-curve for a short Weierstrass curve using `DefaultFieldHasher<Sha256, 128>` and the
-/// curve's `Map`.
+/// Hash-to-curve for a short Weierstrass curve using the curve's `FieldHasher` and `Map`.
+/// Pallas, Vesta, Helios, Selene and Wei25519 use `LegacyFieldHasher<Sha256, 128>`, which keeps
+/// the points equal to those hashed with ark-ff 0.5, so generators derived before the RFC 9380
+/// padding fix in `DefaultFieldHasher` are unchanged. BLS12-381 and BN254 use
+/// `DefaultFieldHasher<Sha256, 128>`.
 pub trait HashToCurveConfig: SWCurveConfig {
+    /// Hash from a message to base field elements.
+    type FieldHasher: HashToField<Self::BaseField>;
+
     /// Map from a base field element to the curve.
     type Map: MapToCurve<Projective<Self>>;
 
     /// Hash `message` to a curve point, using `dst` as the domain separation tag.
     fn hash_to_curve(dst: &[u8], message: &[u8]) -> Affine<Self> {
-        MapToCurveBasedHasher::<Projective<Self>, DefaultFieldHasher<Sha256, 128>, Self::Map>::new(
+        MapToCurveBasedHasher::<Projective<Self>, Self::FieldHasher, Self::Map>::new(
             dst,
         )
         .expect("hasher construction does not fail")
         .hash(message)
-        .expect("SWU and WB maps do not fail")
+        .expect("SWU, WB and SVDW maps do not fail")
     }
 
     /// Hash `msg_prefix || j.to_le_bytes()` for each `j` in `gens_offset..gens_offset + gens_count`,
@@ -60,23 +68,48 @@ pub trait HashToCurveConfig: SWCurveConfig {
 }
 
 impl HashToCurveConfig for PallasConfig {
+    type FieldHasher = LegacyFieldHasher<Sha256, 128>;
     type Map = WBMap<Self>;
 }
 
 impl HashToCurveConfig for VestaConfig {
+    type FieldHasher = LegacyFieldHasher<Sha256, 128>;
     type Map = WBMap<Self>;
 }
 
 impl HashToCurveConfig for HeliosConfig {
+    type FieldHasher = LegacyFieldHasher<Sha256, 128>;
     type Map = SWUMap<Self>;
 }
 
 impl HashToCurveConfig for SeleneConfig {
+    type FieldHasher = LegacyFieldHasher<Sha256, 128>;
     type Map = SWUMap<Self>;
 }
 
 impl HashToCurveConfig for Wei25519Config {
+    type FieldHasher = LegacyFieldHasher<Sha256, 128>;
     type Map = SWUMap<Self>;
+}
+
+impl HashToCurveConfig for Bls12_381G1Config {
+    type FieldHasher = DefaultFieldHasher<Sha256, 128>;
+    type Map = WBMap<Self>;
+}
+
+impl HashToCurveConfig for Bls12_381G2Config {
+    type FieldHasher = DefaultFieldHasher<Sha256, 128>;
+    type Map = WBMap<Self>;
+}
+
+impl HashToCurveConfig for Bn254G1Config {
+    type FieldHasher = DefaultFieldHasher<Sha256, 128>;
+    type Map = SVDWMap<Self>;
+}
+
+impl HashToCurveConfig for Bn254G2Config {
+    type FieldHasher = DefaultFieldHasher<Sha256, 128>;
+    type Map = SVDWMap<Self>;
 }
 
 fn batch_hash_to_curve_local<C: HashToCurveConfig>(
@@ -133,6 +166,7 @@ mod guest {
     use super::*;
 
     #[cfg_attr(feature = "polkavm", polkavm_derive::polkavm_import)]
+    #[cfg_attr(target_arch = "wasm32", link(wasm_import_module = "env"))]
     extern "C" {
         /// `let (buf_ptr, buf_len) = unpack_fat_pointer(fat_ptr)`. The buffer starts with a
         /// `CurveMSMId`. If `buf_len` is `CURVE_ID_LEN`, the call checks whether the host supports
@@ -212,23 +246,23 @@ mod tests {
     #[test]
     fn pallas_known_answers() {
         check_known_answers::<PallasConfig>([
-            "188626a57163df7fe13fa8cbef8d9de91fe214882aa21e18233ef636aa94c92c",
-            "00ba3d75f21e3a017d548ef7231d903282a3d80c65269cecd266bf4fb0191125",
-            "e84b3ec2751a9ea0ca064226ff390af79f7dfc2a3fa2e4f63cc85b4e45763a88",
-            "889de1d2955b1b6d1fe195f41e4ab674df5ca8ce2a82bdddcce20f8165e76723",
-            "f42e4ad4db99e1e577ee362bfc1f14773d30205518c0ed1ddb8ecb19a6e77597",
-            "54bb81ff3918b4057dbcb13815090a58a8c71d4dbfeb815dc959086077ee14a6",
-            "ab3d603534567f2dc0aacefaa1c86fb396d75ef9f2366c909537985bc7687986",
-            "06a13137807deb67103af3a5a64e14d5dba7150284960ea96b24f763f1b11d30",
-            "5bb1a0567966c5af05895bc52172ac0162b9c34002baffc53f5f6b1282008f9c",
-            "70ffc94d03d54ebdace891527896c2544098a3205a067bd328d3e16a11ac158e",
-            "112a7b2cf750a1af545852c8980ecfd0e6503fd8d4ecbf075e1986ba589eb72d",
-            "21e0fdea6c7324eece2bf570b6e1e9ce5bc39b27bf6c301a7ae75f887bc6baa8",
+            "8a371389e6eb923e7cc6714041bed32926e890bd4d6f4207c591e1efacee081c",
+            "cac0539620aa7fd4b6718cc3f4dcc78d14b313277f806e33287738806fe21091",
+            "143ac4d7392321a2c43795c07b3ef3bf3c52f72c46a64d3a9373d7b1c2c7f517",
+            "b06efcb2aef98c0ca309b5753b6e2140b6908fba51fade1f8e61403a9205d82d",
+            "0ff4ced5544ec8c26343cb105f0bd3c1176431ecb0529145bf2d83fb21c860ac",
+            "85675f8a1aa34f6c673570177cba374d5f8590e42fefb16be3b62cd62ba966b4",
+            "a5c8f074b68da078f1b1164eac8914b4c2e07094a567422965c2e8569dc18409",
+            "31a07e4c79bd443e8a52d5beaf81a13ce5f01c77a5ed37155d7f5e32327a57ab",
+            "9d76c4946f5adcb67d8ae2979dfadacda2d7a85d74daca28ef5575dc9b41f62f",
+            "936b1ec580c020c9f902a720c576f5e23ee05f5990b4bd15fe0ed932bbe3b8af",
+            "9909f360a7a87b02d92ae473f11e59ab2d908299f22c7250030a25c60b14e21b",
+            "a36d3a1d0f8c64529bf49bc125f0d2811ba9585c667ba4b47250062d406c90be",
         ]);
         assert_eq!(
             PallasConfig::hash_to_curve(b"pallas", b"curve_trees_delta"),
             point::<PallasConfig>(
-                "03b085a32de17d09fd88e060c8f2cc5c4df41767545cc077ca79b8f38d87af82"
+                "9643f0714aa4792a6ba9702608e79c047941c410903513de313bc4c15cdf520f"
             )
         );
     }
@@ -236,23 +270,23 @@ mod tests {
     #[test]
     fn vesta_known_answers() {
         check_known_answers::<VestaConfig>([
-            "547adfdcb7583ee2380fc42aa1f974c4c8af654fdb590800897e35bd7b2c1525",
-            "8f99ed0fa81dee09bf61d749ee1da0ef3b5d7fdcdf752e6cf1939c7563f15d16",
-            "7b4787071299f2e0595ed32e914f40b7688c1f86ada7aba32e2b13c3438fc71f",
-            "b9fb73da838566d8e64115f96a402fb2e33a283f8043de759f5e4b256884f12f",
-            "0d963ac04d3f2da7e33f0719a7608dd2fc635aa167755f8fe4716304ddd01c91",
-            "f3d537cea480a7fa97c1b34b13e80328f6c50fc807d4344982668408d3e6a7ab",
-            "de205f0ab922a94cb9a42bdf514a2c62bcaa8ebbbbc4b4efca525267ce7f29bd",
-            "7d013333fcf82021dd0c508ab68bb009d44e603374c86ff7d787ddb9b037422c",
-            "316d3cc333af3853d8b0a2f488516afaac99eeca38c1cac2c54c60641deb08bc",
-            "4a25f33220cac2f52966bd784a33a71c6c0081f0878edfd2f2ee0d1b8c01c490",
-            "6f53e4ef32bef3507359ee3df3c42b8db588028055bf4caf329498bbd2dc3480",
-            "71a2ac5c2f662f9104b85bbbe7e066645597de579d25cc1adabe1e47d4766481",
+            "56b41fa2237a00eacbf1553e9f145841d4362d50c402f736fc94bd38136ced3e",
+            "4a2dcb19a289e2ca28eaf56f2f58490054d156edc96bcb38b822e3c8baa69901",
+            "036ec31db44279217fa58bca97ed76efdb4a6c4868bddab44700227b395843a7",
+            "1c58a61c78bf2b3c8e9c3d4c2cba7ddeea707f8cceae0e96f10bcd19303f5bb1",
+            "edb9ea2a58157e292c0d0e526ab9d98bd1e4ed5f46e66b1c6cf382d0ee680815",
+            "d5b5f43641e7ca7f14e71cdf8455f30f17ed9df306af26499f7effc8e2c45a0f",
+            "ae7798d7658324b98165f210866ee43499c8781a2789cb68455d05acc1ee5999",
+            "a32d4da06f4f0041db8893910cb2aa1c8350a003bb2f40d86bdbcf05e0bedbbd",
+            "9dbe54ef7e2d0deb29e8ffee7782daaf685f1e42fbee712291b0728f673f34a8",
+            "00cb1cb1ff6c3e82779f112a7b907b15a04ddc6b0574698923791d87ba7c3b3d",
+            "00b7d94e7a511f9e8a8986dbb5cee737ac9281f1653135cfd0e4f85defe8a413",
+            "85489cd7d7ecc7809390e5b2d0eebeb057495dfd1f587fbfcdbfbf7bd0abf384",
         ]);
         assert_eq!(
             VestaConfig::hash_to_curve(b"vesta", b"curve_trees_delta"),
             point::<VestaConfig>(
-                "f790660d996331a780360119197a3c5238039cdaacbbc7a5c52757a01365639c"
+                "b2ce9cce16caf05b8c742f843032e374e0c835c38bd57027ddda990aee52ec0a"
             )
         );
     }
@@ -260,54 +294,54 @@ mod tests {
     #[test]
     fn helios_known_answers() {
         check_known_answers::<HeliosConfig>([
-            "77c2a4310dc3a732b6de41dac53884135aaac6d3c010505bd0be3bb096f58168",
-            "d62471c1aeaba78b9f5e731ae7b72c46477e852721a72ae683a4e65256e6dbfd",
-            "69bd9e21a6ee6e21c0e0a7a03f0b89246d26efe1822e7995d0012334a8495bdf",
-            "aed1d6c105ab0ebff8e36eb68798d4ab6e29749541efa2b44af1e03e94f094f5",
-            "7241ee457e78b97bc768d117ed62a3db820d020a4ef40783f42e39be93884735",
-            "d152f6e67fb53683c01d01adf10aeb4c706c4154b8aa032b9e6b3b596b352767",
-            "fd57e2c06967e1db3cd1d09723de548138dc347c14e7559c49d6771034123314",
-            "3c322934c7c476528eda7ed5ec0857dfb152d7cc5aed0ef8f3363e120b7d9b20",
-            "2aeff1610f457c118fe63443e7acffd2d76124deeaa799ce28ece98e9cbff902",
-            "e257ea0f826cd144834b0a1124afaff5e9e9e32ec07ffd44114dc5597054f26c",
-            "0ebc211f2bfe31758482c876ba4c165cd5c590cec7dbcba5f40c7e1faccf09f9",
-            "125e0b938a5f9cb797d5d0ce6a8324aa6fb35a7889573ccefbca3c4c484b2a64",
+            "96351c60284b20d629eb4dc2c06975bb63b9c629c1e5ed7cd8c6e8594a39f1a4",
+            "ae238936a8291709b8da7eb2797da60c7f8524b4eb6d5030c17e662b93c0a77c",
+            "21d0d2a2ce8a4dcf60d4c8aeec0b0f13c6acda767cf0d2cab233dc3a18722118",
+            "d4f5e55fab8135770386637734cf3313e68a3dc00c35a1c88be9d6aa9a01ced7",
+            "efec26ce9eb8049ebb7c2294cd1320261d914dc4b5d785241299eb5d403b29c5",
+            "448e6e1050274f2272a7685ad03bd7603e4ccddc211487c11b154f1f9300a0cc",
+            "742d60bda29ea09b24cddd9f76c4865a79ed393e92c1082d790cab9fe2a748b3",
+            "f6a569780b732a12c9ba74e381ef03ef16c9d7466ade75ed65f26645767aa3c9",
+            "aecbaf016cef5fe4ffe73d1141d2b8d0d4d68da6b7258d4c24156022d11d7862",
+            "c2161934bb6b3fd1993feb13082c4cce8cb14c54fb8c13e2fbabfccb1c908dd1",
+            "e85d387b6aabf3111b0a61224a1aaccd4babd87b435479fdd4e71b8f2697d236",
+            "b97e9b4d9eba3b4387ac21a6de3d2eeeeba25d3a4d2269e2b12338c30cddc181",
         ]);
     }
 
     #[test]
     fn selene_known_answers() {
         check_known_answers::<SeleneConfig>([
-            "3ec154d555a41150cb0ba96f27fdb69ce149dfd38c415bb705b6457a70dd944f",
-            "9e20344502a8bf60f3fad784d23083f67970c7bbbfe86d66e403923a606d5a87",
-            "bf6372b4e169a2f50d10c6df40c07177e962f96de7d0bd62a344ffa64c04ca1b",
-            "35288c4c46ee4e1afba5abf659c3d850b36051f0de45272247662796e01b3249",
-            "3b92b1812714ff35ed2ab6c82eadbc295ada1b10e999f51c0031f197d809d228",
-            "03c7faa329bb7afbddc977f2846a294be749ce1b2b1e98473efb6502c72b41b1",
-            "d0eac2b107f98c84d23f51912d344db3d408f38a284c3a96d8221371c3af34ce",
-            "6f4786c0450ed2bef3675662b831eb027d0fa183a06dbab4928c462736f38126",
-            "29012f131326520b137f2f60a884a4cdd915881d4579480bab37d4a9acdf4139",
-            "570538c15ef869e1147f9e36d461b8228e185d5e8edfd60adc8f50aa3c48e582",
-            "a90fbfcacaac86a4b1489af092b362bca12c7cb08e99ba65c45e4594a6837cea",
-            "f985b63918a49ea8f089e36ac1cdace2c5c3310a784a7a1d950bab52a3f84b2e",
+            "aa416031ab45d7e7f2df18ce16b2d29edabd2ebbe1c0562d2c47771761977260",
+            "f9f25e3f3db49c2a3e93197c4725e6c6b9372ec00173d475871624cce34bf772",
+            "8ec8897d935ca7b26ee7143abc7f2eaa8827ad8e0eaa97867e3bf49fcb215f05",
+            "d0ea2867a26ae80d8db733c80e10ce619b2e6df7de2367ec225c48e2ad241ac9",
+            "25a7787cd23a5db53002bea5a9f5f0803c029abca1b265497a7a33ac2409ca25",
+            "7f3b98b3235d212285ec9cd10512d2a725c92c9811ba4982549ef75c58fc8867",
+            "ed5ea2088f83125db0e1463db1eedf94a4fe35d13cc78161ce92a58f4b40c869",
+            "d30e102b7b97aa224d24ae0a84d8dcadf0b91a3b3932b29a5605c17d2009641e",
+            "d0d643450e44b2eca453258efd1c7c00cf07c47780b7b643d5f918c68e2918ae",
+            "da90a5eddbdba0172063232586f7d92f16545cc41c3d1fa62731ab0918a664ae",
+            "9f7156603036d616c408588a98aa8c93bb2aaa645db4d440ad127703f340e911",
+            "caf882441321d3070475f3b34bd79ed01b6bde5f992617a17a0710ac78baf3fe",
         ]);
     }
 
     #[test]
     fn wei25519_known_answers() {
         check_known_answers::<Wei25519Config>([
-            "ac78470b2b5fe0afc5e6462617e93d04caa6813f6020ffd949ab5c7127b7b600",
-            "1a8d48b4b233cd547acc67bc9ca953d05c538ae46c3135051fbcbfb2061371d9",
-            "ea464316dd135da33868a7a23a104f9f09622ca42b1033c94feb93fe542e8270",
-            "3b115e51bed6f183d93bcf322edb2eb5cb7626f5d4aa69c0aedd6b9624178283",
-            "9fe3f6557d95098b5a61e4691313af1506b9bf96dcb22184b6ad6cd91b538354",
-            "16005b048a5368a9d7996b33e82530e9763cdc9f1222a36488eb49951a7e3024",
-            "157a9de84e3da51e3f8a827e84065ae5b4596ffdb6e70efdaa7d42cf31cc4b01",
-            "a38606ab99b6b40e5c44f967cbee29785487baf67173088904bc455c44179147",
-            "8421ef0c6de7bd91e441dfb1f019223b7315f2c32811e274f7dfc9ba8eb6d458",
-            "f209aa5cbc2f60c2e5542e7b40668f252b38e0b42db0659f92c4ebaffe809d29",
-            "d0a9edd9ba899bf981faf65d6bd279c29ee1d8dcbbd6b29a4196da94c4352c06",
-            "6f434eb7e84df8e1fd63052bc8393f1510326aec3203c2cf0589798aca3c8a9e",
+            "a2b23a0883b03e04dec705da83a89ad26998589a645bd1c5349fa2853a11a869",
+            "4f4b50110778cf169b1dd230c7c5a913298bb36b1ea9d86ab4090c00819d262a",
+            "3f9fdc03ca1516269384b0ca0471b290e47f9f6c18e3bad9e0d4c76f88551059",
+            "33d11257a2572f4bed99387aef742e8d5088443d5f04fc66f861adbeca5c38ef",
+            "650e1e87b154e5f3f768132706e1e5c0f221d46eec9f4fc1c9802b139b6dd0de",
+            "c7a626b57a6b03ece759843d4265c8c9f95385936657d49c1eab275b48ab96ed",
+            "6c45e89f8ef4b527af042652079cacb8c076d3d4722678353ab82b4a4a333c55",
+            "b67994f4d2fecf078ec48931cfbf9696aecd00a74aaff6d4ffb43d4018864afb",
+            "4f5adde1f73cca335180d688a2e99aba28f3b557dac7f2241f4d13b800acb873",
+            "e06dc88c04e329569e86b1432b6f34552b847b133cd20b644b390a273cf20a27",
+            "e30a6489d4e13525400c07c2d0336e86194e4a3cf3ec894c1acc0b811120fe74",
+            "afeb6e273b5953d6219dc677b9ca108add9d05eee5737f44626edc278ec3b54d",
         ]);
     }
 
@@ -330,6 +364,27 @@ mod tests {
         check::<HeliosConfig>("helios");
         check::<SeleneConfig>("selene");
         check::<Wei25519Config>("wei25519");
+        check::<Bls12_381G1Config>("bls12_381_g1");
+        check::<Bls12_381G2Config>("bls12_381_g2");
+        check::<Bn254G1Config>("bn254_g1");
+        check::<Bn254G2Config>("bn254_g2");
+    }
+
+    #[test]
+    fn curve_ids_are_distinct() {
+        let ids = [
+            curve_id::<PallasConfig>(),
+            curve_id::<VestaConfig>(),
+            curve_id::<HeliosConfig>(),
+            curve_id::<SeleneConfig>(),
+            curve_id::<Wei25519Config>(),
+            curve_id::<Bls12_381G1Config>(),
+            curve_id::<Bls12_381G2Config>(),
+            curve_id::<Bn254G1Config>(),
+            curve_id::<Bn254G2Config>(),
+        ];
+        let distinct: ark_std::collections::BTreeSet<_> = ids.iter().collect();
+        assert_eq!(distinct.len(), ids.len());
     }
 
     #[test]

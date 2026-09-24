@@ -1,8 +1,11 @@
 //! Generates and checks the hash-to-curve test vectors. `reference` is the Pallas and Vesta
 //! hash-to-curve from curve-trees `bulletproofs/src/hash_to_curve_pasta.rs` at commit `ebea1bc`,
-//! copied unchanged except for the error type. Pallas and Vesta vectors are computed with it.
-//! Helios, Selene and Wei25519 vectors are computed with `MapToCurveBasedHasher` and `SWUMap`,
-//! which is what curve-trees used for them.
+//! copied unchanged except for the error type and a type parameter `H` for the field hasher.
+//! curve-trees used ark-ff 0.5's `DefaultFieldHasher`, which `LegacyFieldHasher` reproduces. The
+//! known answers are computed with `LegacyFieldHasher`, for Pallas and Vesta with `reference` and
+//! for Helios, Selene and Wei25519 with `MapToCurveBasedHasher` and `SWUMap`, which is what
+//! curve-trees used for them. The Pallas and Vesta JSON vectors follow RFC 9380 and are computed
+//! with `reference` and `DefaultFieldHasher`.
 //!
 //! Regenerate with
 //! `cargo test --release -p ark-host-hash-to-curve --test test_vectors -- --ignored --nocapture`.
@@ -13,18 +16,17 @@
 mod reference {
     use ark_ec::hashing::curve_maps::parity;
     use ark_ec::short_weierstrass::{Projective as SWProjective, SWCurveConfig};
-    use ark_ff::field_hashers::{DefaultFieldHasher, HashToField};
+    use ark_ff::field_hashers::HashToField;
     use ark_ff::{Field, MontFp, One};
     use ark_pallas::{Fq as PallasBase, PallasConfig, Projective as PallasProjective};
     use ark_vesta::{Fq as VestaBase, Projective as VestaProjective, VestaConfig};
-    use sha2::Sha256;
 
     #[derive(Debug)]
     pub struct HashToCurveError;
 
     macro_rules! hash_to_curve_naive {
-        ($base_field:ty, $curve_config:ty, $projective:ty, $zeta:expr, $iso_a:expr, $iso_b:expr, $iso_consts:expr, $dst:expr, $message:expr) => {{
-            let hasher = <DefaultFieldHasher<Sha256> as HashToField<$base_field>>::new($dst);
+        ($hasher:ty, $base_field:ty, $curve_config:ty, $projective:ty, $zeta:expr, $iso_a:expr, $iso_b:expr, $iso_consts:expr, $dst:expr, $message:expr) => {{
+            let hasher = <$hasher as HashToField<$base_field>>::new($dst);
             let u = hasher.hash_to_field::<2>($message);
 
             // This is more expensive since the isogeny map is applied twice vs adding points in the isogeny curve first
@@ -41,8 +43,8 @@ mod reference {
     }
 
     macro_rules! hash_to_curve {
-        ($base_field:ty, $curve_config:ty, $projective:ty, $zeta:expr, $iso_a:expr, $iso_b:expr, $iso_consts:expr, $dst:expr, $message:expr) => {{
-            let hasher = <DefaultFieldHasher<Sha256> as HashToField<$base_field>>::new($dst);
+        ($hasher:ty, $base_field:ty, $curve_config:ty, $projective:ty, $zeta:expr, $iso_a:expr, $iso_b:expr, $iso_consts:expr, $dst:expr, $message:expr) => {{
+            let hasher = <$hasher as HashToField<$base_field>>::new($dst);
             let u = hasher.hash_to_field::<2>($message);
 
             let q0 = map_to_curve_simple_swu::<$base_field, $curve_config>(u[0], $zeta, $iso_a, $iso_b);
@@ -60,8 +62,9 @@ mod reference {
         }};
     }
 
-    pub fn hash_to_pallas_slow(dst: &[u8], message: &[u8]) -> PallasProjective {
+    pub fn hash_to_pallas_slow<H: HashToField<PallasBase>>(dst: &[u8], message: &[u8]) -> PallasProjective {
         hash_to_curve_naive!(
+            H,
             PallasBase,
             PallasConfig,
             PallasProjective,
@@ -77,8 +80,9 @@ mod reference {
     /// This can fail if both calls to `map_to_curve_simple_swu` generate the same point.
     /// This would rarely happen in practice.
     /// Faster than `hash_to_pallas_slow`
-    pub fn hash_to_pallas_fallible(dst: &[u8], message: &[u8]) -> Result<PallasProjective, HashToCurveError> {
+    pub fn hash_to_pallas_fallible<H: HashToField<PallasBase>>(dst: &[u8], message: &[u8]) -> Result<PallasProjective, HashToCurveError> {
         hash_to_curve!(
+            H,
             PallasBase,
             PallasConfig,
             PallasProjective,
@@ -91,8 +95,9 @@ mod reference {
         )
     }
 
-    pub fn hash_to_vesta_slow(dst: &[u8], message: &[u8]) -> VestaProjective {
+    pub fn hash_to_vesta_slow<H: HashToField<VestaBase>>(dst: &[u8], message: &[u8]) -> VestaProjective {
         hash_to_curve_naive!(
+            H,
             VestaBase,
             VestaConfig,
             VestaProjective,
@@ -108,8 +113,9 @@ mod reference {
     /// This can fail if both calls to `map_to_curve_simple_swu` generate the same point.
     /// This would rarely happen in practice.
     /// Faster than `hash_to_vesta_slow`
-    pub fn hash_to_vesta_fallible(dst: &[u8], message: &[u8]) -> Result<VestaProjective, HashToCurveError> {
+    pub fn hash_to_vesta_fallible<H: HashToField<VestaBase>>(dst: &[u8], message: &[u8]) -> Result<VestaProjective, HashToCurveError> {
         hash_to_curve!(
+            H,
             VestaBase,
             VestaConfig,
             VestaProjective,
@@ -124,21 +130,21 @@ mod reference {
 
     /// Call the faster but fallible version but fallback to slower version if it fails.
     /// This can be variable time but currently fine for our use-case
-    pub fn hash_to_pallas(dst: &[u8], message: &[u8]) -> PallasProjective {
-        if let Ok(p) = hash_to_pallas_fallible(dst, message) {
+    pub fn hash_to_pallas<H: HashToField<PallasBase>>(dst: &[u8], message: &[u8]) -> PallasProjective {
+        if let Ok(p) = hash_to_pallas_fallible::<H>(dst, message) {
             p
         } else {
-            hash_to_pallas_slow(dst, message)
+            hash_to_pallas_slow::<H>(dst, message)
         }
     }
 
     /// Call the faster but fallible version but fallback to slower version if it fails.
     /// This can be variable time but currently fine for our use-case
-    pub fn hash_to_vesta(dst: &[u8], message: &[u8]) -> VestaProjective {
-        if let Ok(p) = hash_to_vesta_fallible(dst, message) {
+    pub fn hash_to_vesta<H: HashToField<VestaBase>>(dst: &[u8], message: &[u8]) -> VestaProjective {
+        if let Ok(p) = hash_to_vesta_fallible::<H>(dst, message) {
             p
         } else {
-            hash_to_vesta_slow(dst, message)
+            hash_to_vesta_slow::<H>(dst, message)
         }
     }
 
@@ -316,11 +322,12 @@ mod reference {
 }
 
 use ark_ec::hashing::curve_maps::swu::{SWUConfig, SWUMap};
+use ark_ec::hashing::curve_maps::wb::{WBConfig, WBMap};
 use ark_ec::hashing::map_to_curve_hasher::MapToCurveBasedHasher;
 use ark_ec::hashing::HashToCurve;
 use ark_ec::short_weierstrass::{Affine, Projective};
 use ark_ec::CurveGroup;
-use ark_ff::field_hashers::{DefaultFieldHasher, HashToField};
+use ark_ff::field_hashers::{DefaultFieldHasher, HashToField, LegacyFieldHasher};
 use ark_ff::{BigInteger, PrimeField};
 use ark_host_hash_to_curve::HashToCurveConfig;
 use ark_pallas::PallasConfig;
@@ -377,14 +384,14 @@ fn suite_json<F: PrimeField>(name: &str, hash: impl Fn(&[u8], &[u8]) -> (F, F)) 
 
 fn pallas_json() -> String {
     suite_json("pallas", |d, m| {
-        let p = reference::hash_to_pallas(d, m).into_affine();
+        let p = reference::hash_to_pallas::<DefaultFieldHasher<Sha256>>(d, m).into_affine();
         (p.x, p.y)
     })
 }
 
 fn vesta_json() -> String {
     suite_json("vesta", |d, m| {
-        let p = reference::hash_to_vesta(d, m).into_affine();
+        let p = reference::hash_to_vesta::<DefaultFieldHasher<Sha256>>(d, m).into_affine();
         (p.x, p.y)
     })
 }
@@ -414,8 +421,17 @@ fn known_answers<P: ark_ec::short_weierstrass::SWCurveConfig>(
     out
 }
 
+/// RFC 9380 hash-to-curve through `WBMap`.
+fn wb_hash<P: WBConfig>(dst: &[u8], msg: &[u8]) -> Affine<P> {
+    MapToCurveBasedHasher::<Projective<P>, DefaultFieldHasher<Sha256, 128>, WBMap<P>>::new(dst)
+        .unwrap()
+        .hash(msg)
+        .unwrap()
+}
+
+/// Legacy hash-to-curve through `SWUMap`, which curve-trees used for Helios, Selene and Wei25519.
 fn swu_hash<P: SWUConfig>(dst: &[u8], msg: &[u8]) -> Affine<P> {
-    MapToCurveBasedHasher::<Projective<P>, DefaultFieldHasher<Sha256, 128>, SWUMap<P>>::new(dst)
+    MapToCurveBasedHasher::<Projective<P>, LegacyFieldHasher<Sha256, 128>, SWUMap<P>>::new(dst)
         .unwrap()
         .hash(msg)
         .unwrap()
@@ -437,11 +453,19 @@ fn reference_matches_hash_to_curve() {
         rng.fill_bytes(&mut msg);
         assert_eq!(
             PallasConfig::hash_to_curve(&dst, &msg),
-            reference::hash_to_pallas(&dst, &msg).into_affine()
+            reference::hash_to_pallas::<LegacyFieldHasher<Sha256>>(&dst, &msg).into_affine()
         );
         assert_eq!(
             VestaConfig::hash_to_curve(&dst, &msg),
-            reference::hash_to_vesta(&dst, &msg).into_affine()
+            reference::hash_to_vesta::<LegacyFieldHasher<Sha256>>(&dst, &msg).into_affine()
+        );
+        assert_eq!(
+            wb_hash::<PallasConfig>(&dst, &msg),
+            reference::hash_to_pallas::<DefaultFieldHasher<Sha256>>(&dst, &msg).into_affine()
+        );
+        assert_eq!(
+            wb_hash::<VestaConfig>(&dst, &msg),
+            reference::hash_to_vesta::<DefaultFieldHasher<Sha256>>(&dst, &msg).into_affine()
         );
     }
 }
@@ -458,17 +482,59 @@ fn generate_test_vectors() {
             println!("    \"{l}\",");
         }
     };
-    print("pallas", known_answers::<PallasConfig>(|d, m| reference::hash_to_pallas(d, m).into_affine()));
-    print("vesta", known_answers::<VestaConfig>(|d, m| reference::hash_to_vesta(d, m).into_affine()));
+    print("pallas", known_answers::<PallasConfig>(|d, m| reference::hash_to_pallas::<LegacyFieldHasher<Sha256>>(d, m).into_affine()));
+    print("vesta", known_answers::<VestaConfig>(|d, m| reference::hash_to_vesta::<LegacyFieldHasher<Sha256>>(d, m).into_affine()));
     print("helios", known_answers::<ark_helios::HeliosConfig>(swu_hash));
     print("selene", known_answers::<ark_selene::SeleneConfig>(swu_hash));
     print("wei25519", known_answers::<ark_wei25519::Wei25519Config>(swu_hash));
     println!(
         "pallas delta: {}",
-        point_hex(&reference::hash_to_pallas(b"pallas", b"curve_trees_delta").into_affine())
+        point_hex(&reference::hash_to_pallas::<LegacyFieldHasher<Sha256>>(b"pallas", b"curve_trees_delta").into_affine())
     );
     println!(
         "vesta delta: {}",
-        point_hex(&reference::hash_to_vesta(b"vesta", b"curve_trees_delta").into_affine())
+        point_hex(&reference::hash_to_vesta::<LegacyFieldHasher<Sha256>>(b"vesta", b"curve_trees_delta").into_affine())
+    );
+}
+
+/// `HashToCurveConfig::hash_to_curve` against the suite vectors in `path`, relative to the
+/// workspace root.
+fn check_suite_vectors<C: HashToCurveConfig>(path: &str) {
+    use ark_algebra_test_templates::{from_reader, json::SuiteVector};
+    use ark_ff::Field;
+
+    let file = std::fs::File::open(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(path))
+        .unwrap();
+    let suite: SuiteVector = from_reader(std::io::BufReader::new(file)).unwrap();
+    let coordinate = |hexes: &str| {
+        let elems = hexes.split(',').map(|h| {
+            <C::BaseField as Field>::BasePrimeField::from_be_bytes_mod_order(
+                &hex::decode(h.trim_start_matches("0x")).unwrap(),
+            )
+        });
+        C::BaseField::from_base_prime_field_elems(elems).unwrap()
+    };
+    assert!(!suite.vectors.is_empty());
+    for v in &suite.vectors {
+        let want = Affine::<C>::new_unchecked(coordinate(&v.p.x), coordinate(&v.p.y));
+        assert_eq!(C::hash_to_curve(suite.dst.as_bytes(), v.msg.as_bytes()), want, "{path}: msg = {:?}", v.msg);
+    }
+}
+
+/// BLS12-381 against RFC 9380 appendices J.9.1 and J.10.1
+/// (<https://www.rfc-editor.org/rfc/rfc9380#appendix-J.9.1>), BN254 against gnark-crypto.
+#[test]
+fn pairing_curves_match_suite_vectors() {
+    check_suite_vectors::<ark_bls12_381::g1::Config>(
+        "curves/bls12_381/src/curves/tests/BLS12381G1_XMD-SHA-256_SSWU_RO_.json",
+    );
+    check_suite_vectors::<ark_bls12_381::g2::Config>(
+        "curves/bls12_381/src/curves/tests/BLS12381G2_XMD-SHA-256_SSWU_RO_.json",
+    );
+    check_suite_vectors::<ark_bn254::g1::Config>(
+        "curves/bn254/src/curves/tests/BN254G1_XMD-SHA-256_SVDW_RO_.json",
+    );
+    check_suite_vectors::<ark_bn254::g2::Config>(
+        "curves/bn254/src/curves/tests/BN254G2_XMD-SHA-256_SVDW_RO_.json",
     );
 }

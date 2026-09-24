@@ -48,6 +48,21 @@ impl<F: Field, H: FixedOutputReset + Default + Clone + BlockSizeUser, const SEC_
     HashToField<F> for DefaultFieldHasher<H, SEC_PARAM>
 {
     fn new(dst: &[u8]) -> Self {
+        // `expand_message_xmd`'s Z_pad is `s_in_bytes` long: the hash's input block size
+        // ([RFC 9380](https://www.rfc-editor.org/rfc/rfc9380.html) Section 5.3.1).
+        Self::new_given_z_pad_len::<F>(dst, H::block_size())
+    }
+
+    fn hash_to_field<const N: usize>(&self, message: &[u8]) -> [F; N] {
+        self.hash::<F, N>(message)
+    }
+}
+
+impl<H: FixedOutputReset + Default + Clone, const SEC_PARAM: usize>
+    DefaultFieldHasher<H, SEC_PARAM>
+{
+    /// A hasher whose `expand_message_xmd` Z_pad is `z_pad_len` bytes long.
+    fn new_given_z_pad_len<F: Field>(dst: &[u8], z_pad_len: usize) -> Self {
         // The final output of `hash_to_field` will be an array of field
         // elements from F::BaseField, each of size `len_per_elem`.
         let len_per_base_elem = get_len_per_elem::<F, SEC_PARAM>();
@@ -55,9 +70,7 @@ impl<F: Field, H: FixedOutputReset + Default + Clone + BlockSizeUser, const SEC_
         let expander = ExpanderXmd {
             hasher: PhantomData,
             dst: dst.to_vec(),
-            // `expand_message_xmd`'s Z_pad is `s_in_bytes` long: the hash's input
-            // block size (RFC 9380 Section 5.3.1), not the per-element length.
-            block_size: H::block_size(),
+            block_size: z_pad_len,
         };
 
         DefaultFieldHasher {
@@ -66,7 +79,7 @@ impl<F: Field, H: FixedOutputReset + Default + Clone + BlockSizeUser, const SEC_
         }
     }
 
-    fn hash_to_field<const N: usize>(&self, message: &[u8]) -> [F; N] {
+    fn hash<F: Field, const N: usize>(&self, message: &[u8]) -> [F; N] {
         let m = F::extension_degree() as usize;
 
         // The user requests `N` of elements of F_p^m to output per input msg,
@@ -84,6 +97,29 @@ impl<F: Field, H: FixedOutputReset + Default + Clone + BlockSizeUser, const SEC_
             F::from_base_prime_field_elems((0..m).map(base_prime_field_elem)).unwrap()
         };
         ark_std::array::from_fn(cb)
+    }
+}
+
+/// [`DefaultFieldHasher`] as released in ark-ff 0.4 and 0.5, whose `expand_message_xmd` Z_pad is
+/// the per-element length `ceil((log2(p) + SEC_PARAM) / 8)` instead of the hash's input block size.
+/// Output matches RFC 9380 only when the two are equal, as for SHA-256 on 381-bit fields.
+/// Reproduces field elements, and so curve points, hashed with those releases.
+pub struct LegacyFieldHasher<H: FixedOutputReset + Default + Clone, const SEC_PARAM: usize = 128>(
+    DefaultFieldHasher<H, SEC_PARAM>,
+);
+
+impl<F: Field, H: FixedOutputReset + Default + Clone, const SEC_PARAM: usize> HashToField<F>
+    for LegacyFieldHasher<H, SEC_PARAM>
+{
+    fn new(dst: &[u8]) -> Self {
+        Self(DefaultFieldHasher::new_given_z_pad_len::<F>(
+            dst,
+            get_len_per_elem::<F, SEC_PARAM>(),
+        ))
+    }
+
+    fn hash_to_field<const N: usize>(&self, message: &[u8]) -> [F; N] {
+        self.0.hash::<F, N>(message)
     }
 }
 
@@ -123,9 +159,10 @@ const fn get_len_per_elem<F: Field, const SEC_PARAM: usize>() -> usize {
 mod test {
     use ark_test_curves::{
         ark_ff::{
-            field_hashers::{DefaultFieldHasher, HashToField},
+            field_hashers::{DefaultFieldHasher, HashToField, LegacyFieldHasher},
             PrimeField,
         },
+        bls12_381,
         secp256k1::Fq,
     };
     use sha2::Sha256;
@@ -164,6 +201,57 @@ mod test {
         for (msg, want) in vectors {
             let got: [Fq; 2] = hasher.hash_to_field(msg.as_bytes());
             let want = want.map(|u| Fq::from_be_bytes_mod_order(&hex::decode(u).unwrap()));
+            assert_eq!(got, want, "msg = {msg:?}");
+        }
+    }
+
+    /// `LegacyFieldHasher` on the RFC 9380 appendix J.8.1 inputs, with the expected values computed
+    /// by `expand_message_xmd` with a 48-byte Z_pad.
+    #[test]
+    fn test_legacy_hash_to_field_secp256k1() {
+        let hasher = <LegacyFieldHasher<Sha256, 128> as HashToField<Fq>>::new(
+            b"QUUX-V01-CS02-with-secp256k1_XMD:SHA-256_SSWU_RO_",
+        );
+        let vectors: [(&str, [&str; 2]); 3] = [
+            (
+                "",
+                [
+                    "09c84b120e693ffc6c7f0fce162aef5f996c50beac4b102685a4ed9888f5c322",
+                    "b92d8673fe1d1ba210d06b178160b65e64bfb8e95bd162cb9c62ae2750d2c0e2",
+                ],
+            ),
+            (
+                "abc",
+                [
+                    "0d55eddbbd9b8435ad371665d6942b51d340934eb461555a61737e9a730383b5",
+                    "550a31478c70fe98b1c778a91398425a0ff9ca88d41d003346c9f46b6fe04998",
+                ],
+            ),
+            (
+                "abcdef0123456789",
+                [
+                    "8984b558c9895cf7fa8c55bb4602ef054cf7d6efe2659805d01b73ec49667174",
+                    "425cfa137baa113ab5ea91d03b9d9bbda9a48e172064277f0644dcd52eff1877",
+                ],
+            ),
+        ];
+        for (msg, want) in vectors {
+            let got: [Fq; 2] = hasher.hash_to_field(msg.as_bytes());
+            let want = want.map(|u| Fq::from_be_bytes_mod_order(&hex::decode(u).unwrap()));
+            assert_eq!(got, want, "msg = {msg:?}");
+        }
+    }
+
+    /// `LegacyFieldHasher` equals `DefaultFieldHasher` when the element length is SHA-256's 64-byte
+    /// block, as for BLS12-381's base field.
+    #[test]
+    fn test_legacy_hash_to_field_matches_default_for_64_byte_elements() {
+        let dst = b"QUUX-V01-CS02-with-BLS12381G1_XMD:SHA-256_SSWU_RO_";
+        let default = <DefaultFieldHasher<Sha256, 128> as HashToField<bls12_381::Fq>>::new(dst);
+        let legacy = <LegacyFieldHasher<Sha256, 128> as HashToField<bls12_381::Fq>>::new(dst);
+        for msg in ["", "abc", "abcdef0123456789"] {
+            let want: [bls12_381::Fq; 2] = default.hash_to_field(msg.as_bytes());
+            let got: [bls12_381::Fq; 2] = legacy.hash_to_field(msg.as_bytes());
             assert_eq!(got, want, "msg = {msg:?}");
         }
     }
