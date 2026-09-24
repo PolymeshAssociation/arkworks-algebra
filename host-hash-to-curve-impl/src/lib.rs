@@ -1,5 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+use ark_bls12_381::{g1::Config as Bls12_381G1Config, g2::Config as Bls12_381G2Config};
+use ark_bn254::{g1::Config as Bn254G1Config, g2::Config as Bn254G2Config};
 use ark_ec::short_weierstrass::Affine;
 pub use ark_host_hash_to_curve::{
     batch_serialized_size, curve_id, BatchHashToCurveRequest, HashToCurveConfig,
@@ -25,6 +27,10 @@ impl RegisteredCurves {
         };
         curves.register_curve::<PallasConfig>();
         curves.register_curve::<VestaConfig>();
+        curves.register_curve::<Bls12_381G1Config>();
+        curves.register_curve::<Bls12_381G2Config>();
+        curves.register_curve::<Bn254G1Config>();
+        curves.register_curve::<Bn254G2Config>();
         curves
     }
 
@@ -151,11 +157,22 @@ mod tests {
     fn round_trip_matches_local() {
         round_trip::<PallasConfig>();
         round_trip::<VestaConfig>();
+        round_trip::<Bls12_381G1Config>();
+        round_trip::<Bls12_381G2Config>();
+        round_trip::<Bn254G1Config>();
+        round_trip::<Bn254G2Config>();
     }
 
     #[test]
     fn probe() {
-        for id in [curve_id::<PallasConfig>(), curve_id::<VestaConfig>()] {
+        for id in [
+            curve_id::<PallasConfig>(),
+            curve_id::<VestaConfig>(),
+            curve_id::<Bls12_381G1Config>(),
+            curve_id::<Bls12_381G2Config>(),
+            curve_id::<Bn254G1Config>(),
+            curve_id::<Bn254G2Config>(),
+        ] {
             let mut buffer = Vec::new();
             id.serialize_uncompressed(&mut buffer).unwrap();
             assert_eq!(host_batch_hash_to_curve(&mut buffer, CURVE_ID_LEN as u32), 1);
