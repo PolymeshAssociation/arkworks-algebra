@@ -16,6 +16,8 @@ members = [
 
     "host-msm",
     "host-msm-impl",
+    "host-hash-to-curve",
+    "host-hash-to-curve-impl",
 ]
 exclude = ["curves"]
 resolver = "2"
@@ -150,6 +152,8 @@ ark-std = { version = "0.5.0", default-features = false }
 
 ark-host-msm = { version = "0.5.0", path = "./host-msm", default-features = false }
 ark-host-msm-impl = { version = "0.5.0", path = "./host-msm-impl", default-features = false }
+ark-host-hash-to-curve = { version = "0.5.0", path = "./host-hash-to-curve", default-features = false }
+ark-host-hash-to-curve-impl = { version = "0.5.0", path = "./host-hash-to-curve-impl", default-features = false }
 
 ark-algebra-bench-templates = { version = "0.5.0", path = "./bench-templates", default-features = false }
 ark-algebra-test-templates = { version = "0.5.0", path = "./test-templates", default-features = false }
@@ -170,6 +174,7 @@ ark-secq256k1 = { version = "0.5.0", path = "./curves/secq256k1", default-featur
 ark-helios = { version = "0.5.0", path = "./curves/helios", default-features = false }
 ark-selene = { version = "0.5.0", path = "./curves/selene", default-features = false }
 ark-curve25519 = { version = "0.5.0", path = "./curves/curve25519", default-features = false }
+ark-wei25519 = { version = "0.5.0", path = "./curves/wei25519", default-features = false }
 ark-bls12-381 = { version = "0.5.0", path = "./curves/bls12_381", default-features = false }
 ark-bn254 = { version = "0.5.0", path = "./curves/bn254", default-features = false }
 

@@ -12,6 +12,11 @@ pub trait MapToCurve<T: CurveGroup>: Sized {
 
     /// Map an arbitrary field element to a corresponding curve point.
     fn map_to_curve(point: T::BaseField) -> Result<T::Affine, HashToCurveError>;
+
+    /// Map two field elements to curve points and return their sum.
+    fn map_to_curve_sum(u0: T::BaseField, u1: T::BaseField) -> Result<T, HashToCurveError> {
+        Ok(Self::map_to_curve(u0)? + Self::map_to_curve(u1)?)
+    }
 }
 
 /// A helper struct used to construct elements on an elliptic curve
@@ -63,10 +68,8 @@ where
 
         let rand_field_elems = self.field_hasher.hash_to_field::<2>(msg);
 
-        let rand_curve_elem_0 = M2C::map_to_curve(rand_field_elems[0])?;
-        let rand_curve_elem_1 = M2C::map_to_curve(rand_field_elems[1])?;
-
-        let rand_curve_elem = (rand_curve_elem_0 + rand_curve_elem_1).into();
+        let rand_curve_elem =
+            M2C::map_to_curve_sum(rand_field_elems[0], rand_field_elems[1])?.into_affine();
         let rand_subgroup_elem = rand_curve_elem.clear_cofactor();
 
         Ok(rand_subgroup_elem)

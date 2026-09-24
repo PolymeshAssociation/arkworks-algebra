@@ -1,7 +1,8 @@
 use core::marker::PhantomData;
 
 use crate::{models::short_weierstrass::SWCurveConfig, CurveConfig};
-use ark_ff::{batch_inversion, Field};
+use ark_ff::{batch_inversion, Field, One, Zero};
+use ark_std::vec::Vec;
 
 use crate::{
     hashing::{map_to_curve_hasher::MapToCurve, HashToCurveError},
@@ -58,6 +59,51 @@ where
             },
             None => Ok(Affine::identity()),
         }
+    }
+
+    /// Apply the isogeny to a point in Jacobian coordinates without an inversion. With `k` the
+    /// largest degree among the four polynomials, each polynomial `f` of degree `d` is evaluated
+    /// as `F = \sum_i{c_i * X^i * Z^{2(k - i)}} = Z^{2k} * f(x)` for affine `x = X / Z^2`, so
+    /// the image is `x' = F_xn / F_xd`, `y' = Y * F_yn / (Z^3 * F_yd)`, and it is returned as
+    /// `(F_xn * F_xd * F_yd^2 * Z^6, Y * F_yn * F_xd^3 * F_yd^2 * Z^6, F_xd * F_yd * Z^3)`.
+    fn apply_projective(&self, domain_point: Projective<Domain>) -> Projective<Codomain> {
+        let Projective { x, y, z } = domain_point;
+        let k = [
+            self.x_map_numerator.len(),
+            self.x_map_denominator.len(),
+            self.y_map_numerator.len(),
+            self.y_map_denominator.len(),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(1)
+        .saturating_sub(1);
+
+        let z2 = z.square();
+        let mut z2_powers = Vec::with_capacity(k + 1);
+        z2_powers.push(BaseField::<Domain>::one());
+        for i in 0..k {
+            z2_powers.push(z2_powers[i] * z2);
+        }
+        let evaluate = |coeffs: &[BaseField<Domain>]| {
+            let mut acc = BaseField::<Domain>::zero();
+            let mut x_power = BaseField::<Domain>::one();
+            for (i, c) in coeffs.iter().enumerate() {
+                acc += *c * x_power * z2_powers[k - i];
+                x_power *= x;
+            }
+            acc
+        };
+
+        let x_num = evaluate(self.x_map_numerator);
+        let x_den = evaluate(self.x_map_denominator);
+        let y_num = evaluate(self.y_map_numerator) * y;
+        let y_den = evaluate(self.y_map_denominator) * z2 * z;
+
+        let z_out = x_den * y_den;
+        let x_out = x_num * y_den * z_out;
+        let y_out = y_num * x_den * z_out.square();
+        Projective::new_unchecked(x_out, y_out, z_out)
     }
 }
 
@@ -123,6 +169,17 @@ impl<P: WBConfig> MapToCurve<Projective<P>> for WBMap<P> {
         // first we need to map the field point to the isogenous curve
         let point_on_isogenious_curve = SWUMap::map_to_curve(element).unwrap();
         P::ISOGENY_MAP.apply(point_on_isogenious_curve)
+    }
+
+    /// Adds the two points on the isogenous curve and applies the isogeny once. Equal to the sum
+    /// of the two `map_to_curve` images since an isogeny is a group homomorphism.
+    fn map_to_curve_sum(
+        u0: <Affine<P> as AffineRepr>::BaseField,
+        u1: <Affine<P> as AffineRepr>::BaseField,
+    ) -> Result<Projective<P>, HashToCurveError> {
+        let p0 = SWUMap::<P::IsogenousCurve>::map_to_curve(u0)?;
+        let p1 = SWUMap::<P::IsogenousCurve>::map_to_curve(u1)?;
+        Ok(P::ISOGENY_MAP.apply_projective(p0 + p1))
     }
 }
 
@@ -346,6 +403,42 @@ pub(crate) mod test {
         assert!(
             hash_result.is_on_curve(),
             "hash results into a point off the curve"
+        );
+    }
+
+    /// `map_to_curve_sum` adds on the isogenous curve and applies the isogeny once. It must equal
+    /// the sum of the two `map_to_curve` images for every pair of inputs, including equal inputs
+    /// and pairs whose images cancel.
+    #[test]
+    fn map_to_curve_sum_matches_separate_maps() {
+        use crate::{hashing::map_to_curve_hasher::MapToCurve, CurveGroup, PrimeGroup};
+        use ark_ff::Zero;
+
+        type Map = WBMap<TestWBF127MapToCurveConfig>;
+        let mut cancelling_pairs = 0;
+        for i in 0..127u64 {
+            for j in 0..127u64 {
+                let (u0, u1) = (F127::from(i), F127::from(j));
+                let expected: Projective<TestWBF127MapToCurveConfig> =
+                    Map::map_to_curve(u0).unwrap() + Map::map_to_curve(u1).unwrap();
+                let got = Map::map_to_curve_sum(u0, u1).unwrap();
+                assert_eq!(got.into_affine(), expected.into_affine(), "u0 = {i}, u1 = {j}");
+                if expected == Projective::zero() {
+                    cancelling_pairs += 1;
+                }
+            }
+        }
+        assert!(cancelling_pairs > 0);
+
+        let identity = Projective::<TestSWU127MapToIsogenousCurveConfig>::zero();
+        assert_eq!(
+            TestWBF127MapToCurveConfig::ISOGENY_MAP.apply_projective(identity),
+            Projective::<TestWBF127MapToCurveConfig>::zero()
+        );
+        let g = Projective::<TestSWU127MapToIsogenousCurveConfig>::generator();
+        assert_eq!(
+            TestWBF127MapToCurveConfig::ISOGENY_MAP.apply_projective(g).into_affine(),
+            TestWBF127MapToCurveConfig::ISOGENY_MAP.apply(g.into_affine()).unwrap()
         );
     }
 }
