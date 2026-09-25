@@ -28,7 +28,7 @@ use crate::{
     AdditiveGroup, AffineRepr,
 };
 use ark_ff::{serial_batch_inversion_and_mul, Field, One, PrimeField, Zero};
-use ark_std::{cfg_into_iter, vec, vec::Vec};
+use ark_std::vec::Vec;
 use itertools::Either;
 
 #[cfg(feature = "parallel")]
@@ -94,6 +94,16 @@ pub(crate) struct ReduceScratch<F: Zero> {
     pending: Pending<F>,
 }
 
+/// Buffers for one [`window_sum`], reused across the windows a worker runs: the counting sort's
+/// output and the reduction levels.
+#[derive(Default)]
+struct WindowScratch<F: Zero> {
+    offsets: Vec<usize>,
+    positions: Vec<usize>,
+    points: Vec<Point<F>>,
+    reduce: ReduceScratch<F>,
+}
+
 /// `sum(bases_i * scalars_i)` with affine buckets. Mirrors
 /// [`msm_unchecked`](crate::VariableBaseMSM::msm_unchecked): routes through [`route_msm`] (host
 /// MSM on guest builds, then the GLV ladder), else convert to bigints and call
@@ -127,16 +137,24 @@ pub fn msm_batch_affine_bigint<P: SWCurveConfig>(
         num_buckets,
     } = pippenger_setup::<P::ScalarField>(bigints, size);
 
-    let window_sums: Vec<_> = cfg_into_iter!(0..digits_count)
-        .map(|i| {
-            let n = if i == (digits_count - 1) {
-                ms_window_num_buckets
-            } else {
-                num_buckets
-            };
-            window_sum::<P>(&scalar_digits, digits_count, i, bases, n)
-        })
+    let window = |i: usize, scratch: &mut WindowScratch<P::BaseField>| {
+        let n = if i == (digits_count - 1) {
+            ms_window_num_buckets
+        } else {
+            num_buckets
+        };
+        window_sum::<P>(&scalar_digits, digits_count, i, bases, n, scratch)
+    };
+    #[cfg(feature = "parallel")]
+    let window_sums: Vec<_> = (0..digits_count)
+        .into_par_iter()
+        .map_init(WindowScratch::default, |scratch, i| window(i, scratch))
         .collect();
+    #[cfg(not(feature = "parallel"))]
+    let window_sums: Vec<_> = {
+        let mut scratch = WindowScratch::default();
+        (0..digits_count).map(|i| window(i, &mut scratch)).collect()
+    };
 
     combine_window_sums::<Projective<P>>(&window_sums, c)
 }
@@ -149,22 +167,36 @@ fn window_sum<P: SWCurveConfig>(
     window_index: usize,
     bases: &[Affine<P>],
     num_buckets: usize,
+    scratch: &mut WindowScratch<P::BaseField>,
 ) -> Bucket<P> {
+    let WindowScratch {
+        offsets,
+        positions,
+        points,
+        reduce,
+    } = scratch;
     // `scalar_digits` is scalar-major, so base `i`'s digit for this window is
     // `scalar_digits[i * digits_count + window_index]`. An identity base is mapped to digit 0 so it
     // is ignored in the bucket.
-    let (mut offsets, mut points) = counting_sort::<P>(num_buckets, bases.len(), |i| {
-        let base = bases[i];
-        let d = if base.is_zero() {
-            0
-        } else {
-            scalar_digits[i * digits_count + window_index]
-        };
-        (d, base)
-    });
+    counting_sort_into::<P>(
+        num_buckets,
+        bases.len(),
+        |i| {
+            let base = bases[i];
+            let d = if base.is_zero() {
+                0
+            } else {
+                scalar_digits[i * digits_count + window_index]
+            };
+            (d, base)
+        },
+        offsets,
+        positions,
+        points,
+    );
 
-    reduce_tree::<P>(&mut points, &mut offsets, true);
-    running_bucket_sum::<P>(&points, &offsets)
+    let (points, offsets) = reduce_tree_with::<P>(points, offsets, true, reduce);
+    running_bucket_sum::<P>(points, offsets)
 }
 
 /// Same idea as [crate::scalar_mul::variable_base::reduce_buckets]. bucket `b` (magnitude `b + 1`)
@@ -338,8 +370,24 @@ pub(crate) fn counting_sort<P: SWCurveConfig>(
     len: usize,
     entry: impl Fn(usize) -> (i64, Affine<P>),
 ) -> (Vec<usize>, Vec<Point<P::BaseField>>) {
+    let (mut offsets, mut positions, mut points) = (Vec::new(), Vec::new(), Vec::new());
+    counting_sort_into::<P>(num_buckets, len, entry, &mut offsets, &mut positions, &mut points);
+    (offsets, points)
+}
+
+/// [`counting_sort`] into caller-owned buffers, which are cleared first. `positions` is working
+/// space.
+fn counting_sort_into<P: SWCurveConfig>(
+    num_buckets: usize,
+    len: usize,
+    entry: impl Fn(usize) -> (i64, Affine<P>),
+    offsets: &mut Vec<usize>,
+    positions: &mut Vec<usize>,
+    points: &mut Vec<Point<P::BaseField>>,
+) {
     // Bucket sizes, then their prefix sums.
-    let mut offsets = vec![0usize; num_buckets + 1];
+    offsets.clear();
+    offsets.resize(num_buckets + 1, 0);
     for i in 0..len {
         let d = entry(i).0;
         if d != 0 {
@@ -351,8 +399,10 @@ pub(crate) fn counting_sort<P: SWCurveConfig>(
     }
 
     // Place every nonzero entry into its bucket, contiguous.
-    let mut positions = offsets[..num_buckets].to_vec();
-    let mut points = vec![Point::default(); offsets[num_buckets]];
+    positions.clear();
+    positions.extend_from_slice(&offsets[..num_buckets]);
+    points.clear();
+    points.resize(offsets[num_buckets], Point::default());
     for i in 0..len {
         let (d, base) = entry(i);
         if d == 0 {
@@ -362,7 +412,6 @@ pub(crate) fn counting_sort<P: SWCurveConfig>(
         points[positions[b]] = signed_point(&base, d < 0);
         positions[b] += 1;
     }
-    (offsets, points)
 }
 
 /// Finishes every pending addition, one batch inversion for the whole level. `None`, with
@@ -452,7 +501,6 @@ fn par_batch_add<P: SWCurveConfig>(
 /// [`reduce_tree`] over borrowed input, staging every level in `scratch`. Returns the reduced
 /// level, at most one point per bucket, which lives in `scratch` (or is the input when no bucket
 /// held two points).
-#[cfg(feature = "parallel")]
 pub(crate) fn reduce_tree_with<'a, P: SWCurveConfig>(
     points: &'a [Point<P::BaseField>],
     offsets: &'a [usize],

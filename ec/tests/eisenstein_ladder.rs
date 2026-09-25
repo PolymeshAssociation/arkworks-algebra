@@ -187,3 +187,85 @@ fn direct_double_add_for<P: GLVConfig>() {
 fn direct_double_add() {
     for_each_curve!(direct_double_add_for);
 }
+
+/// A nonzero lattice vector `(a, b)` with `\pm a \pm b\lambda = 0 \bmod r` recodes to a nonzero
+/// digit string for the scalar zero. Its schedule fails the batch-affine ladder's safety check,
+/// so the batch takes the per-point ladder and every product is the identity.
+fn lattice_vector_schedule_for<P: GLVConfig>() {
+    let curve = type_name::<P>();
+    let coeffs = P::SCALAR_DECOMP_COEFFS;
+    let rows = [(coeffs[0], coeffs[1]), (coeffs[2], coeffs[3])];
+    let mut found = None;
+    'search: for ((_, a), (_, b)) in rows {
+        let (a, b) = (P::ScalarField::from_bigint(a).unwrap(), P::ScalarField::from_bigint(b).unwrap());
+        for sa in [true, false] {
+            for sb in [true, false] {
+                let va = if sa { a } else { -a };
+                let vb = if sb { b } else { -b };
+                if (va + vb * P::LAMBDA).is_zero() {
+                    if let Some(d) = Decomposed::<P>::new_given_halves(sa, a, sb, b) {
+                        found = Some(d);
+                        break 'search;
+                    }
+                }
+            }
+        }
+    }
+    let d = found.unwrap_or_else(|| panic!("{curve}: no lattice row fits the recoding"));
+    assert!(d.len() > 2, "{curve}: lattice vector recodes to {} digits", d.len());
+
+    let mut rng = test_rng();
+    let points = (0..40).map(|_| Projective::<P>::rand(&mut rng)).collect::<Vec<_>>();
+    let tables = Table::<P>::batch(&points);
+    let batch = Table::mul_decomposed_batch(&tables, &d);
+    for (i, (table, b)) in tables.iter().zip(&batch).enumerate() {
+        assert!(b.is_zero(), "{curve}: table {i} batch is not the identity");
+        assert_eq!(*b, table.mul_decomposed(&d), "{curve}: table {i} batch vs per-point");
+    }
+}
+
+#[test]
+fn lattice_vector_schedule_takes_per_point_ladder() {
+    for_each_curve!(lattice_vector_schedule_for);
+}
+
+/// BLS12-381 G1 has the order-3 points `(0, \pm 2)`, fixed by the endomorphism, so the affine
+/// table chain meets an equal-x pair in its first layer and an identity operand in its second.
+/// Both fall back to the projective build, and the tables match it entry by entry.
+#[test]
+fn table_batch_falls_back_on_exceptional_points() {
+    type P = ark_test_curves::bls12_381::g1::Config;
+    type Fq = <P as ark_ec::CurveConfig>::BaseField;
+    let mut rng = test_rng();
+    let two = Fq::from(2u64);
+    let torsion = [Affine::<P>::new_unchecked(Fq::zero(), two), Affine::<P>::new_unchecked(Fq::zero(), -two)];
+    assert!(torsion.iter().all(|t| t.is_on_curve()));
+    let mut points = (0..6).map(|_| Projective::<P>::rand(&mut rng)).collect::<Vec<_>>();
+    points.insert(2, torsion[0].into_group());
+    points.insert(5, Projective::<P>::zero());
+    points.push(torsion[1].into_group());
+
+    let affine = points.iter().map(|p| p.into_affine()).collect::<Vec<_>>();
+    let expected = Table::<P>::batch_projective(&points);
+    for (label, tables) in [
+        ("batch", Table::<P>::batch(&points)),
+        ("batch_from_affine", Table::<P>::batch_from_affine(&affine)),
+    ] {
+        for (i, (t, e)) in tables.iter().zip(&expected).enumerate() {
+            assert_eq!(t.is_identity(), e.is_identity(), "{label}: table {i} identity");
+            if e.is_identity() {
+                continue;
+            }
+            for code in 1..=48u8 {
+                assert_eq!(t.digit_point(code), e.digit_point(code), "{label}: table {i}, digit {code}");
+            }
+        }
+    }
+
+    // GLV is exact off the subgroup for scalars below `2^128`.
+    let k = <P as ark_ec::CurveConfig>::ScalarField::from(u128::rand(&mut rng));
+    let d = Decomposed::<P>::new(k).unwrap();
+    for (p, t) in points.iter().zip(Table::<P>::batch(&points)) {
+        assert_eq!(t.mul_decomposed(&d), naive_mul(*p, k));
+    }
+}
