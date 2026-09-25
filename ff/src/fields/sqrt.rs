@@ -198,6 +198,45 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
         }
     }
 
+    /// `(true, sqrt(elem))` when `elem` is a square, else `(false, sqrt(zeta * elem))`, for a
+    /// non-square `zeta` and `zeta_trace_power = zeta^((T - 1) / 2)` with `p - 1 = T * 2^S`,
+    /// `T` odd. For Tonelli-Shanks and `Sarkar2020`, `(zeta * elem)^((T - 1) / 2)` is
+    /// `zeta_trace_power * elem^((T - 1) / 2)`, so both roots share one exponentiation; the
+    /// other variants take two square roots.
+    pub fn sqrt_or_scaled_sqrt(&self, elem: &F, zeta: &F, zeta_trace_power: &F) -> (bool, F) {
+        match self {
+            Self::TonelliShanks {
+                trace_of_modulus_minus_one_div_two: trace,
+                ..
+            }
+            | Self::Sarkar2020 {
+                trace_minus_one_div_two: trace,
+                ..
+            } => {
+                if elem.is_zero() {
+                    return (true, F::zero());
+                }
+                let v = elem.pow(trace);
+                match self.sqrt_given_trace_power(elem, v) {
+                    Some(y) => (true, y),
+                    None => (
+                        false,
+                        self.sqrt_given_trace_power(&(*zeta * elem), v * zeta_trace_power)
+                            .expect("zeta * elem is a square when elem is not"),
+                    ),
+                }
+            },
+            _ => match self.sqrt(elem) {
+                Some(y) => (true, y),
+                None => (
+                    false,
+                    self.sqrt(&(*zeta * elem))
+                        .expect("zeta * elem is a square when elem is not"),
+                ),
+            },
+        }
+    }
+
     /// Square root of a nonzero `elem` given `trace_power = elem^((T - 1) / 2)`, for the
     /// Tonelli-Shanks and `Sarkar2020` variants.
     fn sqrt_given_trace_power(&self, elem: &F, trace_power: F) -> Option<F> {
@@ -330,5 +369,42 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
             },
             _ => unreachable!("only Tonelli-Shanks and Sarkar2020 start from the trace power"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ark_std::{test_rng, UniformRand};
+    use ark_test_curves::{
+        ark_ff::{Field, LegendreSymbol, PrimeField, SqrtPrecomputation},
+        bls12_381::{Fq, Fr},
+    };
+
+    /// `sqrt_or_scaled_sqrt` against `sqrt` of `elem` or `zeta * elem`: BLS12-381 `Fr` takes the
+    /// Tonelli-Shanks path, `Fq` (3 mod 4) the two-root fallback.
+    fn check<F: PrimeField>() {
+        let zeta = (2u64..)
+            .map(F::from)
+            .find(|z| z.legendre() == LegendreSymbol::QuadraticNonResidue)
+            .unwrap();
+        let zeta_trace_power = zeta.pow(F::TRACE_MINUS_ONE_DIV_TWO);
+        let precomp: SqrtPrecomputation<F> = F::SQRT_PRECOMP.unwrap();
+        let mut rng = test_rng();
+        let inputs = [F::zero(), F::one(), -F::one(), zeta]
+            .into_iter()
+            .chain((0..1000).map(|_| F::rand(&mut rng)));
+        for e in inputs {
+            let expected = match e.sqrt() {
+                Some(y) => (true, y),
+                None => (false, (zeta * e).sqrt().unwrap()),
+            };
+            assert_eq!(precomp.sqrt_or_scaled_sqrt(&e, &zeta, &zeta_trace_power), expected);
+        }
+    }
+
+    #[test]
+    fn sqrt_or_scaled_sqrt_matches_two_roots() {
+        check::<Fr>();
+        check::<Fq>();
     }
 }

@@ -50,9 +50,22 @@ const ISO_GENERATOR_X: Fq = MontFp!("0");
 const ISO_GENERATOR_Y: Fq =
     MontFp!("18757143033426632116356352624818188154880656819263833216198390681205662132804");
 
+/// `ZETA^((T - 1) / 2)` with `p - 1 = T * 2^32`, `T` odd.
+pub(crate) const ZETA_TRACE_POWER: Fq =
+    MontFp!("24572433101797051318859476537138851131189150516971437659543983992465105113839");
+
 impl SWUConfig for SwuIsoConfig {
     /// ZETA = -13
     const ZETA: Fq = MontFp!("-13");
+
+    /// Both roots from one exponentiation, through
+    /// [`SqrtPrecomputation::sqrt_or_scaled_sqrt`](ark_ff::SqrtPrecomputation::sqrt_or_scaled_sqrt).
+    fn sqrt_or_zeta_sqrt(gx1: Fq) -> (bool, Fq) {
+        match <Fq as Field>::SQRT_PRECOMP {
+            Some(precomp) => precomp.sqrt_or_scaled_sqrt(&gx1, &Self::ZETA, &ZETA_TRACE_POWER),
+            None => unreachable!("the base field has a Sarkar square-root table"),
+        }
+    }
 }
 
 /// The 3-isogeny from `SwuIsoConfig` to Pallas. Coefficients are from

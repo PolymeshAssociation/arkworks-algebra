@@ -50,9 +50,22 @@ const ISO_GENERATOR_X: Fq = MontFp!("0");
 const ISO_GENERATOR_Y: Fq =
     MontFp!("24168672240094656118439194445685110693789334875363060050166186932715309622324");
 
+/// `ZETA^((T - 1) / 2)` with `p - 1 = T * 2^32`, `T` odd.
+pub(crate) const ZETA_TRACE_POWER: Fq =
+    MontFp!("22846791458325081281952206752198960154197157466640798782850558132882397608233");
+
 impl SWUConfig for SwuIsoConfig {
     /// ZETA = -13
     const ZETA: Fq = MontFp!("-13");
+
+    /// Both roots from one exponentiation, through
+    /// [`SqrtPrecomputation::sqrt_or_scaled_sqrt`](ark_ff::SqrtPrecomputation::sqrt_or_scaled_sqrt).
+    fn sqrt_or_zeta_sqrt(gx1: Fq) -> (bool, Fq) {
+        match <Fq as Field>::SQRT_PRECOMP {
+            Some(precomp) => precomp.sqrt_or_scaled_sqrt(&gx1, &Self::ZETA, &ZETA_TRACE_POWER),
+            None => unreachable!("the base field has a Sarkar square-root table"),
+        }
+    }
 }
 
 /// The 3-isogeny from `SwuIsoConfig` to Vesta. Coefficients are from
