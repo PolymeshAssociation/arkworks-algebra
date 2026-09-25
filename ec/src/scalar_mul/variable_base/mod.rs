@@ -470,7 +470,10 @@ fn msm_u64<V: VariableBaseMSM>(mut bases: &[V::MulBase], mut scalars: &[u64]) ->
 }
 
 /// Combines per-window bucket sums into the final MSM result using Horner's method.
-pub(crate) fn combine_window_sums<V: VariableBaseMSM>(window_sums: &[V::Bucket], window_size: usize) -> V {
+pub(crate) fn combine_window_sums<V: VariableBaseMSM>(
+    window_sums: &[V::Bucket],
+    window_size: usize,
+) -> V {
     // Horner's rule
     window_sums
         .iter()
@@ -596,7 +599,11 @@ pub fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
         .map(|i| {
             let mut buckets = vec![
                 V::ZERO_BUCKET;
-                if i == (digits_count-1) {ms_window_num_buckets} else {num_buckets}
+                if i == (digits_count - 1) {
+                    ms_window_num_buckets
+                } else {
+                    num_buckets
+                }
             ];
             for (digits, base) in scalar_digits.chunks(digits_count).zip(bases) {
                 use ark_std::cmp::Ordering;
@@ -657,12 +664,19 @@ pub fn msm_bigint_wnaf<V: VariableBaseMSM>(
     cfg_chunks!(bases, chunk_size)
         .zip(cfg_chunks!(scalars, chunk_size))
         .map(|(bases, scalars)| {
+            // Each chunk gets a small dedicated pool so the per-window parallelism inside
+            // `msm_bigint_wnaf_parallel` does not oversubscribe the global pool. Building a
+            // pool can fail (thread-spawn limits, sandboxing, memory pressure); this is a
+            // verification hot path so never panic on that: fall back to running the chunk on
+            // the current (global) pool instead.
             #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
-            let result = rayon::ThreadPoolBuilder::new()
+            let result = match rayon::ThreadPoolBuilder::new()
                 .num_threads(THREADS_PER_CHUNK.min(rayon::current_num_threads()))
                 .build()
-                .unwrap()
-                .install(|| msm_bigint_wnaf_parallel::<V>(bases, scalars));
+            {
+                Ok(pool) => pool.install(|| msm_bigint_wnaf_parallel::<V>(bases, scalars)),
+                Err(_) => msm_bigint_wnaf_parallel::<V>(bases, scalars),
+            };
 
             #[cfg(any(not(feature = "parallel"), target_arch = "wasm32"))]
             let result = msm_bigint_wnaf_parallel::<V>(bases, scalars);

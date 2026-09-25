@@ -1,6 +1,8 @@
+use crate::{
+    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
+};
 use ark_std::io::{Read, Write};
 use parity_scale_codec::{Compact, Decode, Encode, Error as ScaleError, Input, Output};
-use crate::{CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CompactU64(pub u64);
@@ -25,12 +27,22 @@ impl From<u64> for CompactU64 {
     }
 }
 
-struct WriteOutput<T: Write>(T);
+/// Adapter from `ark_std::io::Write` to SCALE's infallible `Output`. Any write error is
+/// recorded and surfaced by `serialize_with_mode` (SCALE's `Output::write` cannot fail, so the
+/// error must be carried out of band instead of being asserted away).
+struct WriteOutput<T: Write> {
+    writer: T,
+    error: Option<ark_std::io::Error>,
+}
 
 impl<T: Write> Output for WriteOutput<T> {
     fn write(&mut self, bytes: &[u8]) {
-        let res = self.0.write_all(bytes);
-        debug_assert!(res.is_ok());
+        if self.error.is_some() {
+            return;
+        }
+        if let Err(e) = self.writer.write_all(bytes) {
+            self.error = Some(e);
+        }
     }
 }
 
@@ -61,10 +73,16 @@ impl CanonicalSerialize for CompactU64 {
         writer: W,
         _compress: Compress,
     ) -> Result<(), SerializationError> {
-        let mut out = WriteOutput(writer);
+        let mut out = WriteOutput {
+            writer,
+            error: None,
+        };
 
         Compact(self.0).encode_to(&mut out);
-        Ok(())
+        match out.error {
+            None => Ok(()),
+            Some(e) => Err(SerializationError::IoError(e)),
+        }
     }
 
     #[inline]

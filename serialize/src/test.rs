@@ -344,7 +344,11 @@ fn test_biguint() {
     let biguint = BigUint::from(123456u64);
     test_serialize(biguint.clone());
 
-    let mut expected = (biguint.to_bytes_le().len() as u64).to_le_bytes().to_vec();
+    // Length prefix is a SCALE compact integer (see `impls/compact.rs`), not a fixed `u64`.
+    let mut expected = Vec::new();
+    crate::impls::compact::CompactU64::from(biguint.to_bytes_le().len())
+        .serialize_compressed(&mut expected)
+        .unwrap();
     expected.extend_from_slice(&biguint.to_bytes_le());
 
     let mut bytes = Vec::new();
