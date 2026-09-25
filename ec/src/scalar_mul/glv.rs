@@ -1,4 +1,5 @@
 use crate::{
+    scalar_mul::{double_and_add, double_and_add_affine},
     short_weierstrass::{Affine, Projective, SWCurveConfig},
     AdditiveGroup, CurveGroup,
 };
@@ -89,6 +90,40 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
     fn glv_mul_affine(p: Affine<Self>, k: Self::ScalarField) -> Affine<Self> {
         Self::glv_mul_affine_projective(p, k).into_affine()
     }
+
+    /// `[k]p` for an integer `k` in little-endian limbs, the form
+    /// [`SWCurveConfig::mul_projective`] takes. [`Self::glv_mul_projective`] when `k < r`, exact on
+    /// the order-`r` subgroup and, for `k < 2^128`, on every curve point, since the Eisenstein
+    /// ladder recodes such `k` as `k + 0\omega`. [`double_and_add`] when `k >= r`, where reducing
+    /// `k` mod `r` would make `[r]p` zero off the subgroup and `k` wider than the scalar field
+    /// would not convert.
+    fn glv_mul_projective_bigint(p: &Projective<Self>, k: &[u64]) -> Projective<Self> {
+        match scalar_below_modulus::<Self::ScalarField>(k) {
+            Some(s) => Self::glv_mul_projective(*p, s),
+            None => double_and_add(p, k),
+        }
+    }
+
+    /// [`Self::glv_mul_projective_bigint`] for an affine base, the form
+    /// [`SWCurveConfig::mul_affine`] takes.
+    fn glv_mul_affine_projective_bigint(p: &Affine<Self>, k: &[u64]) -> Projective<Self> {
+        match scalar_below_modulus::<Self::ScalarField>(k) {
+            Some(s) => Self::glv_mul_affine_projective(*p, s),
+            None => double_and_add_affine(p, k),
+        }
+    }
+}
+
+/// The integer `k`, in little-endian limbs, as a scalar field element when `k < r`.
+fn scalar_below_modulus<F: PrimeField>(k: &[u64]) -> Option<F> {
+    let mut repr = F::BigInt::default();
+    let limbs = repr.as_mut();
+    if k.iter().skip(limbs.len()).any(|&l| l != 0) {
+        return None;
+    }
+    let n = k.len().min(limbs.len());
+    limbs[..n].copy_from_slice(&k[..n]);
+    F::from_bigint(repr)
 }
 
 /// `k * p` by splitting `k` into GLV halves and folding their joint sparse form. The path

@@ -201,20 +201,24 @@ impl RegisteredCurves {
         }
     }
 
+    /// Returns `1` for a probe (`buf_len == CURVE_ID_LEN`) of a registered curve, the serialized
+    /// result length for an MSM request, and `0` for an unregistered curve, a malformed request,
+    /// or `buf_len` outside `CURVE_ID_LEN..=buffer.len()`.
     pub fn msm_unchecked(&self, buffer: &mut [u8], buf_len: u32) -> u32 {
-        if (buf_len as usize) < CURVE_ID_LEN {
-            return 0; // Buffer too small to contain curve ID
+        if (buf_len as usize) < CURVE_ID_LEN || buf_len as usize > buffer.len() {
+            return 0;
         }
         if let Some(curve_id) = CurveMSMId::deserialize_uncompressed_unchecked(&buffer[..]).ok() {
             if let Some(msm_fn) = self.curves.get(&curve_id) {
                 return if buf_len as usize > CURVE_ID_LEN {
                     // Prefer the fixed-base table path when a table is registered for this curve.
+                    #[cfg(feature = "std")]
                     if let Some(res_len) = table_cache::try_table_msm(&curve_id, buffer, buf_len) {
                         return res_len;
                     }
                     msm_fn(buffer, buf_len)
                 } else {
-                    0 // Curve is supported, but no MSM data provided
+                    1 // Curve is supported, but no MSM data provided
                 }
             }
         }
@@ -338,6 +342,37 @@ mod tests {
             let expected = Projective::<PallasConfig>::msm_unchecked(&bases, &scalars);
             assert_eq!(run(&bases, &scalars), expected, "n = {n}");
         }
+    }
+
+    /// A probe of a registered curve returns `1`; the guest reads `0` as "unsupported" and
+    /// skips the host.
+    #[test]
+    fn registered_curves_answer_probe() {
+        for name in ["pallas", "vesta"] {
+            let mut probe = Vec::new();
+            CurveMSMId::from_curve_name(name)
+                .serialize_uncompressed(&mut probe)
+                .unwrap();
+            assert_eq!(host_msm_unchecked(&mut probe, CURVE_ID_LEN as u32), 1, "{name}");
+        }
+        for (name, id) in [
+            ("pallas", <Projective<PallasConfig> as VariableBaseMSM>::curve_name()),
+            ("vesta", <Projective<ark_vesta::VestaConfig> as VariableBaseMSM>::curve_name()),
+        ] {
+            assert_eq!(CurveMSMId::from_curve_name(id.unwrap()), CurveMSMId::from_curve_name(name));
+        }
+    }
+
+    /// `buf_len` past the end of `buffer` returns `0` instead of panicking.
+    #[test]
+    fn buf_len_beyond_buffer_is_declined() {
+        let mut rng = test_rng();
+        let bases: Vec<PallasAffine> = (0..4).map(|_| PallasAffine::rand(&mut rng)).collect();
+        let scalars: Vec<PallasFr> = (0..4).map(|_| PallasFr::rand(&mut rng)).collect();
+        let mut buf = build_buffer(&bases, &scalars);
+        let len = buf.len() as u32;
+        assert_eq!(host_msm_unchecked(&mut buf, len + 1), 0);
+        assert_eq!(host_msm_unchecked(&mut buf, u32::MAX), 0);
     }
 
     #[test]

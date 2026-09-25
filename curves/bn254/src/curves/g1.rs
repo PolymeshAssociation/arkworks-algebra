@@ -51,8 +51,7 @@ impl SWCurveConfig for Config {
         p: &bn::G1Projective<crate::Config>,
         scalar: &[u64],
     ) -> bn::G1Projective<crate::Config> {
-        let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
-        GLVConfig::glv_mul_projective(*p, s)
+        <Self as GLVConfig>::glv_mul_projective_bigint(p, scalar)
     }
 
     #[inline]
