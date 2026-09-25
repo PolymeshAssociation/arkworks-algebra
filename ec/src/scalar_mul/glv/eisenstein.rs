@@ -217,6 +217,9 @@ pub struct Decomposed<P: GLVConfig> {
     /// Digit codes, lowest position first; zero at `len` and beyond.
     digits: [u8; MAX_JOINT_DIGITS],
     len: usize,
+    /// The scalar is nonzero mod `r` and both halves are below `2^m` with `2m < MODULUS_BIT_SIZE`,
+    /// which makes [`affine_ladder_safe`] true without running it.
+    ladder_safe_by_norm: bool,
     phantom: PhantomData<P>,
 }
 
@@ -230,27 +233,45 @@ impl<P: GLVConfig> Decomposed<P> {
         // one `into_bigint` that `half` pays on the hit anyway. Generalizes two narrower forms of
         // the same skip in Zakura `glv/zero.rs`: canonical 10-bit table values recoded as
         // `(q, 0)`, and exact zeros.
-        if let Some(d) = Self::new_given_halves(true, k, true, P::ScalarField::ZERO) {
+        let nonzero = !k.is_zero();
+        if let Some(d) = Self::from_halves(true, k, true, P::ScalarField::ZERO, nonzero) {
             return Some(d);
         }
         let ((sgn_a, a), (sgn_b, b)) = P::scalar_decomposition(k);
-        Self::new_given_halves(sgn_a, a, sgn_b, b)
+        Self::from_halves(sgn_a, a, sgn_b, b, nonzero)
     }
 
-    /// Same as [`Self::new`] but on an already computed decomposition.
+    /// Same as [`Self::new`] but on an already computed decomposition `\pm a \pm b\lambda`.
     pub fn new_given_halves(
         sgn_a: bool,
         a: P::ScalarField,
         sgn_b: bool,
         b: P::ScalarField,
     ) -> Option<Self> {
+        let signed = |positive: bool, v: P::ScalarField| if positive { v } else { -v };
+        let nonzero = !(signed(sgn_a, a) + signed(sgn_b, b) * P::LAMBDA).is_zero();
+        Self::from_halves(sgn_a, a, sgn_b, b, nonzero)
+    }
+
+    /// Recodes `\pm a \pm b\omega`. `scalar_nonzero` is whether `\pm a \pm b\lambda \ne 0 \bmod r`.
+    fn from_halves(
+        sgn_a: bool,
+        a: P::ScalarField,
+        sgn_b: bool,
+        b: P::ScalarField,
+        scalar_nonzero: bool,
+    ) -> Option<Self> {
         if P::ScalarField::MODULUS_BIT_SIZE > MAX_SCALAR_BITS {
             return None;
         }
-        let (digits, len) = joint_digits(half(sgn_a, a)?, half(sgn_b, b)?)?;
+        let (a, b) = (half(sgn_a, a)?, half(sgn_b, b)?);
+        let half_bits = u128::BITS - (a.1 | b.1).leading_zeros();
+        let (digits, len) = joint_digits(a, b)?;
         Some(Self {
             digits,
             len,
+            ladder_safe_by_norm: scalar_nonzero
+                && 2 * half_bits < P::ScalarField::MODULUS_BIT_SIZE,
             phantom: PhantomData,
         })
     }
@@ -279,10 +300,17 @@ impl<P: GLVConfig> Decomposed<P> {
 /// `(x(D) - x(P))^2 (2x(P) + x(D)) - (y(D) - y(P))^2` vanishes exactly when `d = s` or `d = -2s`
 /// (the latter also being when the output is the identity), and unlike the two-step formula it
 /// handles `d = -s` (`D = -P`) directly. The conditions depend only on the schedule, so one check
-/// covers the whole batch; random scalars fail it with probability about `2^-124`.
+/// covers the whole batch.
 ///
-/// The ~100 field multiplies here (a `digit_scalar` per nonzero digit) run once per
-/// [`Table::mul_decomposed_batch`] call. The 48 possible digit scalars are built once and looked up.
+/// With `v_j = \sum_{i \ge j}{d_i 2^{i-j}}` the residual at column `j`, `s = v_{j+1}` and
+/// `2s + d = v_j`, so a failure needs `v_{j+1} - d_j` or `v_j` in the prime ideal above `r`. In
+/// `Z[\omega]` neither vanishes: `v_{j+1} = d_j` would give `v_j = 3d_j`, whose digit is not `d_j`
+/// mod 8, and `v_j = 0` only past the top digit. A nonzero element of that ideal has norm at
+/// least `r`, while for halves below `2^m` both elements have coefficients below
+/// `2^{m-1} + 10` for `j \ge 1`, so norm below `2^{2m}`, and `v_0` is the scalar itself. Hence
+/// the check cannot fail when `2m < MODULUS_BIT_SIZE` and the scalar is nonzero, which
+/// [`Decomposed`] records so the ~100 field multiplies here are skipped. It runs for wider
+/// halves and for [`Decomposed::new_given_halves`] input that is zero mod `r`.
 fn affine_ladder_safe<P: GLVConfig>(k: &Decomposed<P>) -> bool {
     debug_assert!(k.len > 0);
     let mut digit_scalars = [P::ScalarField::ZERO; 49];
@@ -355,26 +383,31 @@ impl<P: GLVConfig> Table<P> {
     /// Below it, or once a layer hits an exceptional pair, the projective build stands.
     /// Identity inputs give identity tables and may be mixed in.
     pub fn batch(points: &[Projective<P>]) -> Vec<Self> {
-        let n = points.len();
-        if n < TABLE_BATCH_AFFINE_MIN_POINTS {
+        if points.len() < TABLE_BATCH_AFFINE_MIN_POINTS {
             return Self::batch_projective(points);
         }
+        Self::batch_from_affine(&Projective::normalize_batch(points))
+    }
+
+    /// [`Self::batch`] for affine points, which skips the input normalization.
+    pub fn batch_from_affine(points: &[Affine<P>]) -> Vec<Self> {
+        let n = points.len();
         // Affine chords have no identity case, so those lanes sit out and keep their identity
         // tables.
         let mut non_zero_point_indices = Vec::with_capacity(n);
-        let mut non_zero_points = Vec::with_capacity(n);
-        for (i, p) in points.iter().enumerate() {
-            if !p.is_zero() {
+        let mut p = Vec::with_capacity(n);
+        for (i, q) in points.iter().enumerate() {
+            if !q.is_zero() {
                 non_zero_point_indices.push(i);
-                non_zero_points.push(*p);
+                p.push(*q);
             }
         }
-        if non_zero_points.len() < TABLE_BATCH_AFFINE_MIN_POINTS {
-            return Self::batch_projective(points);
+        if p.len() < TABLE_BATCH_AFFINE_MIN_POINTS {
+            let proj = points.iter().map(|q| q.into_group()).collect::<Vec<_>>();
+            return Self::batch_projective(&proj);
         }
 
         let endo = P::endomorphism_affine;
-        let p = Projective::normalize_batch(&non_zero_points);
         let len = p.len();
         let mut tables = vec![Self::from_window_points(&[Affine::<P>::zero(); 8]); n];
         let mut den = Vec::with_capacity(len);
@@ -535,7 +568,9 @@ impl<P: GLVConfig> Table<P> {
             return vec![Projective::zero(); tables.len()];
         }
         let non_zero: Vec<&Self> = tables.iter().filter(|t| !t.is_identity()).collect();
-        if non_zero.len() < AFFINE_LADDER_MIN_POINTS || !affine_ladder_safe(k) {
+        if non_zero.len() < AFFINE_LADDER_MIN_POINTS
+            || !(k.ladder_safe_by_norm || affine_ladder_safe(k))
+        {
             return tables.iter().map(|t| t.mul_decomposed(k)).collect();
         }
         let (xs, ys) = batch_affine_ladder_raw(&non_zero, k);
@@ -744,7 +779,7 @@ fn batch_affine_ladder_raw<P: GLVConfig>(
 }
 
 /// `sum(bases_i * scalars_i)` by Straus over the joint Eisenstein digit strings: every scalar
-/// is recoded once, one [`Table::batch`] covers every base with a single inversion for all
+/// is recoded once, one [`Table::batch_from_affine`] covers every base with a single inversion for all
 /// `8n` window entries, and one ladder of `max len` columns pays one doubling per column and
 /// one mixed addition per nonzero digit. The bucket algorithm's 255 doublings and 85 window
 /// reductions are replaced by about 126 doublings shared across the whole sum.
@@ -767,8 +802,7 @@ pub fn eisenstein_msm<P: GLVConfig>(
         return Some(Projective::zero());
     }
 
-    let proj = bases[..n].iter().map(|p| p.into_group()).collect::<Vec<_>>();
-    let tables = Table::<P>::batch(&proj);
+    let tables = Table::<P>::batch_from_affine(&bases[..n]);
     let non_zero = tables
         .iter()
         .zip(&decomposed)
@@ -797,6 +831,9 @@ pub fn eisenstein_mul_projective<P: GLVConfig>(
     k: P::ScalarField,
 ) -> Projective<P> {
     if let Some(d) = Decomposed::<P>::new(k) {
+        if d.is_empty() || p.is_zero() {
+            return Projective::zero();
+        }
         return Table::new(&p).mul_decomposed(&d);
     }
     // Only the fallback needs the halves, so it pays the decomposition a second time.
@@ -815,6 +852,9 @@ pub fn eisenstein_mul_projective<P: GLVConfig>(
 /// [`eisenstein_mul_projective`] for an affine base.
 pub fn eisenstein_mul_affine<P: GLVConfig>(p: Affine<P>, k: P::ScalarField) -> Projective<P> {
     if let Some(d) = Decomposed::<P>::new(k) {
+        if d.is_empty() || p.is_zero() {
+            return Projective::zero();
+        }
         return Table::new(&p.into_group()).mul_decomposed(&d);
     }
     // Only the fallback needs the halves, so it pays the decomposition a second time.
@@ -841,8 +881,10 @@ pub fn glv_mul_same_scalar<P: GLVConfig>(
             .map(|p| eisenstein_mul_affine::<P>(*p, k))
             .collect();
     };
-    let proj = points.iter().map(|p| p.into_group()).collect::<Vec<_>>();
-    let tables = Table::batch(&proj);
+    if d.is_empty() {
+        return vec![Projective::zero(); points.len()];
+    }
+    let tables = Table::batch_from_affine(points);
     Table::mul_decomposed_batch(&tables, &d)
 }
 

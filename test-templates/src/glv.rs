@@ -190,6 +190,91 @@ pub fn glv_mul_handles_edge_scalars<P: ark_ec::short_weierstrass::SWCurveConfig 
     }
 }
 
+/// `mul_bigint` on projective and affine bases against [`double_and_add`] for integer scalars
+/// below, at, and above `r`, and wider than the scalar field. On a curve with cofactor, also
+/// on points outside the order-`r` subgroup for `k < 2^128` and `k >= r`, the ranges where GLV
+/// is exact there; for `2^128 <= k < r` the endomorphism is not `[\lambda]` off the subgroup.
+pub fn glv_mul_bigint_matches_double_and_add<
+    P: ark_ec::short_weierstrass::SWCurveConfig + GLVConfig,
+>() {
+    let rng = &mut test_rng();
+    let n = <P::ScalarField as PrimeField>::BigInt::NUM_LIMBS;
+    let r: Vec<u64> = P::ScalarField::MODULUS.as_ref().to_vec();
+    let mut r_minus_1 = P::ScalarField::MODULUS;
+    r_minus_1.sub_with_borrow(&<P::ScalarField as PrimeField>::BigInt::from(1u64));
+    let mut r_plus_1 = P::ScalarField::MODULUS;
+    r_plus_1.add_with_carry(&<P::ScalarField as PrimeField>::BigInt::from(1u64));
+    let mut two_r = P::ScalarField::MODULUS;
+    let carry = two_r.add_with_carry(&P::ScalarField::MODULUS);
+    let mut two_r = two_r.as_ref().to_vec();
+    two_r.push(carry as u64);
+
+    let mut wide_one = vec![0u64; n + 1];
+    wide_one[0] = 1;
+    let mut wide_top = vec![0u64; n + 1];
+    wide_top[n] = 1;
+    wide_top[0] = 7;
+    let mut scalars: Vec<Vec<u64>> = vec![
+        vec![],
+        vec![0],
+        vec![1],
+        vec![2],
+        r_minus_1.as_ref().to_vec(),
+        r.clone(),
+        r_plus_1.as_ref().to_vec(),
+        two_r,
+        vec![u64::MAX; n],
+        wide_one,
+        wide_top,
+        (0..2 * n).map(|_| u64::rand(rng)).collect(),
+        P::COFACTOR.to_vec(),
+    ];
+    for _ in 0..4 {
+        scalars.push(P::ScalarField::rand(rng).into_bigint().as_ref().to_vec());
+        scalars.push(vec![u64::rand(rng), u64::rand(rng)]);
+    }
+
+    let exact_off_subgroup = |k: &[u64]| {
+        let below_2_128 = k.iter().skip(2).all(|&l| l == 0);
+        let below_r = k.iter().skip(n).all(|&l| l == 0) && {
+            let mut repr = <P::ScalarField as PrimeField>::BigInt::default();
+            let m = k.len().min(n);
+            repr.as_mut()[..m].copy_from_slice(&k[..m]);
+            repr < P::ScalarField::MODULUS
+        };
+        below_2_128 || !below_r
+    };
+
+    let points = vec![Projective::<P>::rand(rng), Projective::<P>::zero()];
+    for p in &points {
+        let a = p.into_affine();
+        for k in &scalars {
+            assert_eq!(p.mul_bigint(k), double_and_add(p, k), "projective, k = {k:?}");
+            assert_eq!(a.mul_bigint(k), double_and_add_affine(&a, k), "affine, k = {k:?}");
+        }
+    }
+
+    let mut points = Vec::new();
+    if !P::cofactor_is_one() {
+        while points.len() < 2 {
+            let x = P::BaseField::rand(rng);
+            if let Some(p) = Affine::<P>::get_point_from_x_unchecked(x, bool::rand(rng)) {
+                if !p.is_in_correct_subgroup_assuming_on_curve() {
+                    points.push(p.into_group());
+                }
+            }
+        }
+    }
+
+    for p in &points {
+        let a = p.into_affine();
+        for k in scalars.iter().filter(|k| exact_off_subgroup(k)) {
+            assert_eq!(p.mul_bigint(k), double_and_add(p, k), "off-subgroup projective, k = {k:?}");
+            assert_eq!(a.mul_bigint(k), double_and_add_affine(&a, k), "off-subgroup affine, k = {k:?}");
+        }
+    }
+}
+
 fn compare<T: PartialEq>(
     n: usize,
     tag: &str,

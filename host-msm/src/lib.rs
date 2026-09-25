@@ -94,10 +94,10 @@ pub fn use_host_msm_unchecked<
     scalars.serialize_uncompressed(&mut buffer).ok()?;
     let fat_ptr = pack_fat_pointer(buffer.as_ptr() as u32, buffer.len() as u32);
     let res_len = unsafe { host_msm_unchecked(fat_ptr) as usize };
-    if res_len > 0 {
+    if res_len > 0 && res_len <= buffer.len() {
         R::deserialize_uncompressed_unchecked(&buffer[..res_len]).ok()
     } else {
-        // An error occurred during MSM.
+        // An error occurred during MSM, or the host reported a length past the buffer.
         None
     }
 }

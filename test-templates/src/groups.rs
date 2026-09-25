@@ -448,6 +448,7 @@ macro_rules! __test_group {
             $crate::glv::jsf_mul_handles_edge_scalars::<Config>();
             $crate::glv::glv_mul_identity_point::<Config>();
             $crate::glv::glv_mul_handles_edge_scalars::<Config>();
+            $crate::glv::glv_mul_bigint_matches_double_and_add::<Config>();
             $crate::glv::jsf_affine_vs_projective::<Config>();
             $crate::glv::jsf_vs_shamir::<Config>();
             $crate::glv::fast_decomposition_throughput::<Config>();
