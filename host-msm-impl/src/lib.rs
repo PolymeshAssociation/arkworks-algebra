@@ -1,5 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+use ark_bls12_381::{g1::Config as Bls12_381G1Config, g2::Config as Bls12_381G2Config};
+use ark_bn254::{g1::Config as Bn254G1Config, g2::Config as Bn254G2Config};
 use ark_ec::scalar_mul::sw_pippenger::msm_batch_affine;
 use ark_ec::short_weierstrass::{Affine, Projective, SWCurveConfig};
 use ark_ec::VariableBaseMSM;
@@ -113,7 +115,7 @@ pub mod table_cache {
                 None => return 0,
             };
             let res: Projective<P> = if bases.len() < MIN_BASES_FOR_TABLE {
-                msm_batch_affine::<P>(&bases, &scalars)
+                super::plain_msm::<P>(&bases, &scalars)
             } else {
                 self.table_aware_msm(&bases, &scalars)
             };
@@ -187,6 +189,10 @@ impl RegisteredCurves {
         };
         curves.register_curve::<PallasConfig>();
         curves.register_curve::<VestaConfig>();
+        curves.register_curve::<Bls12_381G1Config>();
+        curves.register_curve::<Bls12_381G2Config>();
+        curves.register_curve::<Bn254G1Config>();
+        curves.register_curve::<Bn254G2Config>();
         curves
     }
 
@@ -283,14 +289,29 @@ fn write_msm_result<P: SWCurveConfig>(res: Projective<P>, buffer: &mut [u8]) -> 
     }
 }
 
+/// Below this base count [`plain_msm`] uses `msm_unchecked` instead of `msm_batch_affine`. There
+/// `msm_batch_affine` is up to 1.9x slower on BLS12-381 and BN254 G1 and up to 1.25x on their
+/// G2, and within 4% on Pallas. From 32 bases it ties or is up to 18% faster.
+const MIN_BASES_FOR_BATCH_AFFINE: usize = 32;
+
+/// MSM without a fixed-base table. `msm_batch_affine` from [`MIN_BASES_FOR_BATCH_AFFINE`] bases,
+/// `msm_unchecked` below.
+fn plain_msm<P: SWCurveConfig>(bases: &[Affine<P>], scalars: &[P::ScalarField]) -> Projective<P> {
+    if bases.len() < MIN_BASES_FOR_BATCH_AFFINE {
+        Projective::<P>::msm_unchecked(bases, scalars)
+    } else {
+        msm_batch_affine::<P>(bases, scalars)
+    }
+}
+
 /// The stateless (no fixed-base table) host MSM for curve `P`, registered under the extern
 /// host-function name `host_msm_unchecked`.
 ///
 /// NOTE: despite the `unchecked` in the name — and despite `VariableBaseMSM::msm_unchecked` (via
-/// `msm_unchecked_inner`) being the natural dispatch for this entry point — this deliberately
-/// computes the MSM with `msm_batch_affine`, which benchmarks faster than `msm_unchecked`.
-/// Avoiding adding new host functions, so the batch-affine path is added to this existing
-/// entry point rather than exposed as a separate one.
+/// `msm_unchecked_inner`) being the natural dispatch for this entry point — this computes the MSM
+/// with [`plain_msm`], which uses `msm_batch_affine` from [`MIN_BASES_FOR_BATCH_AFFINE`] bases,
+/// where it benchmarks faster than `msm_unchecked`. Avoiding adding new host functions, so the
+/// batch-affine path is added to this existing entry point rather than exposed as a separate one.
 fn host_msm_unchecked_impl<P: SWCurveConfig>(buffer: &mut [u8], buf_len: u32) -> u32 {
     if buf_len as usize == CURVE_ID_LEN {
         // The curve is supported.
@@ -300,14 +321,17 @@ fn host_msm_unchecked_impl<P: SWCurveConfig>(buffer: &mut [u8], buf_len: u32) ->
         Some(input) => input,
         None => return 0,
     };
-    write_msm_result(msm_batch_affine::<P>(&bases, &scalars), buffer)
+    write_msm_result(plain_msm::<P>(&bases, &scalars), buffer)
 }
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
-    use super::{clear_tables, host_msm_unchecked, register_table};
-    use ark_ec::short_weierstrass::Projective;
-    use ark_ec::VariableBaseMSM;
+    use super::{
+        clear_tables, host_msm_unchecked, register_table, Bls12_381G1Config, Bls12_381G2Config,
+        Bn254G1Config, Bn254G2Config, VestaConfig,
+    };
+    use ark_ec::short_weierstrass::{Affine, Projective, SWCurveConfig};
+    use ark_ec::{CurveGroup, VariableBaseMSM};
     use ark_host_msm::{CurveMSMId, CURVE_ID_LEN};
     use ark_pallas::{Affine as PallasAffine, Fr as PallasFr, PallasConfig};
     use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -344,23 +368,53 @@ mod tests {
         }
     }
 
-    /// A probe of a registered curve returns `1`; the guest reads `0` as "unsupported" and
-    /// skips the host.
+    /// Host MSM of curve `P` through the host function, against the in-process MSM.
+    fn round_trip<P: SWCurveConfig>() {
+        let mut rng = test_rng();
+        let name = <Projective<P> as VariableBaseMSM>::curve_name().unwrap();
+        let curve_id = CurveMSMId::from_curve_name(name);
+
+        let mut probe = Vec::new();
+        curve_id.serialize_uncompressed(&mut probe).unwrap();
+        assert_eq!(host_msm_unchecked(&mut probe, CURVE_ID_LEN as u32), 1, "{name}");
+
+        for n in [1usize, 2, 64, 65, 300] {
+            let bases: Vec<Affine<P>> = (0..n).map(|_| Projective::<P>::rand(&mut rng).into_affine()).collect();
+            let scalars: Vec<P::ScalarField> = (0..n).map(|_| P::ScalarField::rand(&mut rng)).collect();
+            let mut buf = Vec::new();
+            curve_id.serialize_uncompressed(&mut buf).unwrap();
+            bases.serialize_uncompressed(&mut buf).unwrap();
+            scalars.serialize_uncompressed(&mut buf).unwrap();
+            let len = buf.len() as u32;
+            let res_len = host_msm_unchecked(&mut buf, len) as usize;
+            let got = Projective::<P>::deserialize_uncompressed_unchecked(&buf[..res_len]).unwrap();
+            assert_eq!(got, Projective::<P>::msm_unchecked(&bases, &scalars), "{name}, n = {n}");
+        }
+    }
+
     #[test]
-    fn registered_curves_answer_probe() {
-        for name in ["pallas", "vesta"] {
-            let mut probe = Vec::new();
-            CurveMSMId::from_curve_name(name)
-                .serialize_uncompressed(&mut probe)
-                .unwrap();
-            assert_eq!(host_msm_unchecked(&mut probe, CURVE_ID_LEN as u32), 1, "{name}");
+    fn registered_curves_round_trip() {
+        clear_tables();
+        round_trip::<PallasConfig>();
+        round_trip::<VestaConfig>();
+        round_trip::<Bls12_381G1Config>();
+        round_trip::<Bls12_381G2Config>();
+        round_trip::<Bn254G1Config>();
+        round_trip::<Bn254G2Config>();
+    }
+
+    /// G1 and G2 of a pairing-friendly curve have distinct IDs, and Pallas and Vesta keep theirs.
+    #[test]
+    fn curve_ids_are_distinct() {
+        fn id<P: SWCurveConfig>() -> CurveMSMId {
+            CurveMSMId::from_curve_name(<Projective<P> as VariableBaseMSM>::curve_name().unwrap())
         }
-        for (name, id) in [
-            ("pallas", <Projective<PallasConfig> as VariableBaseMSM>::curve_name()),
-            ("vesta", <Projective<ark_vesta::VestaConfig> as VariableBaseMSM>::curve_name()),
-        ] {
-            assert_eq!(CurveMSMId::from_curve_name(id.unwrap()), CurveMSMId::from_curve_name(name));
-        }
+        assert_eq!(id::<PallasConfig>(), CurveMSMId::from_curve_name("pallas"));
+        assert_eq!(id::<VestaConfig>(), CurveMSMId::from_curve_name("vesta"));
+        assert_eq!(id::<Bls12_381G1Config>(), CurveMSMId::from_curve_name("bls12_381_g1"));
+        assert_eq!(id::<Bls12_381G2Config>(), CurveMSMId::from_curve_name("bls12_381_g2"));
+        assert_eq!(id::<Bn254G1Config>(), CurveMSMId::from_curve_name("bn254_g1"));
+        assert_eq!(id::<Bn254G2Config>(), CurveMSMId::from_curve_name("bn254_g2"));
     }
 
     /// `buf_len` past the end of `buffer` returns `0` instead of panicking.
