@@ -214,3 +214,49 @@ fn test_fq12_mul_by_034() {
         assert_eq!(a, b);
     }
 }
+
+/// BN254's base field has 2 spare bits, so the sparse line products and `Fp6::mul_by_12` take
+/// their Karatsuba forms instead of six-term `sum_of_products`. Each matches the full product
+/// with the sparse element, on random inputs and with every coordinate `p - 1`.
+#[test]
+fn sparse_products_karatsuba_forms_match_full_multiplication() {
+    use ark_ff::{AdditiveGroup, One, PrimeField};
+    use ark_std::{test_rng, vec::Vec, UniformRand};
+
+    assert!(256 - Fq::MODULUS_BIT_SIZE < 3);
+    let mut rng = test_rng();
+    let max = Fq2::new(-Fq::one(), -Fq::one());
+    let z = Fq2::ZERO;
+    let one = Fq2::one();
+    let mut cases: Vec<(Fq12, [Fq2; 6])> = (0..200)
+        .map(|_| (Fq12::rand(&mut rng), core::array::from_fn(|_| Fq2::rand(&mut rng))))
+        .collect();
+    cases.push((Fq12::new(Fq6::new(max, max, max), Fq6::new(max, max, max)), [max; 6]));
+
+    for (f, l) in cases {
+        let line_014 = |a: Fq2, b: Fq2, c: Fq2| Fq12::new(Fq6::new(a, b, z), Fq6::new(z, c, z));
+        let line_034 = |a: Fq2, b: Fq2, c: Fq2| Fq12::new(Fq6::new(a, z, z), Fq6::new(b, c, z));
+
+        let mut a = f;
+        a.mul_by_014_c4_one(&l[0], &l[1]);
+        assert_eq!(a, f * line_014(l[0], l[1], one), "mul_by_014_c4_one");
+
+        let mut a = f;
+        a.mul_by_034_c0_one(&l[0], &l[1]);
+        assert_eq!(a, f * line_034(one, l[0], l[1]), "mul_by_034_c0_one");
+
+        let mut a = f;
+        a.mul_by_014_pair(&l[0], &l[1], &l[2], &l[3], &l[4], &l[5]);
+        let expected = f * line_014(l[0], l[1], l[2]) * line_014(l[3], l[4], l[5]);
+        assert_eq!(a, expected, "mul_by_014_pair");
+
+        let mut a = f;
+        a.mul_by_034_pair(&l[0], &l[1], &l[2], &l[3], &l[4], &l[5]);
+        let expected = f * line_034(l[0], l[1], l[2]) * line_034(l[3], l[4], l[5]);
+        assert_eq!(a, expected, "mul_by_034_pair");
+
+        let mut a = f.c0;
+        a.mul_by_12(&l[0], &l[1]);
+        assert_eq!(a, f.c0 * Fq6::new(z, l[0], l[1]), "mul_by_12");
+    }
+}
