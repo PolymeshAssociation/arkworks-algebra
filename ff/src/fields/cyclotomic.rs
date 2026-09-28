@@ -81,9 +81,9 @@ pub trait CyclotomicMultSubgroup: crate::Field {
         }
 
         if Self::INVERSE_IS_FAST {
-            // We only use NAF-based exponentiation if inverses are fast to compute.
-            let naf = crate::biginteger::arithmetic::find_naf(e.as_ref());
-            exp_loop(self, naf.into_iter().rev())
+            // Fast inverses let us use a width-`W` signed windowed method, serving
+            // negative digits with the (cheap) inverse.
+            wnaf_exp(self, e.as_ref());
         } else {
             exp_loop(
                 self,
@@ -91,6 +91,61 @@ pub trait CyclotomicMultSubgroup: crate::Field {
             )
         };
     }
+}
+
+/// Width-`W` windowed cyclotomic exponentiation for fields with a fast inverse.
+/// Precomputes the `2^(W-2)` odd powers `f, f^3, ..., f^(2^(W-1) - 1)` and serves negative
+/// wNAF digits by conjugating the corresponding power. Nonzero digits average `1/(W+1)`
+/// of the exponent length, against `1/3` for NAF, which matters for dense exponents such as
+/// the BN254 `x`.
+///
+/// Window-NAF exponentiation (Hankerson, Menezes, Vanstone, Guide to Elliptic
+/// Curve Cryptography (2004), Algorithm 3.36). A negative wNAF digit is free
+/// because inversion in the cyclotomic subgroup is a conjugation.
+fn wnaf_exp<F: CyclotomicMultSubgroup>(f: &mut F, e: &[u64]) {
+    const W: usize = 5;
+    let wnaf = crate::biginteger::arithmetic::find_wnaf(e, W);
+    if wnaf.is_empty() {
+        *f = F::one();
+        return;
+    }
+
+    // f2 = f^2; table[k] = f^(2k + 1).
+    let mut f2 = *f;
+    f2.cyclotomic_square_in_place();
+    let table_len = 1usize << (W - 2);
+    let mut table = ark_std::vec::Vec::with_capacity(table_len);
+    table.push(*f);
+    for k in 1..table_len {
+        let mut t = table[k - 1];
+        t *= &f2;
+        table.push(t);
+    }
+
+    let mut res = F::one();
+    let mut found = false;
+    for &d in wnaf.iter().rev() {
+        if found {
+            res.cyclotomic_square_in_place();
+        }
+        if d != 0 {
+            let idx = ((d.unsigned_abs() as usize) - 1) / 2;
+            if !found {
+                res = table[idx];
+                if d < 0 {
+                    res.cyclotomic_inverse_in_place();
+                }
+                found = true;
+            } else if d > 0 {
+                res *= &table[idx];
+            } else {
+                let mut inv = table[idx];
+                inv.cyclotomic_inverse_in_place();
+                res *= &inv;
+            }
+        }
+    }
+    *f = res;
 }
 
 /// Helper function to calculate the double-and-add loop for exponentiation.

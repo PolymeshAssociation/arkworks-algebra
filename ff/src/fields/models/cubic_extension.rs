@@ -71,6 +71,12 @@ pub trait CubicExtConfig: 'static + Send + Sync + Sized {
         c2: &mut Self::BaseField,
         power: usize,
     );
+
+    /// A specializable method for `a *= b`. Defaults to [`CubicExtField::mul_assign_karatsuba`].
+    #[inline(always)]
+    fn mul_in_place(a: &mut CubicExtField<Self>, b: &CubicExtField<Self>) {
+        a.mul_assign_karatsuba(b);
+    }
 }
 
 /// An element of a cubic extension field F_p\[X\]/(X^3 - P::NONRESIDUE) is
@@ -550,6 +556,14 @@ impl<P: CubicExtConfig> SubAssign<&Self> for CubicExtField<P> {
 impl<P: CubicExtConfig> MulAssign<&Self> for CubicExtField<P> {
     #[inline]
     fn mul_assign(&mut self, other: &Self) {
+        P::mul_in_place(self, other);
+    }
+}
+
+impl<P: CubicExtConfig> CubicExtField<P> {
+    /// `self *= other` by Karatsuba.
+    #[inline]
+    pub fn mul_assign_karatsuba(&mut self, other: &Self) {
         // Devegili OhEig Scott Dahab --- Multiplication and Squaring on
         // AbstractPairing-Friendly
         // Fields.pdf; Section 4 (Karatsuba)
