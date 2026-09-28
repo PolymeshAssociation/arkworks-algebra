@@ -45,6 +45,46 @@ fn timing() {
 
     println!("\n=== Bn254 pairing timing (best of rounds) ===");
     {
+        use ark_algebra_test_templates::Sha256;
+        use ark_ec::{
+            hashing::{
+                curve_maps::svdw::SVDWMap, map_to_curve_hasher::MapToCurveBasedHasher, HashToCurve,
+            },
+            AffineRepr,
+        };
+        use ark_ff::field_hashers::DefaultFieldHasher;
+        let g1h = MapToCurveBasedHasher::<
+            G1Projective,
+            DefaultFieldHasher<Sha256, 128>,
+            SVDWMap<ark_bn254::g1::Config>,
+        >::new(b"BN254G1_XMD:SHA-256_SVDW_RO_")
+        .unwrap();
+        let g2h = MapToCurveBasedHasher::<
+            G2Projective,
+            DefaultFieldHasher<Sha256, 128>,
+            SVDWMap<ark_bn254::g2::Config>,
+        >::new(b"BN254G2_XMD:SHA-256_SVDW_RO_")
+        .unwrap();
+        let mut ctr = 0u64;
+        bench("h2c_g1", 3000, 12, || {
+            ctr += 1;
+            let _ = black_box(g1h.hash(&ctr.to_le_bytes()));
+        });
+        bench("h2c_g2", 3000, 12, || {
+            ctr += 1;
+            let _ = black_box(g2h.hash(&ctr.to_le_bytes()));
+        });
+        // A point outside the order-`r` subgroup.
+        let q = loop {
+            let x = ark_bn254::Fq2::rand(&mut rng);
+            if let Some(q) = ark_bn254::G2Affine::get_point_from_x_unchecked(x, false) {
+                break q;
+            }
+        };
+        bench("g2_clear_cofactor", 3000, 12, || { black_box(black_box(q).clear_cofactor()); });
+        bench("g2_mul_by_cofactor", 3000, 12, || { black_box(black_box(q).mul_by_cofactor()); });
+    }
+    {
         use ark_ec::{scalar_mul::double_and_add, PrimeGroup};
         use ark_ff::PrimeField;
         let s = <Bn254 as Pairing>::ScalarField::rand(&mut rng);

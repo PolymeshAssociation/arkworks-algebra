@@ -9,6 +9,37 @@ test_group!(pairing_output; ark_ec::pairing::PairingOutput<Bn254>; msm);
 test_pairing!(pairing; crate::Bn254);
 test_group!(g1_glv; G1Projective; glv);
 test_group!(g2_glv; G2Projective; glv);
+// Vectors from gnark-crypto's `hashToG1Vector` and `hashToG2Vector`, hex zero-padded. Each
+// file's `source` links the lines.
+test_h2c!(g1_h2c; "./src/curves/tests"; "BN254G1"; crate::g1::Config; crate::Fq; crate::Fq; 1; ark_ec::hashing::curve_maps::svdw::SVDWMap<crate::g1::Config>; "SVDW");
+test_h2c!(g2_h2c; "./src/curves/tests"; "BN254G2"; crate::g2::Config; crate::Fq2; crate::Fq; 2; ark_ec::hashing::curve_maps::svdw::SVDWMap<crate::g2::Config>; "SVDW");
+
+/// Checks the SVDW constants, then maps `u = 0` and the `u` with `1 - C1 * u^2 = 0` or
+/// `1 + C1 * u^2 = 0`, where `inv0` receives 0.
+#[test]
+fn test_svdw_parameters_and_inv0_inputs() {
+    use ark_ec::hashing::{
+        curve_maps::svdw::{SVDWConfig, SVDWMap},
+        map_to_curve_hasher::MapToCurve,
+    };
+    use ark_ff::Zero;
+
+    fn check<P: SVDWConfig>() {
+        SVDWMap::<P>::check_parameters().unwrap();
+        let c1_inv = P::C1.inverse().unwrap();
+        let inv0_inputs: ark_std::vec::Vec<_> = [c1_inv.sqrt(), (-c1_inv).sqrt()]
+            .into_iter()
+            .flatten()
+            .flat_map(|u| [u, -u])
+            .collect();
+        assert!(!inv0_inputs.is_empty());
+        for u in inv0_inputs.into_iter().chain([P::BaseField::zero()]) {
+            assert!(SVDWMap::<P>::map_to_curve(u).unwrap().is_on_curve());
+        }
+    }
+    check::<crate::g1::Config>();
+    check::<crate::g2::Config>();
+}
 
 #[test]
 fn test_g2_prepared_neg() {

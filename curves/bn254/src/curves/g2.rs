@@ -1,6 +1,7 @@
 use ark_ec::AffineRepr;
 use ark_ec::{
     bn::{gls4_digits, BnConfig},
+    hashing::curve_maps::svdw::SVDWConfig,
     models::{short_weierstrass::SWCurveConfig, CurveConfig},
     scalar_mul::{
         gls::{gls4_mul_affine_bigint, gls4_mul_bigint},
@@ -142,6 +143,38 @@ impl GLVConfig for Config {
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
+}
+
+/// Shallue-van de Woestijne map of [RFC 9380, section 6.6.1](https://www.rfc-editor.org/rfc/rfc9380.html#section-6.6.1),
+/// constants from `svdw_constants(GF(p^2), 0, 3 / (u + 9))` of `ark-ec`'s
+/// `curve_map_parameter_helper.sage`. They equal `Z`, `c1..c4` of gnark-crypto's
+/// `BN254G2_XMD:SHA-256_SVDW_RO_`
+/// [`MapToCurve2`](https://github.com/Consensys/gnark-crypto/blob/v0.21.0/ecc/bn254/hash_to_g2.go#L89-L108),
+/// which stores them in Montgomery form. constantine
+/// [uses `Z = u`](https://github.com/mratsim/constantine/blob/de33a000aa4eb844f5f705ed2564ed551985f9fa/constantine/named/constants/bn254_snarks_hash_to_curve_g2.nim#L19-L22)
+/// instead and so hashes to different points.
+impl SVDWConfig for Config {
+    const Z: Fq2 = Fq2::ONE;
+
+    const C1: Fq2 = Fq2::new(
+        MontFp!("19485874751759354771024239261021720505790618469301721065564631296452457478374"),
+        MontFp!("266929791119991161246907387137283842545076965332900288569378510910307636690"),
+    );
+
+    const C2: Fq2 = Fq2::new(
+        MontFp!("10944121435919637611123202872628637544348155578648911831344518947322613104291"),
+        Fq::ZERO,
+    );
+
+    const C3: Fq2 = Fq2::new(
+        MontFp!("18992192239972082890849143911285057164064277369389217330423471574879236301292"),
+        MontFp!("21819008332247140148575583693947636719449476128975323941588917397607662637108"),
+    );
+
+    const C4: Fq2 = Fq2::new(
+        MontFp!("10499238450719652342378357227399831140106360636427411350395554762472100376473"),
+        MontFp!("6940174569119770192419592065569379906172001098655407502803841283667998553941"),
+    );
 }
 
 pub const G2_GENERATOR_X: Fq2 = Fq2::new(G2_GENERATOR_X_C0, G2_GENERATOR_X_C1);

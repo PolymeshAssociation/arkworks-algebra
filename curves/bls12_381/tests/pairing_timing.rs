@@ -45,6 +45,34 @@ fn timing() {
 
     println!("\n=== Bls12_381 pairing timing (best of rounds) ===");
     {
+        use ark_ec::hashing::{
+            curve_maps::wb::WBMap, map_to_curve_hasher::MapToCurveBasedHasher, HashToCurve,
+        };
+        use ark_ff::field_hashers::DefaultFieldHasher;
+        use ark_algebra_test_templates::Sha256;
+        let g1h = MapToCurveBasedHasher::<
+            G1Projective,
+            DefaultFieldHasher<Sha256, 128>,
+            WBMap<ark_bls12_381::g1::Config>,
+        >::new(b"BLS_TEST_DST")
+        .unwrap();
+        let g2h = MapToCurveBasedHasher::<
+            G2Projective,
+            DefaultFieldHasher<Sha256, 128>,
+            WBMap<ark_bls12_381::g2::Config>,
+        >::new(b"BLS_TEST_DST")
+        .unwrap();
+        let mut ctr = 0u64;
+        bench("h2c_g1", 3000, 12, || {
+            ctr += 1;
+            let _ = black_box(g1h.hash(&ctr.to_le_bytes()));
+        });
+        bench("h2c_g2", 3000, 12, || {
+            ctr += 1;
+            let _ = black_box(g2h.hash(&ctr.to_le_bytes()));
+        });
+    }
+    {
         use ark_ff::Field;
         let a = Fq::rand(&mut rng);
         let a2 = Fq2::rand(&mut rng);
