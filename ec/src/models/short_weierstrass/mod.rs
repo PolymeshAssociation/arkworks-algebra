@@ -106,6 +106,9 @@ pub trait SWCurveConfig: super::CurveConfig {
     /// The default method is simply to multiply by the cofactor.
     /// Some curves can implement a more efficient algorithm.
     fn clear_cofactor(item: &Affine<Self>) -> Affine<Self> {
+        if Self::cofactor_is_one() {
+            return *item;
+        }
         item.mul_by_cofactor()
     }
 
