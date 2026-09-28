@@ -121,3 +121,259 @@ fn g2_uncompressed_valid_test_vectors() {
     let bytes: &'static [u8] = include_bytes!("g2_uncompressed_valid_test_vectors.dat");
     test_vectors!(G2Projective, G2Affine, Compress::No, bytes);
 }
+
+#[test]
+fn test_g2_prepared_neg() {
+    use ark_ec::pairing::Pairing;
+    let mut rng = test_rng();
+    for _ in 0..10 {
+        let p = G1Projective::rand(&mut rng).into_affine();
+        let q = G2Projective::rand(&mut rng).into_affine();
+        let q_prep: <Bls12_381 as Pairing>::G2Prepared = q.into();
+        let neg_prep = -q_prep.clone();
+        // e(P, -Q) == e(P, neg-of-prepared-Q)
+        assert_eq!(
+            Bls12_381::pairing(p, -q),
+            Bls12_381::pairing(p, neg_prep.clone())
+        );
+        // e(P, Q) * e(P, -Q) == 1
+        let sum = Bls12_381::pairing(p, q_prep) + Bls12_381::pairing(p, neg_prep);
+        assert!(sum.is_zero());
+    }
+}
+
+#[test]
+fn test_exp_by_x_chain_matches_generic() {
+    use ark_ec::bls12::Bls12Config;
+    use ark_ec::pairing::{MillerLoopOutput, Pairing};
+    use ark_ff::CyclotomicMultSubgroup;
+    let mut rng = test_rng();
+    for _ in 0..10 {
+        let f = crate::Fq12::rand(&mut rng);
+        // Map into the cyclotomic subgroup.
+        if let Some(out) = Bls12_381::final_exponentiation(MillerLoopOutput(f)) {
+            let cyc = out.0;
+            let chain = <crate::Config as Bls12Config>::exp_by_x(cyc);
+            let mut generic = cyc.cyclotomic_exp(crate::Config::X);
+            generic.cyclotomic_inverse_in_place(); // X is negative
+            assert_eq!(chain, generic);
+        }
+    }
+}
+
+#[test]
+fn test_gt_membership_fast_matches_naive() {
+    use ark_ec::pairing::{Pairing, PairingOutput};
+    let mut rng = test_rng();
+    for _ in 0..20 {
+        // (1) A genuine GT element: both tests accept.
+        let p = G1Projective::rand(&mut rng).into_affine();
+        let q = G2Projective::rand(&mut rng).into_affine();
+        let gt = Bls12_381::pairing(p, q);
+        assert!(gt.is_in_group());
+        assert!(gt.is_in_group_naive());
+
+        // (2) A random Fq12 is (almost surely) not even cyclotomic: both reject.
+        let f = crate::Fq12::rand(&mut rng);
+        let rand_out = PairingOutput::<Bls12_381>(f);
+        assert_eq!(rand_out.is_in_group(), rand_out.is_in_group_naive());
+        assert!(!rand_out.is_in_group());
+
+        // (3) A cyclotomic element that is (almost surely) not in GT: the easy
+        // part of the final exponentiation lands in the cyclotomic subgroup, so
+        // this exercises the order-r stage. A wrong exponent there would make the
+        // fast test accept while the naive test rejects.
+        let mut r = f;
+        r.frobenius_map_in_place(6); // f^(p^6)
+        r *= f.inverse().unwrap(); // f^(p^6 - 1)
+        let mut r_p2 = r;
+        r_p2.frobenius_map_in_place(2);
+        r *= r_p2; // f^((p^6 - 1)(p^2 + 1)) in the cyclotomic subgroup
+        let cyc = PairingOutput::<Bls12_381>(r);
+        assert_eq!(cyc.is_in_group(), cyc.is_in_group_naive());
+        assert!(!cyc.is_in_group());
+    }
+}
+
+#[test]
+fn test_multi_pairing_various_n() {
+    use ark_ec::pairing::{Pairing, PairingOutput};
+    use ark_std::vec::Vec;
+    let mut rng = test_rng();
+    for n in 1..=6usize {
+        let ps: Vec<_> = (0..n).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
+        let qs: Vec<_> = (0..n).map(|_| G2Projective::rand(&mut rng).into_affine()).collect();
+        let multi = Bls12_381::multi_pairing(ps.iter().copied(), qs.iter().copied());
+        let prod = ps
+            .iter()
+            .zip(&qs)
+            .map(|(p, q)| Bls12_381::pairing(*p, *q))
+            .fold(PairingOutput::zero(), |acc, x| acc + x);
+        assert_eq!(multi, prod, "n = {n}");
+    }
+}
+
+#[test]
+fn test_gt_exp_matches_generic() {
+    use ark_ec::pairing::Pairing;
+    use ark_ff::{CyclotomicMultSubgroup, PrimeField};
+    let mut rng = test_rng();
+    let p = G1Projective::rand(&mut rng).into_affine();
+    let q = G2Projective::rand(&mut rng).into_affine();
+    let gt = Bls12_381::pairing(p, q).0;
+    for _ in 0..10 {
+        let s = Fr::rand(&mut rng);
+        let via_gls = <Bls12_381 as Pairing>::gt_exp(&gt, s.into_bigint().as_ref());
+        let via_generic = gt.cyclotomic_exp(s.into_bigint().as_ref());
+        assert_eq!(via_gls, via_generic);
+    }
+    for s in [Fr::from(0u64), Fr::from(1u64), Fr::from(2u64), -Fr::from(1u64)] {
+        let via_gls = <Bls12_381 as Pairing>::gt_exp(&gt, s.into_bigint().as_ref());
+        let via_generic = gt.cyclotomic_exp(s.into_bigint().as_ref());
+        assert_eq!(via_gls, via_generic, "s = {s}");
+    }
+}
+
+#[test]
+fn test_fixed_q_miller_loop() {
+    use ark_ec::bls12::{Bls12, G2PreparedFixed};
+    use ark_ec::pairing::Pairing;
+    use ark_std::vec::Vec;
+    let mut rng = test_rng();
+    for n in 1..=4usize {
+        let ps: Vec<G1Affine> =
+            (0..n).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
+        let qs: Vec<G2Affine> =
+            (0..n).map(|_| G2Projective::rand(&mut rng).into_affine()).collect();
+        let fixed: Vec<G2PreparedFixed<crate::Config>> =
+            qs.iter().map(|q| (*q).into()).collect();
+        let ml_fixed = Bls12::<crate::Config>::multi_miller_loop_fixed(ps.iter().copied(), &fixed);
+        let ml_std = Bls12_381::multi_miller_loop(ps.iter().copied(), qs.iter().copied());
+        assert_eq!(
+            Bls12_381::final_exponentiation(ml_fixed).unwrap(),
+            Bls12_381::final_exponentiation(ml_std).unwrap(),
+            "n = {n}"
+        );
+    }
+}
+
+#[test]
+#[should_panic]
+fn test_fixed_q_miller_loop_rejects_length_mismatch() {
+    use ark_ec::bls12::{Bls12, G2PreparedFixed};
+    use ark_std::vec::Vec;
+    let mut rng = test_rng();
+    let ps: Vec<G1Affine> = (0..3).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
+    let fixed: Vec<G2PreparedFixed<crate::Config>> =
+        (0..2).map(|_| G2Projective::rand(&mut rng).into_affine().into()).collect();
+    let _ = Bls12::<crate::Config>::multi_miller_loop_fixed(ps.iter().copied(), &fixed);
+}
+
+#[test]
+fn test_normalized_lines_mixed_miller_loop() {
+    use ark_ec::{bls12::G2Prepared, pairing::Pairing};
+    use ark_std::vec::Vec;
+    type Prep = G2Prepared<crate::Config>;
+    let mut rng = test_rng();
+    // Up to 9 pairs, so parallel builds split the loop into several chunks.
+    for n in [1usize, 2, 3, 5, 9] {
+        let ps: Vec<G1Affine> =
+            (0..n).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
+        let qs: Vec<G2Affine> =
+            (0..n).map(|_| G2Projective::rand(&mut rng).into_affine()).collect();
+        let expected = Bls12_381::multi_pairing(ps.iter().copied(), qs.iter().copied());
+        for mask in [0usize, 1, 0b01010, 0b10101, usize::MAX] {
+            let preps: Vec<Prep> = qs
+                .iter()
+                .enumerate()
+                .map(|(i, q)| {
+                    let mut prep = Prep::from(*q);
+                    if (mask >> i) & 1 == 1 {
+                        prep.normalize_lines();
+                        assert!(prep.ell_coeffs.iter().all(|c| c.2.is_one()));
+                    }
+                    prep
+                })
+                .collect();
+            let ml = Bls12_381::multi_miller_loop(ps.iter().copied(), preps);
+            assert_eq!(
+                Bls12_381::final_exponentiation(ml).unwrap(),
+                expected,
+                "n = {n}, mask = {mask:b}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_normalized_lines_negation_and_raw_fallbacks() {
+    use ark_ec::{bls12::G2Prepared, pairing::Pairing};
+    type Prep = G2Prepared<crate::Config>;
+    let mut rng = test_rng();
+    let fe = |p: G1Affine, q: Prep| {
+        Bls12_381::final_exponentiation(Bls12_381::multi_miller_loop([p], [q])).unwrap()
+    };
+    let p = G1Projective::rand(&mut rng).into_affine();
+    let q = G2Projective::rand(&mut rng).into_affine();
+    let mut normalized = Prep::from(q);
+    normalized.normalize_lines();
+
+    // Normalizing twice changes nothing, and negation keeps the lines normalized.
+    let mut twice = normalized.clone();
+    twice.normalize_lines();
+    assert_eq!(twice, normalized);
+    let neg = -normalized.clone();
+    assert!(neg.ell_coeffs.iter().all(|c| c.2.is_one()));
+    assert_eq!(fe(p, neg), Bls12_381::pairing(-p, q));
+
+    // A line with a zero `P.y` coefficient stays raw.
+    let mut raw = Prep::from(q);
+    raw.ell_coeffs[17].2 = Fq2::zero();
+    let mut partly = raw.clone();
+    partly.normalize_lines();
+    assert_eq!(partly.ell_coeffs[17], raw.ell_coeffs[17]);
+    assert!(partly.ell_coeffs[16].2.is_one());
+    assert_eq!(fe(p, partly), fe(p, raw));
+
+    // `P.y = 0` has no `1/P.y`, so its pair runs on raw lines.
+    let p0 = G1Affine::new_unchecked(Fq::rand(&mut rng), Fq::zero());
+    assert_eq!(fe(p0, normalized), fe(p0, Prep::from(q)));
+}
+
+#[test]
+fn test_karabina_compressed_squaring() {
+    use ark_ec::{bls12::Bls12Config, pairing::Pairing};
+    use ark_ff::{fields::fp12_2over3over2::CompressedCyclotomic, CyclotomicMultSubgroup, One};
+    let mut rng = test_rng();
+    let f = crate::Fq12::rand(&mut rng);
+    // f^((p^6 - 1)(p^2 + 1)) is cyclotomic but (almost surely) not in GT.
+    let mut cyc = f;
+    cyc.frobenius_map_in_place(6);
+    cyc *= f.inverse().unwrap();
+    let mut cyc_p2 = cyc;
+    cyc_p2.frobenius_map_in_place(2);
+    cyc *= cyc_p2;
+    let gt = Bls12_381::pairing(G1Projective::rand(&mut rng), G2Projective::rand(&mut rng)).0;
+    for g in [gt, gt.square(), cyc] {
+        let mut full = g;
+        let mut c = g.compress_cyclotomic();
+        let mut checkpoint = None;
+        for i in 1..=47 {
+            full.cyclotomic_square_in_place();
+            c.square_in_place();
+            assert_eq!(c, full.compress_cyclotomic());
+            if i == 15 {
+                checkpoint = Some((c, full));
+            }
+        }
+        let (c15, full15) = checkpoint.unwrap();
+        assert_eq!(CompressedCyclotomic::decompress_pair(&c15, &c), Some((full15, full)));
+        let mut expected = g.cyclotomic_exp(crate::Config::X);
+        expected.cyclotomic_inverse_in_place();
+        assert_eq!(<crate::Config as Bls12Config>::exp_by_x(g), expected);
+    }
+    // g3 = 0 takes the uncompressed fallback.
+    let one = crate::Fq12::one();
+    assert_eq!(CompressedCyclotomic::decompress_pair(&one.compress_cyclotomic(), &one.compress_cyclotomic()), None);
+    assert_eq!(<crate::Config as Bls12Config>::exp_by_x(one), one);
+}
