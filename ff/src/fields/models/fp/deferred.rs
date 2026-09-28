@@ -117,9 +117,10 @@ impl<T: MontConfig<N>, const N: usize> MontAccumulator<T, N> {
 
 /// Shortest inner product that takes the deferred path. Below it `reduce` costs more than the
 /// per-term reductions it saves: on an Apple M3 Max a Pallas naive sum is 1.7x faster at 1 term
-/// and 1.02x at 2, and in wasmtime, where the naive multiply also emulates its 64-bit products,
-/// 1.35x faster at 1 term and 1.08x slower at 2.
-const MIN_DEFERRED_LEN: usize = if cfg!(target_family = "wasm") { 2 } else { 3 };
+/// and 1.02x at 2. On wasm32 the accumulator emulates its 64-bit products while the naive
+/// multiply takes the radix-`2^29` path, so in wasmtime the naive sum is 1.5x faster at 2 terms,
+/// 1.2x at 4, level at 8 and 1.1x slower at 16.
+const MIN_DEFERRED_LEN: usize = if cfg!(target_family = "wasm") { 8 } else { 3 };
 
 /// `sum(a_i * b_i)` with one Montgomery reduction for the whole sum. Falls back to the naive
 /// sum when the accumulator's bound does not hold ([`MontConfig::CAN_DEFER`]) or the sum is
