@@ -8,7 +8,7 @@ use ark_ec::{
             Affine as TEAffine, MontCurveConfig, Projective as TEProjective, TECurveConfig,
         },
     },
-    scalar_mul::glv::GLVConfig,
+    scalar_mul::{double_and_add, double_and_add_affine, glv::GLVConfig},
     CurveConfig,
 };
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
@@ -67,6 +67,16 @@ impl SWCurveConfig for Config {
     #[inline]
     fn mul_affine_scalar_field(p: &G1Affine, scalar: &Self::ScalarField) -> G1Projective {
         <Self as GLVConfig>::glv_mul_affine_projective(*p, *scalar)
+    }
+
+    /// Scott, <https://eprint.iacr.org/2021/1130>, section 6: `phi(P) == -[x^2]P`.
+    /// Sound because `x = 1` modulo every prime of the cofactor `(x - 1)^2 / 3`. The
+    /// `[x]` multiplications use double-and-add, since GLV is only valid on the subgroup.
+    #[inline]
+    fn is_in_correct_subgroup_assuming_on_curve(p: &G1SWAffine) -> bool {
+        let x_times_p = double_and_add_affine(p, crate::Config::X);
+        let minus_x_squared_times_p = -double_and_add(&x_times_p, crate::Config::X);
+        minus_x_squared_times_p == <Config as GLVConfig>::endomorphism_affine(p)
     }
 
     #[inline]

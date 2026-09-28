@@ -2,7 +2,7 @@ use ark_ec::{
     models::CurveConfig,
     short_weierstrass::{self as sw, SWCurveConfig},
 };
-use ark_ff::{Field, MontFp};
+use ark_ff::{AdditiveGroup, Field, MontFp};
 
 use crate::{fq::Fq, fr::Fr};
 
@@ -43,6 +43,12 @@ impl SWCurveConfig for Config {
     /// Since b is not zero, the point (0, 0) is not on the curve.
     /// Therefore, we can safely use (0, 0) as a flag for the zero point.
     type ZeroFlag = ();
+
+    /// `a = -3`: `-(2 x + x)` instead of a full multiplication.
+    #[inline(always)]
+    fn mul_by_a(elem: Self::BaseField) -> Self::BaseField {
+        -(elem.double() + elem)
+    }
 }
 
 /// G_GENERATOR_X =

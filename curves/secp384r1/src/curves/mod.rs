@@ -2,7 +2,7 @@ use ark_ec::{
     models::CurveConfig,
     short_weierstrass::{self as sw, SWCurveConfig},
 };
-use ark_ff::{Field, MontFp};
+use ark_ff::{AdditiveGroup, Field, MontFp};
 
 use crate::{fq::Fq, fr::Fr};
 
@@ -43,6 +43,12 @@ impl SWCurveConfig for Config {
 
     /// GENERATOR = (G_GENERATOR_X, G_GENERATOR_Y)
     const GENERATOR: Affine = Affine::new_unchecked(G_GENERATOR_X, G_GENERATOR_Y);
+
+    /// `a = -3`: `-(2 x + x)` instead of a full multiplication.
+    #[inline(always)]
+    fn mul_by_a(elem: Self::BaseField) -> Self::BaseField {
+        -(elem.double() + elem)
+    }
 }
 
 /// G_GENERATOR_X =

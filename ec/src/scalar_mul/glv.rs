@@ -139,7 +139,7 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
 }
 
 /// The integer `k`, in little-endian limbs, as a scalar field element when `k < r`.
-fn scalar_below_modulus<F: PrimeField>(k: &[u64]) -> Option<F> {
+pub(crate) fn scalar_below_modulus<F: PrimeField>(k: &[u64]) -> Option<F> {
     let mut repr = F::BigInt::default();
     let limbs = repr.as_mut();
     if k.iter().skip(limbs.len()).any(|&l| l != 0) {
@@ -275,7 +275,11 @@ fn mul_shift_round<F: PrimeField>(k: &[u64], g: &[u64], shift_limbs: usize) -> F
 }
 
 /// [`mul_shift_round`] before the conversion to a scalar field element, as little-endian limbs.
-fn mul_shift_round_bigint<F: PrimeField>(k: &[u64], g: &[u64], shift_limbs: usize) -> F::BigInt {
+pub(crate) fn mul_shift_round_bigint<F: PrimeField>(
+    k: &[u64],
+    g: &[u64],
+    shift_limbs: usize,
+) -> F::BigInt {
     // Accumulator wide enough for the product of `k` and `g` and one more limb
     // Even a 6 limb scalar is of 384 bits, sufficient for any scalar we have to ever deal
     // with (supports GLV)

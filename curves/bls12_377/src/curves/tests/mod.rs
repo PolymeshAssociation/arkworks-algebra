@@ -59,6 +59,20 @@ mod test {
 }
 
 #[test]
+fn test_g1_subgroup_check() {
+    // Cofactor (x - 1)^2 / 3 = 2^92 * 3 * 7^2 * 13^2 * 499^2.
+    ark_algebra_test_templates::subgroup::test_subgroup_check::<crate::g1::Config>(
+        &[2, 3, 7, 13, 499],
+        8,
+    );
+}
+
+#[test]
+fn test_g2_subgroup_check() {
+    ark_algebra_test_templates::subgroup::test_subgroup_check::<crate::g2::Config>(&[], 8);
+}
+
+#[test]
 fn test_exp_by_x_and_twist_hooks() {
     use ark_ec::{bls12::Bls12Config, pairing::Pairing, short_weierstrass::SWCurveConfig};
     use ark_ff::{AdditiveGroup, CyclotomicMultSubgroup, UniformRand};

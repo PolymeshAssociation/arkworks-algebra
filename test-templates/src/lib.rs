@@ -6,6 +6,7 @@ pub mod glv;
 pub mod msm;
 #[macro_use]
 pub mod pairing;
+pub mod subgroup;
 #[macro_use]
 pub mod h2c;
 pub use h2c::*;

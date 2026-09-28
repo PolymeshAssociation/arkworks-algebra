@@ -54,6 +54,18 @@ impl SWCurveConfig for Config {
         use ark_ff::Zero;
         Self::BaseField::zero()
     }
+
+    /// GLV scalar multiplication through [`GLVConfig::glv_mul_projective_bigint`]: exact on the
+    /// order-`r` subgroup, and off it for `k < 2^128` and `k >= r`.
+    #[inline]
+    fn mul_projective(p: &Projective<Self>, scalar: &[u64]) -> Projective<Self> {
+        <Self as GLVConfig>::glv_mul_projective_bigint(p, scalar)
+    }
+
+    #[inline]
+    fn is_in_correct_subgroup_assuming_on_curve(p: &G2Affine) -> bool {
+        super::is_in_subgroup_glv_row(p)
+    }
 }
 
 impl GLVConfig for Config {

@@ -1,7 +1,8 @@
 use ark_ec::AffineRepr;
 use ark_ec::{
+    bn::{gls4_digits, BnConfig},
     models::{short_weierstrass::SWCurveConfig, CurveConfig},
-    scalar_mul::glv::GLVConfig,
+    scalar_mul::{gls::gls4_mul_bigint, glv::GLVConfig},
     short_weierstrass::{Affine, Projective},
 };
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
@@ -62,14 +63,33 @@ impl SWCurveConfig for Config {
         Self::BaseField::zero()
     }
 
+    /// `[x + 1]P + psi([x]P) + psi^2([x]P) == psi^3([2x]P)`, Dai, Lin, Zhao, Zhou,
+    /// <https://eprint.iacr.org/2022/348>, sections 3 and 5.1: one multiplication by the
+    /// seed. After gnark-crypto [`G2Jac.IsInSubGroup`](https://github.com/Consensys/gnark-crypto/blob/v0.21.0/ecc/bn254/g2.go#L658-L674).
     fn is_in_correct_subgroup_assuming_on_curve(point: &G2Affine) -> bool {
-        // Subgroup check from section 4.3 of https://eprint.iacr.org/2022/352.pdf.
-        //
-        // Checks that [p]P = [6X^2]P
+        let x_p = mul_by_seed(point.into_group());
+        let psi_x_p = p_power_endomorphism_projective(&x_p);
+        let psi2_x_p = p_power_endomorphism_projective(&psi_x_p);
+        let lhs = x_p + point + psi_x_p + psi2_x_p;
+        lhs == p_power_endomorphism_projective(&psi2_x_p).double()
+    }
 
-        let x_times_point = point.mul_bigint(SIX_X_SQUARED);
-        let p_times_point = p_power_endomorphism(point);
-        x_times_point.eq(&p_times_point)
+    /// Four-dimensional GLS ([`gls4_mul_bigint`]) over the lattice digits of the scalar
+    /// ([`gls4_digits`], the same as GT exponentiation's), with `psi = [6x^2]` on G2, for about
+    /// 64 doublings instead of the 128 of two-dimensional GLV. Faster than GLV at every scalar
+    /// width, 1.31x at 128 bits and at full width. `k >= r` takes `double_and_add`, and
+    /// `k < 2^63` is a single digit, both exact on every curve point. Scalars in `[2^63, r)` are
+    /// correct only on the order-`r` subgroup.
+    #[inline]
+    fn mul_projective(p: &Projective<Self>, scalar: &[u64]) -> Projective<Self> {
+        let digits = |k: &[u64]| crate::Config::GT_GLS.map(|g| gls4_digits::<crate::Config>(k, &g));
+        gls4_mul_bigint(p, scalar, digits, p_power_endomorphism)
+    }
+
+    /// [`Self::mul_projective`] for an affine base.
+    #[inline]
+    fn mul_affine(p: &G2Affine, scalar: &[u64]) -> Projective<Self> {
+        Self::mul_projective(&p.into_group(), scalar)
     }
 }
 
@@ -138,7 +158,40 @@ const P_POWER_ENDOMORPHISM_COEFF_1: Fq2 = Fq2::new(
 );
 
 // Integer representation of 6x^2 = t - 1
-const SIX_X_SQUARED: [u64; 2] = [17887900258952609094, 8020209761171036667];
+/// `[x]P` by [`crate::curves::SEED_CHAIN`]. Plain additions and doublings, so it is
+/// valid for points outside the order-`r` subgroup.
+fn mul_by_seed(p1: Projective<Config>) -> Projective<Config> {
+    let p2 = p1.double();
+    let p3 = p2 + p1;
+    let p5 = p2 + p3;
+    let p7 = p2 + p5;
+    let table = [p1, p3, p5, p7];
+    let mut r = p7 + p1;
+    for (doublings, digit) in crate::curves::SEED_CHAIN {
+        for _ in 0..doublings {
+            r.double_in_place();
+        }
+        let t = &table[usize::from(digit.unsigned_abs() / 2)];
+        if digit < 0 {
+            r -= t;
+        } else {
+            r += t;
+        }
+    }
+    r
+}
+
+/// `psi`, the untwist-Frobenius-twist endomorphism on `E'(Fq2)`, on Jacobian coordinates.
+/// `(X, Y, Z)` maps to `(X^p c_x, Y^p c_y, Z^p)`.
+fn p_power_endomorphism_projective(p: &Projective<Config>) -> Projective<Config> {
+    let mut res = *p;
+    res.x.frobenius_map_in_place(1);
+    res.y.frobenius_map_in_place(1);
+    res.z.frobenius_map_in_place(1);
+    res.x *= P_POWER_ENDOMORPHISM_COEFF_0;
+    res.y *= P_POWER_ENDOMORPHISM_COEFF_1;
+    res
+}
 
 /// psi(P) is the untwist-Frobenius-twist endomorphism on E'(Fq2)
 fn p_power_endomorphism(p: &Affine<Config>) -> Affine<Config> {
@@ -161,11 +214,10 @@ mod test {
     use crate::g2;
     use ark_std::{rand::Rng, UniformRand};
 
-    fn sample_unchecked() -> Affine<g2::Config> {
-        let mut rng = ark_std::test_rng();
+    fn sample_unchecked(rng: &mut impl Rng) -> Affine<g2::Config> {
         loop {
-            let x1 = Fq::rand(&mut rng);
-            let x2 = Fq::rand(&mut rng);
+            let x1 = Fq::rand(rng);
+            let x2 = Fq::rand(rng);
             let greatest = rng.gen();
             let x = Fq2::new(x1, x2);
 
@@ -186,8 +238,9 @@ mod test {
     #[test]
     fn test_is_in_subgroup_assuming_on_curve() {
         const SAMPLES: usize = 100;
+        let mut rng = ark_std::test_rng();
         for _ in 0..SAMPLES {
-            let p: Affine<g2::Config> = sample_unchecked();
+            let p: Affine<g2::Config> = sample_unchecked(&mut rng);
             assert!(p.is_on_curve());
 
             assert_eq!(

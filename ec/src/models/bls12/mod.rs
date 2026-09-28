@@ -228,6 +228,29 @@ pub trait Bls12Config: 'static + Sized {
     }
 }
 
+/// Digits `k_i` with `k = \sum_i k_i x^i`, from the base-`|x|` digits of `k`, negating the odd
+/// ones when `x < 0`. `None` when `X` spans more than one limb or `k >= |x|^4`. With `p == x
+/// (mod r)`, these are the four-dimensional GLS digits for the Frobenius on GT
+/// ([`Pairing::gt_exp`]) and for `psi` on G2 ([`crate::scalar_mul::gls`]).
+pub fn gls4_digits<P: Bls12Config>(k: &[u64]) -> Option<[(bool, u64); 4]> {
+    let [x] = P::X else {
+        return None;
+    };
+    let x = u128::from(*x);
+    let mut rem = k.to_vec();
+    let mut digits = [(false, 0u64); 4];
+    for (i, d) in digits.iter_mut().enumerate() {
+        let mut carry = 0u128;
+        for limb in rem.iter_mut().rev() {
+            let cur = (carry << 64) | u128::from(*limb);
+            *limb = (cur / x) as u64;
+            carry = cur % x;
+        }
+        *d = (P::X_IS_NEGATIVE && i % 2 == 1, carry as u64);
+    }
+    rem.iter().all(|&l| l == 0).then_some(digits)
+}
+
 pub mod g1;
 pub mod g2;
 
@@ -419,29 +442,11 @@ impl<P: Bls12Config> Pairing for Bls12<P> {
         // pi^4 - pi^2 + 1 = 0 there, since r divides Phi_12(p) = p^4 - p^2 + 1, so
         // f^k = prod_i (f^(p^i))^{k_i} for any k = sum_i k_i p^i (mod r) with four
         // digits. For BLS12, p == x (mod r) and |x| is a single limb, so the digits are
-        // the base-|x| digits of k, from repeated division by a u64. The four ~64-bit
-        // digits need about 64 cyclotomic squarings instead of about 255.
-        if P::X.len() != 1 {
+        // the base-|x| digits of k, from repeated division by a u64 ([`gls4_digits`]). The four
+        // ~64-bit digits need about 64 cyclotomic squarings instead of about 255.
+        let Some(signed) = gls4_digits::<P>(scalar) else {
             return f.cyclotomic_exp(scalar);
-        }
-        let x = P::X[0];
-
-        // Base-|x| digits of the scalar (four suffice while scalar < |x|^4).
-        let mut digits = [0u64; 4];
-        let mut rem = scalar.to_vec();
-        for d in digits.iter_mut() {
-            let mut carry: u128 = 0;
-            for limb in rem.iter_mut().rev() {
-                let cur = (carry << 64) | (*limb as u128);
-                *limb = (cur / x as u128) as u64;
-                carry = cur % x as u128;
-            }
-            *d = carry as u64;
-        }
-        if rem.iter().any(|&l| l != 0) {
-            // scalar >= |x|^4: fall back to the generic path.
-            return f.cyclotomic_exp(scalar);
-        }
+        };
 
         // g[i] = f^(p^i).
         let mut g = [*f; 4];
@@ -449,15 +454,6 @@ impl<P: Bls12Config> Pairing for Bls12<P> {
             g[i] = g[i - 1];
             g[i].frobenius_map_in_place(1);
         }
-        // The base-|x| digits are non-negative; x < 0 negates the odd-power
-        // exponents, so mark the odd digits negative for the multi-exp.
-        let neg = P::X_IS_NEGATIVE;
-        let signed = [
-            (false, digits[0]),
-            (neg, digits[1]),
-            (false, digits[2]),
-            (neg, digits[3]),
-        ];
         crate::pairing::gt_multiexp(g, signed)
     }
 

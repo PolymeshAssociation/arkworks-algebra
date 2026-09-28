@@ -14,6 +14,29 @@ pub mod g2;
 #[cfg(test)]
 mod tests;
 
+/// Subgroup check `[n11]P + [n12]phi(P) == 0` for the first row `(n11, n12)` of the
+/// reduced GLV basis, as one joint-sparse-form double scalar multiplication. The row has
+/// norm `n11^2 - n11 n12 + n12^2 = r`, so no point of the cofactor group satisfies it.
+/// gnark-crypto's `(x + 1) + (x^3 - x^2 + 1) phi`
+/// ([`G2Jac.IsInSubGroup`](https://github.com/Consensys/gnark-crypto/blob/v0.21.0/ecc/bw6-761/g2.go#L649-L665)) has norm `3r` and accepts the
+/// order-3 point `(0, 2)` of G2.
+fn is_in_subgroup_glv_row<P: ark_ec::scalar_mul::glv::GLVConfig>(
+    p: &ark_ec::short_weierstrass::Affine<P>,
+) -> bool {
+    use ark_ff::{PrimeField, Zero};
+    let [(s11, n11), (s12, n12), _, _] = P::SCALAR_DECOMP_COEFFS;
+    let b1 = if s11 { *p } else { -*p };
+    let phi = P::endomorphism_affine(p);
+    let b2 = if s12 { phi } else { -phi };
+    ark_ec::scalar_mul::glv::binary_scalar_mul_jsf_affine(
+        b1,
+        P::ScalarField::from_bigint(n11).unwrap(),
+        b2,
+        P::ScalarField::from_bigint(n12).unwrap(),
+    )
+    .is_zero()
+}
+
 #[derive(PartialEq, Eq)]
 pub struct Config;
 

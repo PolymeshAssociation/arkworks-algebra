@@ -1,6 +1,7 @@
 use crate::{
     models::{short_weierstrass::SWCurveConfig, CurveConfig},
     pairing::{MillerLoopOutput, Pairing, PairingOutput},
+    scalar_mul::glv::mul_shift_round_bigint,
 };
 use ark_ff::{
     fields::{
@@ -14,8 +15,6 @@ use ark_ff::{
 use ark_std::{cfg_chunks_mut, marker::PhantomData, vec::*};
 use educe::Educe;
 use itertools::Itertools;
-use num_bigint::{BigInt, Sign};
-use num_integer::Integer;
 use num_traits::{One, Zero};
 
 #[cfg(feature = "parallel")]
@@ -66,8 +65,9 @@ pub trait BnConfig: 'static + Sized {
         f
     }
 
-    /// Constants for 4-dimensional Galbraith-Scott exponentiation of GT elements,
-    /// or `None` to fall back to the windowed cyclotomic exponentiation.
+    /// Constants for the 4-dimensional Galbraith-Scott split ([`gls4_digits`]) that GT
+    /// exponentiation and G2 scalar multiplication share, or `None` to fall back to the
+    /// windowed cyclotomic exponentiation.
     const GT_GLS: Option<GtGlsParams> = None;
 
     /// Returns `f^scalar` for `f` in GT. With [`Self::GT_GLS`] set, uses the
@@ -428,80 +428,92 @@ impl<P: BnConfig> Pairing for Bn<P> {
 /// entries about `x`, and `adj0` is the first row of `adj(basis)`, so
 /// `basis^-1 = adj(basis) / r`. Basis entries fit `i128`; adjugate magnitudes are
 /// little-endian `u64` limbs of a value below the scalar field modulus.
+/// `adj0_div_r[j] = round(2^384 |adj0[j]| / r)` in five limbs, for a four-limb scalar field, so
+/// [`gls4_digits`] divides by `r` with a shift. `scripts/bn_gls_decomp.py` checks `basis` and
+/// `adj0` and prints `adj0_div_r`.
 #[derive(Copy, Clone, Debug)]
 pub struct GtGlsParams {
     pub basis: [[i128; 4]; 4],
     pub adj0: [(bool, [u64; 4]); 4],
+    pub adj0_div_r: [[u64; 5]; 4],
 }
 
-fn nb_from_u64_le(limbs: &[u64]) -> BigInt {
-    let mut bytes = ark_std::vec::Vec::with_capacity(limbs.len() * 8);
-    for l in limbs {
-        bytes.extend_from_slice(&l.to_le_bytes());
+/// Digits `k_i` with `k == \sum_i k_i p^i (mod r)`, each about `r^{1/4}`, by Babai rounding
+/// against `params`. On BN curves `p mod r = 6x^2` is about twice as wide as `x`, so unlike
+/// BLS12 (`p == x (mod r)` with a single-limb `x`) there are no base-`p` digits to read off,
+/// and the digits come from the lattice of [`GtGlsParams`]. Babai rounding writes
+/// `(k, 0, 0, 0) = beta * basis` with `beta_j = k * adj0[j] / r`, and the digits are
+/// `(k, 0, 0, 0) - sum_j round(beta_j) basis_j`, still congruent to `k` because every basis
+/// row lies in the lattice. Each rounding error is at most 1/2, so
+/// `|k_i| <= (1/2) sum_j |basis[j][i]|`, which `params` must keep below `2^64` (BN254's is
+/// `3x`, about `2^63.7`). The rounding is `round(k adj0_div_r[j] / 2^384)`, a multiplication and
+/// a shift whose error against `k adj0[j] / r` is below `2^{-130}`, so the bound grows by that
+/// much at most. The digits are that small, so they come out exactly from wrapping `i128`
+/// arithmetic on the low 128 bits of `k` and of each `round(beta_j)`. On BN254 this takes
+/// 0.07 us, against 2.67 us for the same rounding in `num-bigint`. The Frobenius on GT and
+/// `psi` on G2 both act as `[p mod r]`, so the same digits serve [`Pairing::gt_exp`] and
+/// [`crate::scalar_mul::gls`]. Galbraith-Scott, <https://eprint.iacr.org/2008/117>, section 3
+/// (the lattice and Babai rounding); the rounded lattice decomposition is Gallant, Lambert,
+/// Vanstone, CRYPTO 2001.
+pub fn gls4_digits<P: BnConfig>(scalar: &[u64], params: &GtGlsParams) -> [(bool, u64); 4] {
+    let k = scalar_mod_r::<ScalarField<P>>(scalar);
+    let k = k.as_ref();
+    debug_assert_eq!(
+        k.len(),
+        4,
+        "`adj0_div_r` is sized for a four-limb scalar field"
+    );
+    let low_128 = |x: &[u64]| u128::from(x[0]) | (u128::from(x[1]) << 64);
+    let mut digits = [low_128(k) as i128, 0, 0, 0];
+    for j in 0..4 {
+        let beta = mul_shift_round_bigint::<ScalarField<P>>(k, &params.adj0_div_r[j], k.len() + 2);
+        let mut beta = low_128(beta.as_ref());
+        if !params.adj0[j].0 {
+            beta = beta.wrapping_neg();
+        }
+        let beta = beta as i128;
+        for (digit, b) in digits.iter_mut().zip(params.basis[j]) {
+            *digit = digit.wrapping_sub(beta.wrapping_mul(b));
+        }
     }
-    BigInt::from_bytes_le(Sign::Plus, &bytes)
+    digits.map(|d| {
+        debug_assert!(d.unsigned_abs() < 1 << 64, "GLS digit wider than 64 bits");
+        (d < 0, d.unsigned_abs() as u64)
+    })
 }
 
-/// `f^k` for `f` in GT via the Frobenius 4-dimensional GLS: decompose `k` into four
-/// ~r^(1/4) digits `k_i` with `k == sum_i k_i p^i (mod r)` by Babai rounding against
-/// `params`, then `prod_i (f^(p^i))^{k_i}` with [`crate::pairing::gt_multiexp`]. On GT
-/// the Frobenius `pi` acts as `[p mod r]` and `pi^4 - pi^2 + 1 = 0`, since `r` divides
-/// `Phi_12(p) = p^4 - p^2 + 1`, so four digits suffice. On BN curves `p mod r = 6x^2`
-/// is about twice as wide as `x`, so unlike BLS12 (`p == x (mod r)` with a single-limb
-/// `x`) there are no base-`p` digits to read off, and the digits come from the lattice
-/// of [`GtGlsParams`]. Babai rounding writes `(k, 0, 0, 0) = beta * basis` with
-/// `beta_j = k * adj0[j] / r`, and the digits are `(k, 0, 0, 0) - sum_j round(beta_j) basis_j`,
-/// still congruent to `k` because every basis row lies in the lattice. Each rounding
-/// error is at most 1/2, so `|k_i| <= (1/2) sum_j |basis[j][i]|`, which `params` must
-/// keep below `2^64` (true for BN254). About 64 cyclotomic squarings instead of about
-/// 254. Galbraith-Scott, <https://eprint.iacr.org/2008/117>, section 3 (the lattice and
-/// Babai rounding) and section 4 (the Frobenius on GT); the rounded lattice
-/// decomposition is Gallant, Lambert, Vanstone, CRYPTO 2001. MIRACL core
+type ScalarField<P> = <<P as BnConfig>::G1Config as CurveConfig>::ScalarField;
+
+/// `k mod r` as canonical limbs, for `k` in little-endian limbs of any length.
+fn scalar_mod_r<F: PrimeField>(k: &[u64]) -> F::BigInt {
+    let len = k.iter().rposition(|&l| l != 0).map_or(0, |i| i + 1);
+    let mut repr = F::BigInt::default();
+    if len <= repr.as_ref().len() {
+        repr.as_mut()[..len].copy_from_slice(&k[..len]);
+        if repr < F::MODULUS {
+            return repr;
+        }
+    }
+    let two_64 = F::from(1u128 << 64);
+    k[..len]
+        .iter()
+        .rev()
+        .fold(F::zero(), |acc, &l| acc * two_64 + F::from(l))
+        .into_bigint()
+}
+
+/// `f^k` for `f` in GT via the Frobenius 4-dimensional GLS: the digits of [`gls4_digits`], then
+/// `prod_i (f^(p^i))^{k_i}` with [`crate::pairing::gt_multiexp`]. On GT the Frobenius `pi` acts
+/// as `[p mod r]` and `pi^4 - pi^2 + 1 = 0`, since `r` divides `Phi_12(p) = p^4 - p^2 + 1`, so
+/// four digits suffice. About 64 cyclotomic squarings instead of about 254. Galbraith-Scott,
+/// <https://eprint.iacr.org/2008/117>, section 4 (the Frobenius on GT). MIRACL core
 /// [`gtpow`](https://github.com/miracl/core/blob/a6df6733c1ad1ad0918306abd0c3983b4cd4a58c/rust/pair.rs#L875-L909) does the same with its own basis.
 fn gt_gls_exp<P: BnConfig>(
     f: Fp12<P::Fp12Config>,
     scalar: &[u64],
     params: &GtGlsParams,
 ) -> Fp12<P::Fp12Config> {
-    let r = nb_from_u64_le(
-        <<P::G1Config as CurveConfig>::ScalarField as PrimeField>::MODULUS.as_ref(),
-    );
-    let k = nb_from_u64_le(scalar).mod_floor(&r);
-
-    let mut acc = [
-        BigInt::zero(),
-        BigInt::zero(),
-        BigInt::zero(),
-        BigInt::zero(),
-    ];
-    for j in 0..4 {
-        let (sgn, val) = &params.adj0[j];
-        let mut a = nb_from_u64_le(val);
-        if !*sgn {
-            a = -a;
-        }
-        // beta_j = round(k * adj0[j] / r), nearest integer.
-        let num = &k * &a;
-        let (mut q, rem) = num.div_rem(&r);
-        let two_rem = &rem + &rem;
-        if two_rem > r {
-            q += BigInt::one();
-        } else if -two_rem > r {
-            q -= BigInt::one();
-        }
-        for i in 0..4 {
-            acc[i] += &q * BigInt::from(params.basis[j][i]);
-        }
-    }
-
-    let mut digits = [(false, 0u64); 4];
-    for i in 0..4 {
-        let ki = if i == 0 { &k - &acc[0] } else { -&acc[i] };
-        let neg = ki.sign() == Sign::Minus;
-        let mag = ki.magnitude().iter_u64_digits().next().unwrap_or(0);
-        digits[i] = (neg, mag);
-    }
-
+    let digits = gls4_digits::<P>(scalar, params);
     let mut g = [f; 4];
     for i in 1..4 {
         g[i] = g[i - 1];

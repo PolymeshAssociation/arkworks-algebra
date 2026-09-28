@@ -2,12 +2,12 @@ use ark_std::ops::Neg;
 
 use ark_ec::{
     bls12,
-    bls12::Bls12Config,
+    bls12::{gls4_digits, Bls12Config},
     hashing::curve_maps::wb::{IsogenyMap, WBConfig},
     models::CurveConfig,
-    scalar_mul::glv::GLVConfig,
+    scalar_mul::{double_and_add, double_and_add_affine, gls::gls4_mul_bigint, glv::GLVConfig},
     short_weierstrass::{Affine, Projective, SWCurveConfig},
-    AffineRepr, CurveGroup, PrimeGroup,
+    AffineRepr, CurveGroup,
 };
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
 use ark_serialize::{Compress, SerializationError};
@@ -77,12 +77,34 @@ impl SWCurveConfig for Config {
         Self::BaseField::zero()
     }
 
+    /// Four-dimensional GLS ([`gls4_mul_bigint`]) over the base-`|x|` digits of the scalar
+    /// ([`gls4_digits`]), with `psi = [x]` on G2, for about 64 doublings instead of the 128 of
+    /// two-dimensional GLV. Faster than GLV at every scalar width, 1.66x at 128 bits and 1.30x at
+    /// full width. `k >= r` takes `double_and_add`, and `k < 2^63` is a single digit, both exact
+    /// on every curve point. Scalars in `[2^63, r)` are correct only on the order-`r` subgroup.
+    #[inline]
+    fn mul_projective(p: &Projective<Self>, scalar: &[u64]) -> Projective<Self> {
+        gls4_mul_bigint(
+            p,
+            scalar,
+            gls4_digits::<crate::Config>,
+            p_power_endomorphism,
+        )
+    }
+
+    /// [`Self::mul_projective`] for an affine base.
+    #[inline]
+    fn mul_affine(p: &G2Affine, scalar: &[u64]) -> Projective<Self> {
+        Self::mul_projective(&p.into_group(), scalar)
+    }
+
     fn is_in_correct_subgroup_assuming_on_curve(point: &G2Affine) -> bool {
         // Algorithm from Section 4 of https://eprint.iacr.org/2021/1130.
         //
         // Checks that [p]P = [X]P
 
-        let mut x_times_point = point.mul_bigint(crate::Config::X);
+        // Double-and-add over the sparse 64-bit X is faster than GLV.
+        let mut x_times_point = double_and_add_affine(point, crate::Config::X);
         if crate::Config::X_IS_NEGATIVE {
             x_times_point = -x_times_point;
         }
@@ -104,8 +126,8 @@ impl SWCurveConfig for Config {
         let x: &'static [u64] = crate::Config::X;
         let p_projective = p.into_group();
 
-        // [x]P
-        let x_p = Config::mul_affine(p, x).neg();
+        // [x]P. Double-and-add over the sparse 64-bit x is faster than GLV.
+        let x_p = double_and_add_affine(p, x).neg();
         // ψ(P)
         let psi_p = p_power_endomorphism(p);
         // (ψ^2)(2P)
@@ -117,7 +139,7 @@ impl SWCurveConfig for Config {
 
         // tmp2 = [x^2]P + [x]ψ(P)
         let mut tmp2: Projective<Config> = tmp;
-        tmp2 = tmp2.mul_bigint(x).neg();
+        tmp2 = double_and_add(&tmp2, x).neg();
 
         // add up all the terms
         psi2_p2 += tmp2;
