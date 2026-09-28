@@ -1,5 +1,6 @@
 use ark_ec::{
     bn,
+    hashing::curve_maps::svdw::SVDWConfig,
     models::{short_weierstrass::SWCurveConfig, CurveConfig},
     scalar_mul::glv::{try_glv_msm_bigint_full_width, GLVConfig, GLVFastDecomp},
     short_weierstrass::{Affine, Projective},
@@ -120,6 +121,25 @@ impl GLVConfig for Config {
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
+}
+
+/// Shallue-van de Woestijne map of [RFC 9380, section 6.6.1](https://www.rfc-editor.org/rfc/rfc9380.html#section-6.6.1),
+/// constants from `svdw_constants(GF(p), 0, 3)` of `ark-ec`'s `curve_map_parameter_helper.sage`.
+/// They equal `Z`, `c1..c4` of gnark-crypto's `BN254G1_XMD:SHA-256_SVDW_RO_`
+/// [`MapToCurve1`](https://github.com/Consensys/gnark-crypto/blob/v0.21.0/ecc/bn254/hash_to_g1.go#L75-L79),
+/// which stores them in Montgomery form.
+impl SVDWConfig for Config {
+    const Z: Fq = Fq::ONE;
+
+    const C1: Fq = MontFp!("4");
+
+    const C2: Fq =
+        MontFp!("10944121435919637611123202872628637544348155578648911831344518947322613104291");
+
+    const C3: Fq = MontFp!("8815841940592487685674414971303048083897117035520822607866");
+
+    const C4: Fq =
+        MontFp!("7296080957279758407415468581752425029565437052432607887563012631548408736189");
 }
 
 /// G1_GENERATOR_X = 1

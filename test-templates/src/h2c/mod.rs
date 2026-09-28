@@ -9,13 +9,17 @@ pub use sha2::Sha256;
 #[macro_export]
 macro_rules! test_h2c {
     ($mod_name: ident; $test_path: literal; $test_name: literal; $group: ty; $field: ty; $base_prime_field: ty; $m: literal) => {
+        $crate::test_h2c!($mod_name; $test_path; $test_name; $group; $field; $base_prime_field; $m; ark_ec::hashing::curve_maps::wb::WBMap<$group>; "SSWU");
+    };
+    ($mod_name: ident; $test_path: literal; $test_name: literal; $group: ty; $field: ty; $base_prime_field: ty; $m: literal; $mapper: ty; $map_name: literal) => {
         mod $mod_name {
             use ark_ff::PrimeField;
 
             extern crate std;
             use ark_ec::{
                 hashing::{
-                    curve_maps::wb::WBMap, map_to_curve_hasher::MapToCurveBasedHasher, HashToCurve,
+                    map_to_curve_hasher::{MapToCurve, MapToCurveBasedHasher},
+                    HashToCurve,
                 },
                 short_weierstrass::{Affine, Projective},
             };
@@ -34,18 +38,19 @@ macro_rules! test_h2c {
             use $crate::json::SuiteVector;
             #[test]
             fn test_h2c() {
-                let filename = format!("{}/{}_XMD-SHA-256_SSWU_RO_.json", $test_path, $test_name);
+                let filename = format!("{}/{}_XMD-SHA-256_{}_RO_.json", $test_path, $test_name, $map_name);
 
                 let file = File::open(filename).unwrap();
                 let data: SuiteVector = $crate::from_reader(BufReader::new(file)).unwrap();
 
                 assert_eq!(data.hash, "sha256");
+                assert_eq!(data.map.name, $map_name);
                 let dst = data.dst.as_bytes();
                 let hasher;
                 let g1_mapper = MapToCurveBasedHasher::<
                     Projective<$group>,
                     DefaultFieldHasher<Sha256, 128>,
-                    WBMap<$group>,
+                    $mapper,
                 >::new(dst)
                 .unwrap();
                 hasher = <DefaultFieldHasher<Sha256, 128> as HashToField<$field>>::new(dst);
@@ -58,14 +63,18 @@ macro_rules! test_h2c {
                         v.u.iter().map(read_fq_vec).flatten().collect();
                     assert_eq!(got[..], *want);
 
+                    // then, map-to-curve tests, where the vectors give Q0 and Q1
+                    for (q, u) in [&v.q0, &v.q1].into_iter().zip(got.chunks($m)) {
+                        if let Some(q) = q {
+                            let u = <$field>::from_base_prime_field_elems(u.iter().copied()).unwrap();
+                            let got = <$mapper as MapToCurve<Projective<$group>>>::map_to_curve(u).unwrap();
+                            assert_eq!(got, read_point(q));
+                        }
+                    }
+
                     // then, test curve points
-                    let x = read_fq_vec(&v.p.x);
-                    let y = read_fq_vec(&v.p.y);
                     let got = g1_mapper.hash(&v.msg.as_bytes()).unwrap();
-                    let want = Affine::<$group>::new_unchecked(
-                        <$field>::from_base_prime_field_elems(x).unwrap(),
-                        <$field>::from_base_prime_field_elems(y).unwrap(),
-                    );
+                    let want = read_point(&v.p);
                     assert!(got.is_on_curve());
                     assert!(want.is_on_curve());
                     assert_eq!(got, want);
@@ -80,6 +89,12 @@ macro_rules! test_h2c {
                         )
                     })
                     .collect()
+            }
+            pub fn read_point(p: &$crate::json::P) -> Affine<$group> {
+                Affine::<$group>::new_unchecked(
+                    <$field>::from_base_prime_field_elems(read_fq_vec(&p.x)).unwrap(),
+                    <$field>::from_base_prime_field_elems(read_fq_vec(&p.y)).unwrap(),
+                )
             }
         }
     };

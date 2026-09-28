@@ -1,8 +1,7 @@
 use core::marker::PhantomData;
 
 use crate::{models::short_weierstrass::SWCurveConfig, CurveConfig};
-use ark_ff::batch_inversion;
-use ark_poly::{univariate::DensePolynomial, DenseUVPolynomial, Polynomial};
+use ark_ff::{batch_inversion, Field};
 
 use crate::{
     hashing::{map_to_curve_hasher::MapToCurve, HashToCurveError},
@@ -48,21 +47,33 @@ where
     fn apply(&self, domain_point: Affine<Domain>) -> Result<Affine<Codomain>, HashToCurveError> {
         match domain_point.xy() {
             Some((x, y)) => {
-                let x_num = DensePolynomial::from_coefficients_slice(self.x_map_numerator);
-                let x_den = DensePolynomial::from_coefficients_slice(self.x_map_denominator);
-
-                let y_num = DensePolynomial::from_coefficients_slice(self.y_map_numerator);
-                let y_den = DensePolynomial::from_coefficients_slice(self.y_map_denominator);
-
-                let mut v: [BaseField<Domain>; 2] = [x_den.evaluate(&x), y_den.evaluate(&x)];
+                let mut v: [BaseField<Domain>; 2] = [
+                    horner(self.x_map_denominator, &x),
+                    horner(self.y_map_denominator, &x),
+                ];
                 batch_inversion(&mut v);
-                let img_x = x_num.evaluate(&x) * v[0];
-                let img_y = (y_num.evaluate(&x) * y) * v[1];
+                let img_x = horner(self.x_map_numerator, &x) * v[0];
+                let img_y = (horner(self.y_map_numerator, &x) * y) * v[1];
                 Ok(Affine::new_unchecked(img_x, img_y))
             },
             None => Ok(Affine::identity()),
         }
     }
+}
+
+/// Evaluates the polynomial with coefficients `coeffs`, lowest degree first, at `x` by Horner's
+/// rule. From [arkworks-rs/algebra#1135](https://github.com/arkworks-rs/algebra/pull/1135).
+fn horner<F: Field>(coeffs: &[F], x: &F) -> F {
+    let mut iter = coeffs.iter().rev();
+    let mut acc = match iter.next() {
+        Some(c) => *c,
+        None => return F::zero(),
+    };
+    for c in iter {
+        acc *= x;
+        acc += c;
+    }
+    acc
 }
 
 /// Trait defining the necessary parameters for the WB hash-to-curve method.
@@ -116,7 +127,7 @@ impl<P: WBConfig> MapToCurve<Projective<P>> for WBMap<P> {
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use crate::{
         hashing::{
             curve_maps::{
@@ -142,7 +153,7 @@ mod test {
     const F127_ONE: F127 = MontFp!("1");
 
     /// The struct defining our parameters for the target curve of hashing
-    struct TestWBF127MapToCurveConfig;
+    pub(crate) struct TestWBF127MapToCurveConfig;
 
     impl CurveConfig for TestWBF127MapToCurveConfig {
         const COFACTOR: &[u64] = &[1];
@@ -173,7 +184,7 @@ mod test {
     /// E_isogenous : Elliptic Curve defined by y^2 = x^3 + 109*x + 124 over Finite
     /// Field of size 127
     /// Isogenous to E : y^2 = x^3 + 3
-    struct TestSWU127MapToIsogenousCurveConfig;
+    pub(crate) struct TestSWU127MapToIsogenousCurveConfig;
 
     /// First we define the isogenous curve
     /// sage: E_isogenous.order()

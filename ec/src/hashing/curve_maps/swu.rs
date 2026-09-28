@@ -18,6 +18,28 @@ pub trait SWUConfig: SWCurveConfig {
     /// we use a `ZETA` with low absolute value coefficients when they are
     /// represented as integers.
     const ZETA: Self::BaseField;
+
+    /// Given `gx1`, returns `(is_square, y)` with `y^2 == gx1` when `is_square`,
+    /// else `y^2 == ZETA * gx1`. Exactly one holds since `ZETA` is a non-square.
+    /// The default takes up to two square roots; a base field where a single
+    /// exponentiation yields a root (e.g. `p = 3 mod 4`) should override this to
+    /// avoid the second one.
+    ///
+    /// This is the `sqrt_ratio` primitive of RFC 9380
+    /// (<https://www.rfc-editor.org/rfc/rfc9380>, appendix F.2), specialized to a
+    /// unit denominator; the optimization lineage is Wahby, Boneh,
+    /// <https://eprint.iacr.org/2019/403> section 4.
+    fn sqrt_or_zeta_sqrt(gx1: Self::BaseField) -> (bool, Self::BaseField) {
+        match gx1.sqrt() {
+            Some(y) => (true, y),
+            None => {
+                let y = (Self::ZETA * gx1).sqrt().expect(
+                    "ZETA * gx1 is a quadratic residue because the Legendre symbol is multiplicative",
+                );
+                (false, y)
+            },
+        }
+    }
 }
 
 /// Represents the SWU hash-to-curve map defined by `P`.
@@ -86,26 +108,12 @@ impl<P: SWUConfig> MapToCurve<Projective<P>> for SWUMap<P> {
         // 6. gx2 = x2^3 + A * x2 + B  [optimized out; see below]
         // 7. If is_square(gx1), set x = x1 and y = sqrt(gx1)
         // 8. Else set x = x2 and y = sqrt(gx2)
-        let gx1_square;
-        let gx1;
-
         debug_assert!(
             !div3.is_zero(),
             "we have checked that neither a or ZETA are zero. Q.E.D."
         );
-        let y1: P::BaseField = {
-            gx1 = num_gx1 * div3_inv;
-            if let Some(s) = gx1.sqrt() {
-                gx1_square = true;
-                s
-            } else {
-                gx1_square = false;
-                let zeta_gx1 = P::ZETA * gx1;
-                zeta_gx1.sqrt().expect(
-                    "ZETA * gx1 is a quadratic residue because Legendre symbol is multiplicative. Q.E.D",
-                )
-            }
-        };
+        let gx1 = num_gx1 * div3_inv;
+        let (gx1_square, y1) = P::sqrt_or_zeta_sqrt(gx1);
 
         // This optimization also comes from a generalization of [WB2019, section 4.2].
         //
