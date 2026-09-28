@@ -27,7 +27,7 @@ use crate::{
     short_weierstrass::{Affine, Bucket, Projective, SWCurveConfig},
     AdditiveGroup, AffineRepr,
 };
-use ark_ff::{serial_batch_inversion_and_mul, Field, One, PrimeField, Zero};
+use ark_ff::{Field, PrimeField, Zero};
 use ark_std::vec::Vec;
 use itertools::Either;
 
@@ -333,24 +333,58 @@ fn reduce_levels<P: SWCurveConfig>(
 #[cfg(feature = "parallel")]
 const PAR_CHUNK: usize = 512;
 
-/// Computes final addition points whose inverted denominators are in `inv`. `out` is the
-/// sub-slice of the level starting at slot `start`.
-fn finalize_points<F: Field>(
+/// Finishes the pending additions with one inversion. `out` is the sub-slice of the level starting
+/// at slot `start`. The prefix pass scales each `num[k]` by the product of the earlier denominators
+/// in its lane, so the backward pass reads the slope `num[k] / den[k]` directly. `None`, with `out`
+/// unwritten, when a denominator is zero.
+fn add_pending<F: Field>(
     slots: &[usize],
     x_sum: &[F],
-    num: &[F],
-    inv: &[F],
+    num: &mut [F],
+    den: &[F],
     out: &mut [Point<F>],
     start: usize,
-) {
-    for i in 0..slots.len() {
-        let k = slots[i] - start;
-        let left = out[k];
-        let lambda = num[i] * inv[i];
-        let x = lambda.square() - x_sum[i];
-        let y = lambda * (left.x - x) - left.y;
-        out[k] = Point { x, y };
+) -> Option<()> {
+    const LANES: usize = ark_ff::BATCH_INVERSION_LANES;
+    let n = slots.len();
+    // Each lane starts from its own first denominator, which drops a multiply by one.
+    let mut acc = [F::one(); LANES];
+    for k in 0..n.min(LANES) {
+        acc[k] = den[k];
     }
+    for k in LANES..n {
+        num[k] *= acc[k % LANES];
+        acc[k % LANES] *= den[k];
+    }
+    // `lane_inv[l] = 1 / acc[l]`, from `prefix[l] = product of acc[..l]` and a suffix walked
+    // downward.
+    let mut total = acc[0];
+    for a in &acc[1..] {
+        total *= a;
+    }
+    let mut suffix = total.inverse()?;
+    let mut prefix = [F::one(); LANES];
+    for l in 1..LANES {
+        prefix[l] = prefix[l - 1] * acc[l - 1];
+    }
+    let mut lane_inv = [F::one(); LANES];
+    for l in (1..LANES).rev() {
+        lane_inv[l] = prefix[l] * suffix;
+        suffix *= acc[l];
+    }
+    lane_inv[0] = suffix;
+
+    for k in (0..n).rev() {
+        let l = k % LANES;
+        let lambda = num[k] * lane_inv[l];
+        lane_inv[l] *= den[k];
+        let i = slots[k] - start;
+        let left = out[i];
+        let x = lambda.square() - x_sum[k];
+        let y = lambda * (left.x - x) - left.y;
+        out[i] = Point { x, y };
+    }
+    Some(())
 }
 
 /// Affine `base` as a [`Point`], its `y` negated when `negate`.
@@ -422,29 +456,25 @@ fn batch_add<P: SWCurveConfig>(
     out: &mut [Point<P::BaseField>],
     parallelize: bool,
 ) -> Option<()> {
-    // Since some pair of x-coords is same, special case handling needed which this can't do
-    if pending.den.iter().any(Zero::is_zero) {
-        return None;
-    }
     #[cfg(not(feature = "parallel"))]
     let _ = parallelize;
 
     #[cfg(feature = "parallel")]
     if parallelize && pending.out.len() >= 2 * PAR_CHUNK {
+        // Checked up front, since a chunk that finds a zero cannot undo the others' writes.
+        if pending.den.iter().any(Zero::is_zero) {
+            return None;
+        }
         par_batch_add::<P>(pending, out);
         return Some(());
     }
-    // The batch inversion runs in place over the denominators.
-    serial_batch_inversion_and_mul(&mut pending.den, &P::BaseField::one());
-    finalize_points(
-        &pending.out,
-        &pending.x_sum,
-        &pending.num,
-        &pending.den,
-        out,
-        0,
-    );
-    Some(())
+    let Pending {
+        out: slots,
+        x_sum,
+        num,
+        den,
+    } = pending;
+    add_pending(slots, x_sum, num, den, out, 0)
 }
 
 /// [`batch_add`] split across threads, one inversion per chunk. The output slots are strictly
@@ -486,13 +516,13 @@ fn par_batch_add<P: SWCurveConfig>(
         for ((((slots, x_sum), num), den), (chunk, start)) in slots
             .chunks(chunk_size)
             .zip(x_sum.chunks(chunk_size))
-            .zip(num.chunks(chunk_size))
-            .zip(den.chunks_mut(chunk_size))
+            .zip(num.chunks_mut(chunk_size))
+            .zip(den.chunks(chunk_size))
             .zip(chunks)
         {
             s.spawn(move |_| {
-                serial_batch_inversion_and_mul(den, &P::BaseField::one());
-                finalize_points(slots, x_sum, num, den, chunk, start);
+                add_pending(slots, x_sum, num, den, chunk, start)
+                    .expect("denominators are checked nonzero");
             });
         }
     });
