@@ -103,6 +103,119 @@ fn test_normalized_lines_negation_and_raw_fallbacks() {
 }
 
 #[test]
+fn test_g2_gls4_digits_and_mul() {
+    use ark_ec::{
+        bn::{gls4_digits, BnConfig},
+        scalar_mul::double_and_add,
+        AffineRepr, CurveGroup, PrimeGroup,
+    };
+    use ark_ff::{BigInteger, PrimeField, UniformRand, Zero};
+    use ark_std::{rand::Rng, test_rng, vec};
+    let mut rng = test_rng();
+    let params = crate::Config::GT_GLS.unwrap();
+    // The digits satisfy `k == \sum_i k_i lambda^i (mod r)` with `lambda = p mod r`.
+    let lambda = crate::Fr::from_le_bytes_mod_order(&crate::Fq::MODULUS.to_bytes_le());
+    let mut scalars = vec![
+        [0, 0, 0, 0],
+        [1, 0, 0, 0],
+        [u64::MAX >> 1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [u64::MAX, u64::MAX, 0, 0],
+        [0, 0, 1, 0],
+        (-crate::Fr::from(1u64)).into_bigint().0,
+    ];
+    scalars.extend((0..8).map(|_| crate::Fr::rand(&mut rng).into_bigint().0));
+    // `k < 2^63` rounds every `beta_j` to 0, since `k max_j |adj0[j]| / r < 1/2`, so it is the
+    // single digit `k_0` and never uses `psi`.
+    for k in [0u64, 1, u64::MAX >> 1, rng.gen::<u64>() >> 1] {
+        let digits = gls4_digits::<crate::Config>(&[k], &params);
+        assert_eq!(digits.map(|(_, d)| d), [k, 0, 0, 0], "k = {k}");
+        assert!(!digits[0].0);
+    }
+    // Babai rounding keeps `|k_i| <= (1/2) sum_j |basis[j][i]|`, up to the `2^{-130}` error of the
+    // shifted rounding.
+    for k in scalars
+        .iter()
+        .copied()
+        .chain((0..1000).map(|_| crate::Fr::rand(&mut rng).into_bigint().0))
+    {
+        for (i, (_, d)) in gls4_digits::<crate::Config>(&k, &params)
+            .into_iter()
+            .enumerate()
+        {
+            let bound: u128 = params.basis.iter().map(|row| row[i].unsigned_abs()).sum();
+            assert!(u128::from(d) <= bound / 2 + 1, "k = {k:?}, digit {i} = {d}");
+        }
+    }
+    // Scalars at or above `r` and wider than the field reduce mod `r` first.
+    let r = crate::Fr::MODULUS.0;
+    for k in [
+        r.to_vec(),
+        vec![r[0] + 5, r[1], r[2], r[3]],
+        vec![1, 2, 3, 4, 5, 6],
+        vec![7, 0, 0, 0, 0],
+    ] {
+        let mut limbs = [0u64; 4];
+        let reduced = crate::Fr::from_le_bytes_mod_order(
+            &k.iter()
+                .flat_map(|l| l.to_le_bytes())
+                .collect::<ark_std::vec::Vec<u8>>(),
+        );
+        limbs.copy_from_slice(&reduced.into_bigint().0);
+        assert_eq!(
+            gls4_digits::<crate::Config>(&k, &params),
+            gls4_digits::<crate::Config>(&limbs, &params),
+            "k = {k:?}"
+        );
+    }
+    for k in &scalars {
+        let digits = gls4_digits::<crate::Config>(k, &params);
+        let sum = digits
+            .iter()
+            .rev()
+            .fold(crate::Fr::zero(), |acc, &(neg, d)| {
+                let d = crate::Fr::from(d);
+                acc * lambda + if neg { -d } else { d }
+            });
+        assert_eq!(
+            sum,
+            crate::Fr::from_bigint(ark_ff::BigInt(*k)).unwrap(),
+            "k = {k:?}"
+        );
+    }
+    for _ in 0..4 {
+        let p = G2Projective::rand(&mut rng);
+        for k in &scalars {
+            let expected = double_and_add(&p, k);
+            assert_eq!(p.mul_bigint(k), expected, "projective, k = {k:?}");
+            assert_eq!(p.into_affine().mul_bigint(k), expected, "affine, k = {k:?}");
+        }
+    }
+    // Off the subgroup `psi` is not `[6x^2]`: `k < 2^63` stays exact and `2^100` does not.
+    let off = loop {
+        let x = crate::Fq2::rand(&mut rng);
+        if let Some(p) = crate::G2Affine::get_point_from_x_unchecked(x, rng.gen()) {
+            if !p.is_in_correct_subgroup_assuming_on_curve() {
+                break p;
+            }
+        }
+    };
+    let exact = [u64::MAX >> 1];
+    assert_eq!(
+        off.mul_bigint(exact),
+        double_and_add(&off.into_group(), exact)
+    );
+    let wide = [0, 1 << 36];
+    assert!(gls4_digits::<crate::Config>(&wide, &params)[1..]
+        .iter()
+        .any(|&(_, d)| d != 0));
+    assert_ne!(
+        off.mul_bigint(wide),
+        double_and_add(&off.into_group(), wide)
+    );
+}
+
+#[test]
 fn test_gt_membership_fast_matches_naive() {
     use ark_ec::{
         pairing::{Pairing, PairingOutput},
@@ -179,6 +292,18 @@ fn test_gt_exp_matches_generic() {
         let via_generic = gt.cyclotomic_exp(s.into_bigint().as_ref());
         assert_eq!(via_gls, via_generic, "s = {s}");
     }
+}
+
+#[test]
+fn test_g2_subgroup_check() {
+    // Cofactor = 10069 * 5864401 * (218-bit remainder).
+    subgroup::test_subgroup_check::<crate::g2::Config>(&[10069, 5864401], 8);
+}
+
+#[test]
+fn test_scalar_mul_matches_double_and_add() {
+    subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8, 128);
+    subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(8, 63);
 }
 
 #[test]

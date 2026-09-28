@@ -66,6 +66,87 @@ fn test_g2_subgroup_non_membership_via_endomorphism() {
     }
 }
 
+#[test]
+fn test_g2_gls4_digits_and_mul() {
+    use ark_ec::{
+        bls12::{gls4_digits, Bls12Config},
+        scalar_mul::double_and_add,
+    };
+    use ark_ff::PrimeField;
+    let mut rng = test_rng();
+    // The digits satisfy `k = \sum_i k_i x^i` with `x = -|X|`.
+    let abs_x = crate::Config::X[0];
+    let x = -Fr::from(abs_x);
+    let abs_x2 = u128::from(abs_x) * u128::from(abs_x);
+    let mut scalars = vec![
+        [0, 0, 0, 0],
+        [1, 0, 0, 0],
+        [abs_x - 1, 0, 0, 0],
+        [abs_x, 0, 0, 0],
+        [abs_x + 1, 0, 0, 0],
+        [abs_x2 as u64, (abs_x2 >> 64) as u64, 0, 0],
+        [(abs_x2 - 1) as u64, ((abs_x2 - 1) >> 64) as u64, 0, 0],
+        (Fr::from(abs_x2) * Fr::from(abs_x)).into_bigint().0,
+        [u64::MAX >> 1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [u64::MAX, u64::MAX, 0, 0],
+        [0, 0, 1, 0],
+        (-Fr::one()).into_bigint().0,
+    ];
+    scalars.extend((0..8).map(|_| Fr::rand(&mut rng).into_bigint().0));
+    for k in &scalars {
+        let digits = gls4_digits::<crate::Config>(k).unwrap();
+        let sum = digits.iter().rev().fold(Fr::zero(), |acc, &(neg, d)| {
+            let d = Fr::from(d);
+            acc * x + if neg { -d } else { d }
+        });
+        assert_eq!(
+            sum,
+            Fr::from_bigint(ark_ff::BigInt(*k)).unwrap(),
+            "k = {k:?}"
+        );
+        assert!(digits.iter().all(|&(_, d)| d < abs_x), "k = {k:?}");
+    }
+    // `k < 2^63` is below `|x|`, so it is the single digit `k_0` and never uses `psi`.
+    for k in [0u64, 1, u64::MAX >> 1, rng.gen::<u64>() >> 1] {
+        let digits = gls4_digits::<crate::Config>(&[k]).unwrap();
+        assert_eq!(digits.map(|(_, d)| d), [k, 0, 0, 0], "k = {k}");
+        assert!(!digits[0].0);
+    }
+    for _ in 0..4 {
+        let p = G2Projective::rand(&mut rng);
+        for k in &scalars {
+            let expected = double_and_add(&p, k);
+            assert_eq!(p.mul_bigint(k), expected, "projective, k = {k:?}");
+            assert_eq!(p.into_affine().mul_bigint(k), expected, "affine, k = {k:?}");
+        }
+    }
+    // Off the subgroup `psi` is not `[x]`: `k < 2^63` stays exact and `2^100` does not.
+    let off = loop {
+        if let Some(p) = G2Affine::get_point_from_x_unchecked(Fq2::rand(&mut rng), rng.gen()) {
+            if !p.is_in_correct_subgroup_assuming_on_curve() {
+                break p;
+            }
+        }
+    };
+    let exact = [u64::MAX >> 1];
+    assert_eq!(
+        off.mul_bigint(exact),
+        double_and_add(&off.into_group(), exact)
+    );
+    let wide = [0, 1 << 36];
+    assert_ne!(
+        off.mul_bigint(wide),
+        double_and_add(&off.into_group(), wide)
+    );
+}
+
+#[test]
+fn test_scalar_mul_matches_double_and_add() {
+    subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8, 128);
+    subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(8, 63);
+}
+
 // Test vectors and macro adapted from https://github.com/zkcrypto/bls12_381/blob/e224ad4ea1babfc582ccd751c2bf128611d10936/src/tests/mod.rs
 macro_rules! test_vectors {
     ($projective:ident, $affine:ident, $compress:expr, $expected:ident) => {
@@ -376,4 +457,41 @@ fn test_karabina_compressed_squaring() {
     let one = crate::Fq12::one();
     assert_eq!(CompressedCyclotomic::decompress_pair(&one.compress_cyclotomic(), &one.compress_cyclotomic()), None);
     assert_eq!(<crate::Config as Bls12Config>::exp_by_x(one), one);
+}
+
+#[test]
+fn test_g1_subgroup_check() {
+    // h1 = (x - 1)^2 / 3 = 3 * 11^2 * 10177^2 * 859267^2 * 52437899^2.
+    ark_algebra_test_templates::subgroup::test_subgroup_check::<crate::g1::Config>(
+        &[3, 11, 10177, 859267, 52437899],
+        4,
+    );
+}
+
+#[test]
+fn test_g2_subgroup_check() {
+    // Every prime of h2 below 2^64; the remaining factor is a 448-bit prime.
+    ark_algebra_test_templates::subgroup::test_subgroup_check::<crate::g2::Config>(
+        &[13, 23, 2713, 11953, 262069],
+        4,
+    );
+}
+
+/// `(0, \pm 2)` are the order-3 points of G1's curve, fixed by the GLV endomorphism. The
+/// subgroup check, `S + (0, 2)`, and checked compressed decoding all reject them.
+#[test]
+fn test_g1_x_zero_torsion_rejected() {
+    let mut rng = test_rng();
+    let two = Fq::from(2u64);
+    for t in [G1Affine::new_unchecked(Fq::zero(), two), G1Affine::new_unchecked(Fq::zero(), -two)] {
+        assert!(t.is_on_curve());
+        assert!(!t.is_in_correct_subgroup_assuming_on_curve());
+        assert!(t.into_group().mul_bigint(Fr::characteristic()) != G1Projective::zero());
+        let s = G1Projective::rand(&mut rng);
+        assert!(!(s + t).into_affine().is_in_correct_subgroup_assuming_on_curve());
+
+        let mut bytes = vec![];
+        t.serialize_with_mode(&mut bytes, Compress::Yes).unwrap();
+        assert!(G1Affine::deserialize_with_mode(&bytes[..], Compress::Yes, Validate::Yes).is_err());
+    }
 }

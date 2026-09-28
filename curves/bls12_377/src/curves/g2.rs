@@ -2,9 +2,9 @@ use ark_ec::{
     bls12,
     bls12::Bls12Config,
     hashing::curve_maps::wb::{IsogenyMap, WBConfig},
-    scalar_mul::glv::GLVConfig,
+    scalar_mul::{double_and_add, double_and_add_affine, glv::GLVConfig},
     short_weierstrass::{Affine, Projective, SWCurveConfig},
-    AffineRepr, CurveConfig, CurveGroup, PrimeGroup,
+    AffineRepr, CurveConfig, CurveGroup,
 };
 
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
@@ -71,6 +71,19 @@ impl SWCurveConfig for Config {
         Self::BaseField::zero()
     }
 
+    /// GLV scalar multiplication through [`GLVConfig::glv_mul_projective_bigint`]: exact on the
+    /// order-`r` subgroup, and off it for `k < 2^128` and `k >= r`. The subgroup check and
+    /// `clear_cofactor` below call `double_and_add` directly.
+    #[inline]
+    fn mul_projective(p: &Projective<Self>, scalar: &[u64]) -> Projective<Self> {
+        <Self as GLVConfig>::glv_mul_projective_bigint(p, scalar)
+    }
+
+    /// Scott, <https://eprint.iacr.org/2021/1130>, section 4: `psi(P) == [x]P`.
+    fn is_in_correct_subgroup_assuming_on_curve(point: &G2Affine) -> bool {
+        double_and_add_affine(point, crate::Config::X) == p_power_endomorphism(point)
+    }
+
     #[inline]
     fn clear_cofactor(p: &G2Affine) -> G2Affine {
         // Based on Section 4.1 of https://eprint.iacr.org/2017/419.pdf
@@ -90,9 +103,9 @@ impl SWCurveConfig for Config {
         let mut tmp = x_p;
         tmp += &psi_p;
 
-        // tmp2 = [x^2]P + [x]ψ(P)
-        let mut tmp2: Projective<Config> = tmp;
-        tmp2 = tmp2.mul_bigint(x);
+        // tmp2 = [x^2]P + [x]ψ(P). `tmp` is not in the order-r subgroup, so this
+        // [x] multiplication must use double-and-add rather than GLV.
+        let tmp2 = double_and_add(&tmp, x);
 
         // add up all the terms
         psi2_p2 += tmp2;
