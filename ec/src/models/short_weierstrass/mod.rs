@@ -45,6 +45,16 @@ pub trait SWCurveConfig: super::CurveConfig {
     /// A type that is stored in `Affine<Self>` to indicate whether the point is at infinity.
     type ZeroFlag: ZeroFlag<Self>;
 
+    /// Name identifying the curve to the host MSM, whose ID is the name up to its first `::`.
+    /// `None` skips the host MSM. Defaults to the first 20 bytes of the config's type name without
+    /// the `ark_` prefix, whose first segment is the crate name. G1 and G2 configs of one crate
+    /// share that segment, so they override it.
+    fn curve_name() -> Option<&'static str> {
+        let name = core::any::type_name::<Self>().trim_start_matches("ark_");
+        let name_len = name.len().min(20);
+        Some(&name[..name_len])
+    }
+
     /// Helper method for computing `elem * Self::COEFF_A`.
     ///
     /// The default implementation should be overridden only if
