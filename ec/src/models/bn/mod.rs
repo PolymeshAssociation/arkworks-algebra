@@ -9,12 +9,14 @@ use ark_ff::{
         fp6_3over2::Fp6Config,
         Field, Fp2, PrimeField,
     },
-    CyclotomicMultSubgroup,
+    AdditiveGroup, CyclotomicMultSubgroup,
 };
 use ark_std::{cfg_chunks_mut, marker::PhantomData, vec::*};
 use educe::Educe;
 use itertools::Itertools;
-use num_traits::One;
+use num_bigint::{BigInt, Sign};
+use num_integer::Integer;
+use num_traits::{One, Zero};
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -48,39 +50,116 @@ pub trait BnConfig: 'static + Sized {
         ScalarField = <Self::G1Config as CurveConfig>::ScalarField,
     >;
 
+    /// Returns `3 * b' * c`, where `b'` is the G2 twist coefficient. Override
+    /// when `b'` has structure that beats a general `Fp2` multiplication.
+    fn mul_by_3b_twist(c: Fp2<Self::Fp2Config>) -> Fp2<Self::Fp2Config> {
+        <Self::G2Config as SWCurveConfig>::COEFF_B * (c.double() + c)
+    }
+
+    /// Returns `f^x` for `f` in the cyclotomic subgroup. Override with a fixed addition
+    /// chain for `Self::X`.
+    fn exp_by_x(f: Fp12<Self::Fp12Config>) -> Fp12<Self::Fp12Config> {
+        let mut f = f.cyclotomic_exp(Self::X);
+        if Self::X_IS_NEGATIVE {
+            f.cyclotomic_inverse_in_place();
+        }
+        f
+    }
+
+    /// Constants for 4-dimensional Galbraith-Scott exponentiation of GT elements,
+    /// or `None` to fall back to the windowed cyclotomic exponentiation.
+    const GT_GLS: Option<GtGlsParams> = None;
+
+    /// Returns `f^scalar` for `f` in GT. With [`Self::GT_GLS`] set, uses the
+    /// Frobenius 4-dimensional GLS; otherwise the windowed cyclotomic exp.
+    fn gt_exp(f: Fp12<Self::Fp12Config>, scalar: &[u64]) -> Fp12<Self::Fp12Config> {
+        match Self::GT_GLS {
+            Some(params) => gt_gls_exp::<Self>(f, scalar, &params),
+            None => f.cyclotomic_exp(scalar),
+        }
+    }
+
     fn multi_miller_loop(
         a: impl IntoIterator<Item = impl Into<G1Prepared<Self>>>,
         b: impl IntoIterator<Item = impl Into<G2Prepared<Self>>>,
     ) -> MillerLoopOutput<Bn<Self>> {
-        let mut pairs = a
+        let pairs = a
             .into_iter()
             .zip_eq(b)
             .filter_map(|(p, q)| {
                 let (p, q) = (p.into(), q.into());
                 match !p.is_zero() && !q.is_zero() {
-                    true => Some((p, q.ell_coeffs.into_iter())),
+                    true => Some((p, q)),
                     false => None,
                 }
             })
             .collect::<Vec<_>>();
 
-        let mut f = cfg_chunks_mut!(pairs, 4)
+        // `(1/P.y, P.x/P.y)` for each pair whose `Q` has normalized lines
+        // (`G2Prepared::normalize_lines`), from one batched inversion. A zero `P.y` keeps the
+        // pair on raw lines.
+        let mut yinv: Vec<Self::Fp> = pairs
+            .iter()
+            .map(|(p, q)| match q.ell_coeffs.first() {
+                Some(c) if g2::py_coeff::<Self>(c).is_one() => p.0.y,
+                _ => Self::Fp::zero(),
+            })
+            .collect();
+        if yinv.iter().any(|y| !y.is_zero()) {
+            ark_ff::batch_inversion(&mut yinv);
+        }
+        let mut pairs = pairs
+            .into_iter()
+            .zip(yinv)
+            .map(|((p, q), yinv)| {
+                let scale = (!yinv.is_zero()).then(|| (yinv, p.0.x * yinv));
+                (p, q.ell_coeffs.into_iter(), scale)
+            })
+            .collect::<Vec<_>>();
+
+        // Amortize the shared squaring across all pairs: serial builds keep every
+        // pair in one Miller loop (no duplicated squarings), parallel builds split
+        // into chunks so the loops run concurrently.
+        let chunk_size = if cfg!(feature = "parallel") {
+            4
+        } else {
+            pairs.len().max(1)
+        };
+
+        let mut f = cfg_chunks_mut!(pairs, chunk_size)
             .map(|pairs| {
                 let mut f = <Bn<Self> as Pairing>::TargetField::one();
                 for i in (1..Self::ATE_LOOP_COUNT.len()).rev() {
+                    // `f` starts at 1, so the first squaring is skipped (2010/526 section 4).
                     if i != Self::ATE_LOOP_COUNT.len() - 1 {
                         f.square_in_place();
                     }
 
-                    for (p, coeffs) in pairs.iter_mut() {
-                        Bn::<Self>::ell(&mut f, &coeffs.next().unwrap(), &p.0);
-                    }
-
                     let bit = Self::ATE_LOOP_COUNT[i - 1];
-                    if bit == 1 || bit == -1 {
-                        for (p, coeffs) in pairs.iter_mut() {
-                            Bn::<Self>::ell(&mut f, &coeffs.next().unwrap(), &p.0);
+                    let has_add = bit == 1 || bit == -1;
+                    // Pair every raw line in this iteration two at a time, across pairs
+                    // and across doubling/addition.
+                    let mut pending = None;
+                    for (p, coeffs, scale) in pairs.iter_mut() {
+                        Bn::<Self>::feed_line(
+                            &mut f,
+                            &mut pending,
+                            &coeffs.next().unwrap(),
+                            &p.0,
+                            scale,
+                        );
+                        if has_add {
+                            Bn::<Self>::feed_line(
+                                &mut f,
+                                &mut pending,
+                                &coeffs.next().unwrap(),
+                                &p.0,
+                                scale,
+                            );
                         }
+                    }
+                    if let Some(line) = pending {
+                        Bn::<Self>::mul_line(&mut f, &line);
                     }
                 }
                 f
@@ -91,12 +170,14 @@ pub trait BnConfig: 'static + Sized {
             f.cyclotomic_inverse_in_place();
         }
 
-        for (p, coeffs) in &mut pairs {
-            Bn::<Self>::ell(&mut f, &coeffs.next().unwrap(), &p.0);
+        // The two Frobenius steps contribute two lines per pair; pair them too.
+        let mut pending = None;
+        for (p, coeffs, scale) in &mut pairs {
+            Bn::<Self>::feed_line(&mut f, &mut pending, &coeffs.next().unwrap(), &p.0, scale);
+            Bn::<Self>::feed_line(&mut f, &mut pending, &coeffs.next().unwrap(), &p.0, scale);
         }
-
-        for (p, coeffs) in &mut pairs {
-            Bn::<Self>::ell(&mut f, &coeffs.next().unwrap(), &p.0);
+        if let Some(line) = pending {
+            Bn::<Self>::mul_line(&mut f, &line);
         }
 
         MillerLoopOutput(f)
@@ -104,7 +185,8 @@ pub trait BnConfig: 'static + Sized {
 
     fn final_exponentiation(f: MillerLoopOutput<Bn<Self>>) -> Option<PairingOutput<Bn<Self>>> {
         // Easy part: result = elt^((q^6-1)*(q^2+1)).
-        // Follows, e.g., Beuchat et al page 9, by computing result as follows:
+        // Follows, e.g., Beuchat et al., https://eprint.iacr.org/2010/354, page 9, by
+        // computing result as follows:
         //   elt^((q^6-1)*(q^2+1)) = (conj(elt) * elt^(-1))^(q^2+1)
         let f = f.0;
 
@@ -126,8 +208,14 @@ pub trait BnConfig: 'static + Sized {
             // r = f^((p^6 - 1)(p^2 + 1))
             r *= &f2;
 
+            // If the easy part already yields 1, the pairing is trivial.
+            if r.is_one() {
+                return PairingOutput(r);
+            }
+
             // Hard part follows Laura Fuentes-Castaneda et al. "Faster hashing to G2"
-            // by computing:
+            // (https://cacr.uwaterloo.ca/techreports/2011/cacr2011-26.pdf, section 4.1):
+            // 3 exponentiations by x, 3 squarings and 10 multiplications, computing:
             //
             // result = elt^(q^3 * (12*z^3 + 6z^2 + 4z - 1) +
             //               q^2 * (12*z^3 + 6z^2 + 6z) +
@@ -178,32 +266,91 @@ pub use self::{
 #[educe(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub struct Bn<P: BnConfig>(PhantomData<fn() -> P>);
 
-impl<P: BnConfig> Bn<P> {
-    /// Evaluates the line function at point p.
-    fn ell(f: &mut Fp12<P::Fp12Config>, coeffs: &g2::EllCoeff<P>, p: &G1Affine<P>) {
-        let mut c0 = coeffs.0;
-        let mut c1 = coeffs.1;
-        let mut c2 = coeffs.2;
+/// A line, scaled by a G1 point, in the three coefficient slots its sparse
+/// multiplication reads.
+type EllLine<P> = (
+    Fp2<<P as BnConfig>::Fp2Config>,
+    Fp2<<P as BnConfig>::Fp2Config>,
+    Fp2<<P as BnConfig>::Fp2Config>,
+);
 
+impl<P: BnConfig> Bn<P> {
+    // Scale a raw line by `p`, positioning the coefficients at their sparse slots.
+    fn scale_line(coeffs: &g2::EllCoeff<P>, p: &G1Affine<P>) -> EllLine<P> {
+        let (mut c0, mut c1, mut c2) = (coeffs.0, coeffs.1, coeffs.2);
         match P::TWIST_TYPE {
             TwistType::M => {
                 c2.mul_assign_by_fp(&p.y);
                 c1.mul_assign_by_fp(&p.x);
-                f.mul_by_014(&c0, &c1, &c2);
             },
             TwistType::D => {
                 c0.mul_assign_by_fp(&p.y);
                 c1.mul_assign_by_fp(&p.x);
-                f.mul_by_034(&c0, &c1, &c2);
             },
+        }
+        (c0, c1, c2)
+    }
+
+    // Multiply `f` by one scaled line.
+    fn mul_line(f: &mut Fp12<P::Fp12Config>, a: &EllLine<P>) {
+        match P::TWIST_TYPE {
+            TwistType::M => f.mul_by_014(&a.0, &a.1, &a.2),
+            TwistType::D => f.mul_by_034(&a.0, &a.1, &a.2),
         }
     }
 
-    fn exp_by_neg_x(mut f: Fp12<P::Fp12Config>) -> Fp12<P::Fp12Config> {
-        f = f.cyclotomic_exp(P::X);
-        if !P::X_IS_NEGATIVE {
-            f.cyclotomic_inverse_in_place();
+    // Multiply `f` by two scaled lines. `Fp12::mul_by_014_pair` /
+    // `Fp12::mul_by_034_pair` pick between two sparse products and one line-by-line
+    // product followed by a semi-sparse one. Pairing lines across pairs follows MIRACL core
+    // `ate2` (https://github.com/miracl/core/blob/a6df6733c1ad1ad0918306abd0c3983b4cd4a58c/rust/pair.rs#L522-L541).
+    fn mul_line_pair(f: &mut Fp12<P::Fp12Config>, a: &EllLine<P>, b: &EllLine<P>) {
+        match P::TWIST_TYPE {
+            TwistType::M => f.mul_by_014_pair(&a.0, &a.1, &a.2, &b.0, &b.1, &b.2),
+            TwistType::D => f.mul_by_034_pair(&a.0, &a.1, &a.2, &b.0, &b.1, &b.2),
         }
+    }
+
+    // Feed a scaled line into `f`, pairing it with a held-back line when one waits.
+    fn push_line(f: &mut Fp12<P::Fp12Config>, pending: &mut Option<EllLine<P>>, line: EllLine<P>) {
+        match pending.take() {
+            Some(prev) => Self::mul_line_pair(f, &prev, &line),
+            None => *pending = Some(line),
+        }
+    }
+
+    // Multiply `f` by one line at `p`. A normalized line, whose `P.y` coefficient is 1, is
+    // rescaled by `scale = (1/P.y, P.x/P.y)` when that is known and multiplied in with the
+    // unit-slot product. Any other line goes through `push_line`.
+    fn feed_line(
+        f: &mut Fp12<P::Fp12Config>,
+        pending: &mut Option<EllLine<P>>,
+        coeffs: &g2::EllCoeff<P>,
+        p: &G1Affine<P>,
+        scale: &Option<(P::Fp, P::Fp)>,
+    ) {
+        match scale {
+            Some((yinv, pxyinv)) if g2::py_coeff::<P>(coeffs).is_one() => {
+                let (mut a, mut b) = g2::fixed_line::<P>(coeffs);
+                match P::TWIST_TYPE {
+                    TwistType::M => {
+                        a.mul_assign_by_fp(yinv);
+                        b.mul_assign_by_fp(pxyinv);
+                        f.mul_by_014_c4_one(&a, &b);
+                    },
+                    TwistType::D => {
+                        a.mul_assign_by_fp(pxyinv);
+                        b.mul_assign_by_fp(yinv);
+                        f.mul_by_034_c0_one(&a, &b);
+                    },
+                }
+            },
+            _ => Self::push_line(f, pending, Self::scale_line(coeffs, p)),
+        }
+    }
+
+    fn exp_by_neg_x(f: Fp12<P::Fp12Config>) -> Fp12<P::Fp12Config> {
+        let mut f = P::exp_by_x(f);
+        f.cyclotomic_inverse_in_place();
         f
     }
 }
@@ -229,4 +376,136 @@ impl<P: BnConfig> Pairing for Bn<P> {
     fn final_exponentiation(f: MillerLoopOutput<Self>) -> Option<PairingOutput<Self>> {
         P::final_exponentiation(f)
     }
+
+    fn gt_exp(f: &Fp12<P::Fp12Config>, scalar: &[u64]) -> Fp12<P::Fp12Config> {
+        P::gt_exp(*f, scalar)
+    }
+
+    fn is_in_gt(f: &Fp12<P::Fp12Config>) -> bool {
+        // Scott, https://eprint.iacr.org/2021/1130.
+        if f.is_zero() {
+            return false;
+        }
+        // Cyclotomic: f^(p^2) == f^(p^4) * f, i.e. f^(p^4 - p^2 + 1) == 1. GT is the
+        // order-r subgroup of this group of order Phi_12(p) = p^4 - p^2 + 1.
+        let mut a = *f;
+        a.frobenius_map_in_place(2);
+        let mut b = a;
+        b.frobenius_map_in_place(2);
+        b *= f;
+        if a != b {
+            return false;
+        }
+        // Order-r subgroup, via Dai-Lin-Zhao-Zhou https://eprint.iacr.org/2022/348, as MIRACL
+        // core `gtmember` (https://github.com/miracl/core/blob/a6df6733c1ad1ad0918306abd0c3983b4cd4a58c/rust/pair.rs#L1006-L1038):
+        // one exponentiation f^x plus Frobenius, checking
+        // f^(2 x p^3) == f^(1 + x + x p + x p^2). On GT the Frobenius is
+        // [p mod r] = [6x^2], and 1 + x + x p + x p^2 == 2 x p^3 (mod r) there, so the
+        // check is necessary. Dai et al. show it is sufficient on the cyclotomic
+        // subgroup. exp_by_neg_x raises to -x, so conjugating it gives f^x.
+        let mut t = Bn::<P>::exp_by_neg_x(*f);
+        t.cyclotomic_inverse_in_place(); // f^x
+        let mut r = t;
+        r.frobenius_map_in_place(1); // f^(x p)
+        t *= f; // f^x * f
+        t *= &r; // * f^(x p)
+        r.frobenius_map_in_place(1); // f^(x p^2)
+        t *= &r; // * f^(x p^2)
+        r.frobenius_map_in_place(1); // f^(x p^3)
+        r.cyclotomic_square_in_place(); // f^(2 x p^3)
+        r == t
+    }
+}
+
+/// The 4x4 short lattice basis and first adjugate row for the GT 4-dimensional
+/// GLS decomposition of a curve. With `lambda = p mod r`, the Frobenius eigenvalue on
+/// GT (not `GLVConfig::LAMBDA`, the curve endomorphism eigenvalue on G1/G2), the
+/// decompositions of 0 form the lattice
+/// `L = { v : v0 + v1 lambda + v2 lambda^2 + v3 lambda^3 == 0 (mod r) }`, generated by
+/// the rows `(r, 0, 0, 0)`, `(-lambda, 1, 0, 0)`, `(-lambda^2, 0, 1, 0)`,
+/// `(-lambda^3, 0, 0, 1)` of determinant `r`. `basis` is an LLL reduction of these rows
+/// (Sage `matrix(ZZ, rows).LLL()`, in any row order) with `det(basis) = r` and
+/// entries about `x`, and `adj0` is the first row of `adj(basis)`, so
+/// `basis^-1 = adj(basis) / r`. Basis entries fit `i128`; adjugate magnitudes are
+/// little-endian `u64` limbs of a value below the scalar field modulus.
+#[derive(Copy, Clone, Debug)]
+pub struct GtGlsParams {
+    pub basis: [[i128; 4]; 4],
+    pub adj0: [(bool, [u64; 4]); 4],
+}
+
+fn nb_from_u64_le(limbs: &[u64]) -> BigInt {
+    let mut bytes = ark_std::vec::Vec::with_capacity(limbs.len() * 8);
+    for l in limbs {
+        bytes.extend_from_slice(&l.to_le_bytes());
+    }
+    BigInt::from_bytes_le(Sign::Plus, &bytes)
+}
+
+/// `f^k` for `f` in GT via the Frobenius 4-dimensional GLS: decompose `k` into four
+/// ~r^(1/4) digits `k_i` with `k == sum_i k_i p^i (mod r)` by Babai rounding against
+/// `params`, then `prod_i (f^(p^i))^{k_i}` with [`crate::pairing::gt_multiexp`]. On GT
+/// the Frobenius `pi` acts as `[p mod r]` and `pi^4 - pi^2 + 1 = 0`, since `r` divides
+/// `Phi_12(p) = p^4 - p^2 + 1`, so four digits suffice. On BN curves `p mod r = 6x^2`
+/// is about twice as wide as `x`, so unlike BLS12 (`p == x (mod r)` with a single-limb
+/// `x`) there are no base-`p` digits to read off, and the digits come from the lattice
+/// of [`GtGlsParams`]. Babai rounding writes `(k, 0, 0, 0) = beta * basis` with
+/// `beta_j = k * adj0[j] / r`, and the digits are `(k, 0, 0, 0) - sum_j round(beta_j) basis_j`,
+/// still congruent to `k` because every basis row lies in the lattice. Each rounding
+/// error is at most 1/2, so `|k_i| <= (1/2) sum_j |basis[j][i]|`, which `params` must
+/// keep below `2^64` (true for BN254). About 64 cyclotomic squarings instead of about
+/// 254. Galbraith-Scott, <https://eprint.iacr.org/2008/117>, section 3 (the lattice and
+/// Babai rounding) and section 4 (the Frobenius on GT); the rounded lattice
+/// decomposition is Gallant, Lambert, Vanstone, CRYPTO 2001. MIRACL core
+/// [`gtpow`](https://github.com/miracl/core/blob/a6df6733c1ad1ad0918306abd0c3983b4cd4a58c/rust/pair.rs#L875-L909) does the same with its own basis.
+fn gt_gls_exp<P: BnConfig>(
+    f: Fp12<P::Fp12Config>,
+    scalar: &[u64],
+    params: &GtGlsParams,
+) -> Fp12<P::Fp12Config> {
+    let r = nb_from_u64_le(
+        <<P::G1Config as CurveConfig>::ScalarField as PrimeField>::MODULUS.as_ref(),
+    );
+    let k = nb_from_u64_le(scalar).mod_floor(&r);
+
+    let mut acc = [
+        BigInt::zero(),
+        BigInt::zero(),
+        BigInt::zero(),
+        BigInt::zero(),
+    ];
+    for j in 0..4 {
+        let (sgn, val) = &params.adj0[j];
+        let mut a = nb_from_u64_le(val);
+        if !*sgn {
+            a = -a;
+        }
+        // beta_j = round(k * adj0[j] / r), nearest integer.
+        let num = &k * &a;
+        let (mut q, rem) = num.div_rem(&r);
+        let two_rem = &rem + &rem;
+        if two_rem > r {
+            q += BigInt::one();
+        } else if -two_rem > r {
+            q -= BigInt::one();
+        }
+        for i in 0..4 {
+            acc[i] += &q * BigInt::from(params.basis[j][i]);
+        }
+    }
+
+    let mut digits = [(false, 0u64); 4];
+    for i in 0..4 {
+        let ki = if i == 0 { &k - &acc[0] } else { -&acc[i] };
+        let neg = ki.sign() == Sign::Minus;
+        let mag = ki.magnitude().iter_u64_digits().next().unwrap_or(0);
+        digits[i] = (neg, mag);
+    }
+
+    let mut g = [f; 4];
+    for i in 1..4 {
+        g[i] = g[i - 1];
+        g[i].frobenius_map_in_place(1);
+    }
+    crate::pairing::gt_multiexp(g, digits)
 }

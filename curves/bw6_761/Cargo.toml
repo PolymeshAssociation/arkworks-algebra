@@ -26,6 +26,7 @@ ark-algebra-bench-templates = { workspace = true }
 [features]
 default = []
 std = [ "ark-std/std", "ark-ff/std", "ark-ec/std", "ark-bls12-377/std" ]
+parallel = [ "std", "ark-ff/parallel", "ark-ec/parallel", "ark-std/parallel" ]
 asm = [ "ark-ff/asm" ]
 
 [[bench]]

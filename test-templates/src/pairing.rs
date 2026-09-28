@@ -5,7 +5,7 @@ macro_rules! test_pairing {
             pub const ITERATIONS: usize = 100;
             use ark_ec::{pairing::*, CurveGroup, PrimeGroup};
             use ark_ff::{CyclotomicMultSubgroup, Field, PrimeField};
-            use ark_std::{test_rng, One, UniformRand, Zero};
+            use ark_std::{test_rng, vec::Vec, One, UniformRand, Zero};
             #[test]
             fn test_bilinearity() {
                 for _ in 0..100 {
@@ -47,6 +47,22 @@ macro_rules! test_pairing {
                     let ans1 = <$Pairing>::pairing(a, b) + &<$Pairing>::pairing(c, d);
                     let ans2 = <$Pairing>::multi_pairing(&[a, c], &[b, d]);
                     assert_eq!(ans1, ans2);
+                }
+            }
+
+            #[test]
+            fn test_multi_pairing_many() {
+                let rng = &mut test_rng();
+                let a: Vec<_> = (0..9)
+                    .map(|_| <$Pairing as Pairing>::G1::rand(rng).into_affine())
+                    .collect();
+                let b: Vec<_> = (0..9)
+                    .map(|_| <$Pairing as Pairing>::G2::rand(rng).into_affine())
+                    .collect();
+                let singles: Vec<_> = a.iter().zip(&b).map(|(p, q)| <$Pairing>::pairing(p, q)).collect();
+                for n in [1, 3, 4, 5, 8, 9] {
+                    let expected = singles[..n].iter().sum::<PairingOutput<$Pairing>>();
+                    assert_eq!(<$Pairing>::multi_pairing(&a[..n], &b[..n]), expected, "n = {n}");
                 }
             }
 
