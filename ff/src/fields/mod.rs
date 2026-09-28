@@ -668,26 +668,27 @@ mod no_std_tests {
 
     #[test]
     fn test_batch_inversion() {
-        let mut random_coeffs = Vec::new();
-        let vec_size = 1000;
+        let mut rng = test_rng();
+        // Sizes on both sides of the serial/parallel threshold used with the `parallel` feature,
+        // including the empty batch. After arkworks-rs/algebra#1135
+        // (https://github.com/arkworks-rs/algebra/pull/1135).
+        for vec_size in [0, 1, 2, 3, 1000, 4095, 4096, 4097, 9000] {
+            let random_coeffs: Vec<Fr> = (0..vec_size).map(|_| Fr::rand(&mut rng)).collect();
 
-        for _ in 0..=vec_size {
-            random_coeffs.push(Fr::rand(&mut test_rng()));
-        }
-
-        let mut random_coeffs_inv = random_coeffs.clone();
-        batch_inversion(&mut random_coeffs_inv);
-        for i in 0..=vec_size {
-            assert_eq!(random_coeffs_inv[i] * random_coeffs[i], Fr::one());
-        }
-        let rand_multiplier = Fr::rand(&mut test_rng());
-        let mut random_coeffs_inv_shifted = random_coeffs.clone();
-        batch_inversion_and_mul(&mut random_coeffs_inv_shifted, &rand_multiplier);
-        for i in 0..=vec_size {
-            assert_eq!(
-                random_coeffs_inv_shifted[i] * random_coeffs[i],
-                rand_multiplier
-            );
+            let mut random_coeffs_inv = random_coeffs.clone();
+            batch_inversion(&mut random_coeffs_inv);
+            for i in 0..vec_size {
+                assert_eq!(random_coeffs_inv[i] * random_coeffs[i], Fr::one());
+            }
+            let rand_multiplier = Fr::rand(&mut rng);
+            let mut random_coeffs_inv_shifted = random_coeffs.clone();
+            batch_inversion_and_mul(&mut random_coeffs_inv_shifted, &rand_multiplier);
+            for i in 0..vec_size {
+                assert_eq!(
+                    random_coeffs_inv_shifted[i] * random_coeffs[i],
+                    rand_multiplier
+                );
+            }
         }
     }
 

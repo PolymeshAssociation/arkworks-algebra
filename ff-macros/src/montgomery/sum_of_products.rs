@@ -39,7 +39,10 @@ pub(super) fn sum_of_products_impl(num_limbs: usize, modulus: &[u64]) -> proc_ma
             });
         }
         let modulus_0 = modulus[0];
-        let chunk_size = 2 * (num_limbs * 64 - modulus_size) - 1;
+        // A chunk of `M` products stays below `2^64 R` before each shift and ends below
+        // `2p` while `(M + 1) p < R`, which `M = 2^s - 1` meets for `s >= 2` spare bits.
+        let spare_bits = num_limbs * 64 - modulus_size;
+        let chunk_size = (1usize << spare_bits.min(16)) - 1;
         body.extend(quote! {
             if M <= #chunk_size {
                 // Algorithm 2, line 2

@@ -71,7 +71,7 @@ pub(crate) fn mont_config_helper(
 
     let add_with_carry = add_with_carry_impl(limbs);
     let sub_with_borrow = sub_with_borrow_impl(limbs);
-    let subtract_modulus = subtract_modulus_impl(&modulus);
+    let subtract_modulus = subtract_modulus_impl(&modulus, limbs);
     let add_assign = add_assign_impl(modulus_has_spare_bit);
     let double_in_place = double_in_place_impl(modulus_has_spare_bit);
     let mul_assign = mul_assign_impl(
@@ -87,6 +87,48 @@ pub(crate) fn mont_config_helper(
         modulus_has_spare_bit,
     );
     let sum_of_products = sum_of_products_impl(limbs, &modulus_limbs);
+    // Masked for fields wider than 4 limbs, as in `subtract_modulus_impl`. After Zakura #484
+    // (https://github.com/zakura-core/common/pull/484).
+    let sub_assign = if limbs > 4 {
+        quote::quote! {
+            // On underflow add the modulus back, masked rather than branched; both inputs
+            // are canonical, so the result is below the modulus.
+            let borrow = __sub_with_borrow(&mut a.0, &b.0);
+            let mask = 0u64.wrapping_sub(borrow as u64);
+            let mut m = #modulus;
+            for limb in m.0.iter_mut() {
+                *limb &= mask;
+            }
+            __add_with_carry(&mut a.0, &m);
+        }
+    } else {
+        quote::quote! {
+            // If `other` is larger than `self`, add the modulus to self first.
+            if b.0 > a.0 {
+                __add_with_carry(&mut a.0, &#modulus);
+            }
+            __sub_with_borrow(&mut a.0, &b.0);
+        }
+    };
+    // wasm32 has no 64x64->128 product; 4-limb moduli below 2^255 use the radix-2^29 path.
+    let (wasm_mul, wasm_square) = if limbs == 4 && modulus_has_spare_bit {
+        (
+            quote::quote! {
+                if cfg!(target_family = "wasm") {
+                    ark_ff::fields::mont29_mul_assign::<Self, 4>(a, b);
+                    return;
+                }
+            },
+            quote::quote! {
+                if cfg!(target_family = "wasm") {
+                    ark_ff::fields::mont29_square_in_place::<Self, 4>(a);
+                    return;
+                }
+            },
+        )
+    } else {
+        (quote::quote! {}, quote::quote! {})
+    };
 
     let mixed_radix = if let Some(large_subgroup_generator) = large_subgroup_generator {
         quote::quote! {
@@ -136,11 +178,7 @@ pub(crate) fn mont_config_helper(
 
                 #[inline(always)]
                 fn sub_assign(a: &mut F, b: &F) {
-                    // If `other` is larger than `self`, add the modulus to self first.
-                    if b.0 > a.0 {
-                        __add_with_carry(&mut a.0, &#modulus);
-                    }
-                    __sub_with_borrow(&mut a.0, &b.0);
+                    #sub_assign
                 }
 
                 #[inline(always)]
@@ -160,10 +198,12 @@ pub(crate) fn mont_config_helper(
 
                 #[inline(always)]
                 fn mul_assign(a: &mut F, b: &F) {
+                    #wasm_mul
                     #mul_assign
                 }
                 #[inline(always)]
                 fn square_in_place(a: &mut F) {
+                    #wasm_square
                     #square_in_place
                 }
 
