@@ -55,7 +55,7 @@ std = [
     "ark-bls12-381/std",
     "ark-bn254/std",
 ]
-parallel = ["std", "rayon", "ark-std/parallel", "ark-ec/parallel"]
+parallel = ["std", "rayon"]
 asm = ["ark-ff/asm"]
 
 # Call the host function from a no_std guest.
