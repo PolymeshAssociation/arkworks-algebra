@@ -45,6 +45,16 @@ pub trait SWCurveConfig: super::CurveConfig {
     /// A type that is stored in `Affine<Self>` to indicate whether the point is at infinity.
     type ZeroFlag: ZeroFlag<Self>;
 
+    /// Name identifying the curve to the host MSM, whose ID is the name up to its first `::`.
+    /// `None` skips the host MSM. Defaults to the first 20 bytes of the config's type name without
+    /// the `ark_` prefix, whose first segment is the crate name. G1 and G2 configs of one crate
+    /// share that segment, so they override it.
+    fn curve_name() -> Option<&'static str> {
+        let name = core::any::type_name::<Self>().trim_start_matches("ark_");
+        let name_len = name.len().min(20);
+        Some(&name[..name_len])
+    }
+
     /// Helper method for computing `elem * Self::COEFF_A`.
     ///
     /// The default implementation should be overridden only if
@@ -96,6 +106,9 @@ pub trait SWCurveConfig: super::CurveConfig {
     /// The default method is simply to multiply by the cofactor.
     /// Some curves can implement a more efficient algorithm.
     fn clear_cofactor(item: &Affine<Self>) -> Affine<Self> {
+        if Self::cofactor_is_one() {
+            return *item;
+        }
         item.mul_by_cofactor()
     }
 
@@ -109,6 +122,18 @@ pub trait SWCurveConfig: super::CurveConfig {
     /// coordinates.
     fn mul_affine(base: &Affine<Self>, scalar: &[u64]) -> Projective<Self> {
         double_and_add_affine(base, scalar)
+    }
+
+    /// Offers a tiny multi scalar multiplication to a shared-doubling ladder, tried by
+    /// [`VariableBaseMSM::msm_unchecked`] before the bucket algorithm. `None` declines and the
+    /// caller carries on to the generic path. `bases` and `scalars` are the same length. GLV
+    /// curves supply a ladder through
+    /// [`try_glv_msm_small`](crate::scalar_mul::glv::try_glv_msm_small).
+    fn try_msm_small(
+        _bases: &[Affine<Self>],
+        _scalars: &[Self::ScalarField],
+    ) -> Option<Projective<Self>> {
+        None
     }
 
     /// Default implementation for multi scalar multiplication

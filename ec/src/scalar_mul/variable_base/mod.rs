@@ -11,6 +11,8 @@ use ark_std::{
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
+use itertools::Either;
+
 pub mod stream_pippenger;
 pub use stream_pippenger::*;
 
@@ -33,6 +35,11 @@ type DefaultHasher = ahash::AHasher;
     target_has_atomic = "ptr"
 )))]
 type DefaultHasher = fnv::FnvHasher;
+
+/// Fewest scalars worth converting to `BigInt` across threads in [`VariableBaseMSM::msm_unchecked`].
+/// Set from `into_bigint_conversion`, above its measured crossover.
+#[cfg(feature = "parallel")]
+const MIN_PARALLEL_SCALARS: usize = 65536;
 
 pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
     type Bucket: Default
@@ -65,18 +72,21 @@ pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
     ///
     /// Reference: [`VariableBaseMSM::msm`]
     fn msm_unchecked(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Self {
-        #[cfg(all(feature = "host_msm", not(feature = "std")))]
-        if let Some(curve_name) = Self::curve_name() {
-            if let Some(res) = ark_host_msm::use_host_msm_unchecked(curve_name, bases, scalars) {
-                return res;
-            }
-            // fallback to non-host implementation if the host doesn't support this curve or if an error occurs during host MSM.
-        }
+        msm_unchecked_inner::<Self>(bases, scalars, Self::msm_bigint)
+    }
 
-        let bigints = cfg_into_iter!(scalars)
-            .map(|s| s.into_bigint())
-            .collect::<Vec<_>>();
-        Self::msm_bigint(bases, bigints.as_slice())
+    /// Like [`Self::msm_unchecked`] for scalars known to all be full width. Drives
+    /// [`Self::msm_bigint_full_width`] directly, skipping the size-partitioning of `msm_signed`.
+    /// Correct for any scalar; small scalars just miss their optimized path.
+    fn msm_unchecked_full_width(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Self {
+        msm_unchecked_inner::<Self>(bases, scalars, Self::msm_bigint_full_width)
+    }
+
+    /// Offers this multi scalar multiplication to a shared-doubling ladder, for the sizes where
+    /// the bucket algorithm's fixed cost dominates. `None` declines and the caller carries on
+    /// to the generic path.
+    fn try_msm_small(_bases: &[Self::MulBase], _scalars: &[Self::ScalarField]) -> Option<Self> {
+        None
     }
 
     /// Performs multi-scalar multiplication.
@@ -98,6 +108,18 @@ pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
         bigints: &[<Self::ScalarField as PrimeField>::BigInt],
     ) -> Self {
         msm_signed(bases, bigints)
+    }
+
+    /// The full-width partition of `msm_signed`. When sure every scalar won't fit a narrow integer.
+    fn msm_bigint_full_width(
+        bases: &[Self::MulBase],
+        bigints: &[<Self::ScalarField as PrimeField>::BigInt],
+    ) -> Self {
+        if Self::NEGATION_IS_CHEAP {
+            msm_bigint_wnaf(bases, bigints)
+        } else {
+            msm_bigint(bases, bigints)
+        }
     }
 
     /// Performs multi-scalar multiplication when the scalars are known to be boolean.
@@ -164,6 +186,51 @@ pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
         }
         result
     }
+}
+
+fn msm_unchecked_inner<V: VariableBaseMSM>(
+    bases: &[V::MulBase],
+    scalars: &[V::ScalarField],
+    msm: impl Fn(&[V::MulBase], &[<V::ScalarField as PrimeField>::BigInt]) -> V,
+) -> V {
+    match route_msm::<V>(bases, scalars) {
+        Either::Left(res) => res,
+        Either::Right(bigints) => msm(bases, bigints.as_slice()),
+    }
+}
+
+/// Routes a multi-scalar multiplication to its best available path. On a hit `Left` carries its
+/// result. Else `Right` holds every scalar converted to its `BigInt` for the subsequent algorithm.
+pub(crate) fn route_msm<V: VariableBaseMSM>(
+    bases: &[V::MulBase],
+    scalars: &[V::ScalarField],
+) -> Either<V, Vec<<V::ScalarField as PrimeField>::BigInt>> {
+    #[cfg(all(feature = "host_msm", not(feature = "std")))]
+    if let Some(curve_name) = V::curve_name() {
+        if let Some(res) = ark_host_msm::use_host_msm_unchecked(curve_name, bases, scalars) {
+            return Either::Left(res);
+        }
+        // Fall through to the in-guest path if the host doesn't support this curve or errors.
+    }
+
+    let size = bases.len().min(scalars.len());
+    if let Some(res) = V::try_msm_small(&bases[..size], &scalars[..size]) {
+        return Either::Left(res);
+    }
+
+    // `into_bigint_conversion` measures the crossover.
+    #[cfg(feature = "parallel")]
+    let bigints = if scalars.len() >= MIN_PARALLEL_SCALARS {
+        cfg_into_iter!(scalars)
+            .map(|s| s.into_bigint())
+            .collect::<Vec<_>>()
+    } else {
+        scalars.iter().map(|s| s.into_bigint()).collect::<Vec<_>>()
+    };
+    #[cfg(not(feature = "parallel"))]
+    let bigints = scalars.iter().map(|s| s.into_bigint()).collect::<Vec<_>>();
+
+    Either::Right(bigints)
 }
 
 #[inline]
@@ -373,11 +440,7 @@ fn msm_signed<V: VariableBaseMSM>(
 
     // Handle the rest of the scalars.
     let (bf, sf) = large_value_unzip(&bigints, |i| (bases[i], scalars[i]));
-    if V::NEGATION_IS_CHEAP {
-        add_result += msm_bigint_wnaf::<V>(&bf, &sf);
-    } else {
-        add_result += msm_bigint::<V>(&bf, &sf);
-    }
+    add_result += V::msm_bigint_full_width(&bf, &sf);
 
     (add_result - sub_result).into()
 }
@@ -648,61 +711,16 @@ pub fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
     combine_window_sums::<V>(&window_sums, c)
 }
 
-#[cfg(feature = "parallel")]
-const THREADS_PER_CHUNK: usize = 2;
-
-/// Computes an MSM using the windowed non-adjacent form (WNAF) algorithm.
-/// To improve parallelism, when number of threads is at least 2, this
-/// function will split the input into enough chunks so that each chunk
-/// can be processed with 2 threads.
-/// Multi-scalar multiplication via windowed non-adjacent form, over the full
-/// scalar width.
+/// Multi-scalar multiplication via windowed non-adjacent form, over the full scalar width. Under
+/// `parallel` the windows run as tasks on the caller's rayon pool.
 pub fn msm_bigint_wnaf<V: VariableBaseMSM>(
-    mut bases: &[V::MulBase],
-    mut scalars: &[<V::ScalarField as PrimeField>::BigInt],
+    bases: &[V::MulBase],
+    scalars: &[<V::ScalarField as PrimeField>::BigInt],
 ) -> V {
-    let size = bases.len().min(scalars.len());
-    if size == 0 {
+    if bases.len().min(scalars.len()) == 0 {
         return V::zero();
     }
-
-    #[cfg(feature = "parallel")]
-    let chunk_size = {
-        let cur_num_threads = rayon::current_num_threads();
-        let num_chunks = if cur_num_threads < THREADS_PER_CHUNK {
-            1
-        } else {
-            cur_num_threads / THREADS_PER_CHUNK
-        };
-        let chunk_size = size / num_chunks;
-        if chunk_size == 0 {
-            size
-        } else {
-            chunk_size
-        }
-    };
-    #[cfg(not(feature = "parallel"))]
-    let chunk_size = size;
-
-    bases = &bases[..size];
-    scalars = &scalars[..size];
-
-    cfg_chunks!(bases, chunk_size)
-        .zip(cfg_chunks!(scalars, chunk_size))
-        .map(|(bases, scalars)| {
-            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
-            let result = rayon::ThreadPoolBuilder::new()
-                .num_threads(THREADS_PER_CHUNK.min(rayon::current_num_threads()))
-                .build()
-                .unwrap()
-                .install(|| msm_bigint_wnaf_parallel::<V>(bases, scalars));
-
-            #[cfg(any(not(feature = "parallel"), target_arch = "wasm32"))]
-            let result = msm_bigint_wnaf_parallel::<V>(bases, scalars);
-
-            result
-        })
-        .sum()
+    msm_bigint_wnaf_parallel(bases, scalars)
 }
 
 /// Optimized implementation of multi-scalar multiplication.
@@ -825,7 +843,7 @@ pub(crate) fn make_digits(
     })
 }
 
-const fn window_size(num_scalars: usize) -> usize {
+pub(crate) const fn window_size(num_scalars: usize) -> usize {
     if num_scalars < 32 {
         3
     } else {

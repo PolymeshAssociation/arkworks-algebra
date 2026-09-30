@@ -24,6 +24,8 @@ ark-host-msm = { workspace = true, default-features = false }
 # Supported Curves
 ark-pallas = { workspace = true, default-features = false, features = ["curve"] }
 ark-vesta = { workspace = true, default-features = false }
+ark-bls12-381 = { workspace = true, default-features = false, features = ["curve"] }
+ark-bn254 = { workspace = true, default-features = false, features = ["curve"] }
 
 lazy_static = { version = "1.5.0", default-features = false, optional = true }
 

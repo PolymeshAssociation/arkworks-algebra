@@ -16,7 +16,7 @@ workspace = true
 
 [dependencies]
 ark-std.workspace = true
-ark-serialize.workspace = true
+ark-serialize = { workspace = true, features = ["derive"] }
 
 polkavm-derive = { version = "0.32.0", optional = true }
 

@@ -54,6 +54,11 @@ impl SWCurveConfig for Config {
     /// Therefore, we can safely use (0, 0) as a flag for the zero point.
     type ZeroFlag = ();
 
+    /// Host MSM name, distinct from the other group of the curve.
+    fn curve_name() -> Option<&'static str> {
+        Some("bls12_381_g1")
+    }
+
     #[inline(always)]
     fn mul_by_a(_: Self::BaseField) -> Self::BaseField {
         Self::BaseField::zero()
@@ -61,8 +66,7 @@ impl SWCurveConfig for Config {
 
     #[inline]
     fn mul_projective(p: &G1Projective, scalar: &[u64]) -> G1Projective {
-        let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
-        GLVConfig::glv_mul_projective(*p, s)
+        <Self as GLVConfig>::glv_mul_projective_bigint(p, scalar)
     }
 
     #[inline]

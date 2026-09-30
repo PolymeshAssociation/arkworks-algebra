@@ -303,6 +303,14 @@ pub trait Field:
         sum
     }
 
+    /// Returns `sum([a_i * b_i])` for slices of equal length. Unlike [`Self::sum_of_products`],
+    /// whose length is a const generic, this is the long-sum path.
+    #[inline]
+    fn inner_product(a: &[Self], b: &[Self]) -> Self {
+        assert_eq!(a.len(), b.len());
+        a.iter().zip(b).map(|(a, b)| *a * b).sum()
+    }
+
     /// Sets `self` to `self^s`, where `s = Self::BasePrimeField::MODULUS^power`.
     /// This is also called the Frobenius automorphism.
     fn frobenius_map_in_place(&mut self, power: usize);
@@ -318,18 +326,19 @@ pub trait Field:
 
     /// Returns `self^exp`, where `exp` is an integer represented with `u64` limbs,
     /// least significant limb first.
+    ///
+    /// Both paths square once per bit; they differ in the multiplies. Binary
+    /// square-and-multiply does one multiply per set bit, the fixed window does
+    /// one per nonzero window after building its table.
     #[must_use]
     fn pow<S: AsRef<[u64]>>(&self, exp: S) -> Self {
-        let mut res = Self::one();
-
-        for i in crate::BitIteratorBE::without_leading_zeros(exp) {
-            res.square_in_place();
-
-            if i {
-                res *= self;
-            }
+        let exp = exp.as_ref();
+        if use_pow_windowed(exp) {
+            let bits = significant_bits(exp);
+            pow_windowed(self, exp, bits)
+        } else {
+            pow_binary(self, exp)
         }
-        res
     }
 
     /// Exponentiates a field element `f` by a number represented with `u64`
@@ -353,6 +362,99 @@ pub trait Field:
     fn mul_by_base_prime_field(&self, elem: &Self::BasePrimeField) -> Self;
 }
 
+/// Window width of [`pow_windowed`].
+const POW_WINDOW_BITS: usize = 4;
+
+/// Multiplies [`pow_windowed`] spends on its table: `x^2 .. x^15`.
+const POW_WINDOW_TABLE_MULS: usize = (1 << POW_WINDOW_BITS) - 2;
+
+/// Whether the fixed window beats binary square-and-multiply on `exp`. Both square once per bit,
+/// so only the multiplies differ. Binary does one per set bit. The window does
+/// `POW_WINDOW_TABLE_MULS` to build its table, then one per nonzero window except the most
+/// significant, which is a lookup. This compares those two counts.
+/// [`pow_windowed`]'s windows are aligned to bit 0, so a nonzero window is a nonzero nibble.
+/// Dense exponents win, sparse ones do not.
+pub fn use_pow_windowed(exp: &[u64]) -> bool {
+    debug_assert_eq!(POW_WINDOW_BITS, 4, "assumes 4-bit windows");
+    let mut weight = 0u32;
+    let mut windows = 0u32;
+    for &limb in exp {
+        weight += limb.count_ones();
+        // This will set LSB of each 4-bit chunk if any bit of the chunk is set
+        // as multiplication with window table is done if any bit of the chunk is set
+        let any_1 = limb | (limb >> 1) | (limb >> 2) | (limb >> 3);
+        // Count number of non-zero windows
+        // In binary, 0x1111_1111_1111_1111 is 0001 0001 0001 ... 0001
+        windows += (any_1 & 0x1111_1111_1111_1111).count_ones();
+    }
+    // -1 since for first chunk, there is direct lookup in the windowed method
+    weight as usize > (POW_WINDOW_TABLE_MULS + windows as usize - 1)
+}
+
+/// The number of bits up to and including the most significant set bit of `exp`, which is
+/// given as least significant limb first.
+pub fn significant_bits(exp: &[u64]) -> usize {
+    for (i, limb) in exp.iter().enumerate().rev() {
+        if *limb != 0 {
+            // limb i has bits (i * 64) to (i * 64 + 63)
+            return (i + 1) * 64 - limb.leading_zeros() as usize;
+        }
+    }
+    0
+}
+
+/// The `len`-bit value of `exp` starting at bit `start`. [`pow_windowed`] takes its windows at
+/// multiples of `POW_WINDOW_BITS`, which divides 64, so the window lies within one limb.
+fn digit(exp: &[u64], start: usize, len: usize) -> usize {
+    debug_assert!(len <= 63, "should be at most 63");
+    debug_assert_eq!(start / 64, (start + len - 1) / 64, "window crosses a limb");
+    ((exp[start / 64] >> (start % 64)) as usize) & ((1 << len) - 1)
+}
+
+/// `base^exp` by binary square-and-multiply.
+pub fn pow_binary<F: Field>(base: &F, exp: &[u64]) -> F {
+    let mut res = F::one();
+    for i in crate::BitIteratorBE::without_leading_zeros(exp) {
+        res.square_in_place();
+        if i {
+            res *= base;
+        }
+    }
+    res
+}
+
+/// `base^exp` by a 4-bit fixed window, most significant window first. `bits` must be
+/// [`significant_bits`] of `exp` and at least one.
+/// [Handbook of Applied Cryptography](https://cacr.uwaterloo.ca/hac/about/chap14.pdf),
+/// Algorithm 14.82, left-to-right k-ary exponentiation,
+pub fn pow_windowed<F: Field>(base: &F, exp: &[u64], bits: usize) -> F {
+    const W: usize = POW_WINDOW_BITS;
+    let mut table = [F::one(); 1 << W];
+    table[1] = *base;
+    for i in 2..(1 << W) {
+        table[i] = table[i - 1] * base;
+    }
+
+    // The most significant window is short whenever `bits` is not a multiple of `W`.
+    let top = match bits % W {
+        0 => W,
+        r => r,
+    };
+    let mut i = bits - top;
+    let mut res = table[digit(exp, i, top)];
+    while i > 0 {
+        i -= W;
+        for _ in 0..W {
+            res.square_in_place();
+        }
+        let digit = digit(exp, i, W);
+        if digit != 0 {
+            res *= &table[digit];
+        }
+    }
+    res
+}
+
 // Given a vector of field elements {v_i}, compute the vector {v_i^(-1)}
 pub fn batch_inversion<F: Field>(v: &mut [F]) {
     batch_inversion_and_mul(v, &F::one());
@@ -364,14 +466,25 @@ pub fn batch_inversion_and_mul<F: Field>(v: &mut [F], coeff: &F) {
     serial_batch_inversion_and_mul(v, coeff);
 }
 
+/// Fewest elements worth splitting at all.
+#[cfg(feature = "parallel")]
+const MIN_PARALLEL_ELEMENTS: usize = 4096;
+
+/// Fewest elements worth giving a thread of its own.
+#[cfg(feature = "parallel")]
+const MIN_ELEMENTS_PER_THREAD: usize = 256;
+
 #[cfg(feature = "parallel")]
 // Given a vector of field elements {v_i}, compute the vector {coeff * v_i^(-1)}
 pub fn batch_inversion_and_mul<F: Field>(v: &mut [F], coeff: &F) {
+    if v.len() < MIN_PARALLEL_ELEMENTS {
+        return serial_batch_inversion_and_mul(v, coeff);
+    }
+
     // Divide the vector v evenly between all available cores
-    let min_elements_per_thread = 1;
     let num_cpus_available = rayon::current_num_threads();
     let num_elems = v.len();
-    let num_elem_per_thread = max(num_elems / num_cpus_available, min_elements_per_thread);
+    let num_elem_per_thread = max(num_elems / num_cpus_available, MIN_ELEMENTS_PER_THREAD);
 
     // Batch invert in parallel, without copying the vector
     v.par_chunks_mut(num_elem_per_thread).for_each(|chunk| {
@@ -379,9 +492,105 @@ pub fn batch_inversion_and_mul<F: Field>(v: &mut [F], coeff: &F) {
     });
 }
 
+/// Independent multiply chains used by [`serial_batch_inversion_and_mul`]. Two is the measured
+/// optimum on aarch64: the trick spends 3 multiplies per element and puts only 2 of them on the
+/// dependency chain, so it is throughput-bound past two lanes. Four and eight lanes never win
+/// and lose below 256 elements. Re-measure before changing it, and per target.
+pub const BATCH_INVERSION_LANES: usize = 2;
+
 /// Given a vector of field elements {v_i}, compute the vector {coeff * v_i^(-1)}.
 /// This method is explicitly single-threaded.
 pub fn serial_batch_inversion_and_mul<F: Field>(v: &mut [F], coeff: &F) {
+    serial_batch_inversion_and_mul_lanes::<F, BATCH_INVERSION_LANES>(v, coeff)
+}
+
+/// [`serial_batch_inversion_and_mul`] over `LANES` independent multiply chains: element `k` of
+/// the nonzero subsequence joins lane `k % LANES`. Both passes of the single-chain Montgomery
+/// trick run at multiply latency; `LANES` chains run at throughput. One inversion still covers
+/// the whole slice, with the per-lane inverses recovered from prefix and suffix products of the
+/// lane totals. Zeros are left in place. Every output is the unique inverse times `coeff`, so
+/// this is bit-identical to [`serial_batch_inversion_and_mul_single_chain`].
+///
+/// Lane structure from Zakura `glv.rs` `batch_invert_nonzero`,
+/// <https://github.com/zakura-core/common/blob/98846ee/crates/pasta_curves/src/glv.rs>;
+/// the prefix/suffix recovery of the per-lane inverses is their
+/// [PR #287](https://github.com/zakura-core/common/pull/287).
+pub fn serial_batch_inversion_and_mul_lanes<F: Field, const LANES: usize>(v: &mut [F], coeff: &F) {
+    let mut scratch = Vec::with_capacity(v.len());
+    serial_batch_inversion_and_mul_lanes_with_scratch::<F, LANES>(v, coeff, &mut scratch);
+}
+
+/// [`serial_batch_inversion_and_mul`] with a caller-owned prefix-product buffer. A caller that
+/// inverts once per iteration of a hot loop — the batch-affine GLV ladder inverts once per digit
+/// column — reuses one buffer across all calls instead of allocating `v.len()` field elements
+/// each time. `scratch` is cleared on entry; its capacity is retained for the next call.
+pub fn serial_batch_inversion_and_mul_with_scratch<F: Field>(
+    v: &mut [F],
+    coeff: &F,
+    scratch: &mut Vec<F>,
+) {
+    serial_batch_inversion_and_mul_lanes_with_scratch::<F, BATCH_INVERSION_LANES>(v, coeff, scratch)
+}
+
+/// [`serial_batch_inversion_and_mul_lanes`] over a caller-owned prefix-product buffer. See
+/// [`serial_batch_inversion_and_mul_with_scratch`].
+pub fn serial_batch_inversion_and_mul_lanes_with_scratch<F: Field, const LANES: usize>(
+    v: &mut [F],
+    coeff: &F,
+    scratch: &mut Vec<F>,
+) {
+    const { assert!(LANES > 0) };
+    // First pass: scratch[k] is the product of the earlier nonzero elements of k's lane. Seeding
+    // each lane from its own first element drops that lane's multiply by one.
+    scratch.clear();
+    let mut acc = [F::one(); LANES];
+    let mut nonzero = v.iter().filter(|f| !f.is_zero());
+    for (l, f) in nonzero.by_ref().take(LANES).enumerate() {
+        scratch.push(F::one());
+        acc[l] = *f;
+    }
+    for (k, f) in nonzero.enumerate() {
+        scratch.push(acc[k % LANES]);
+        acc[k % LANES] *= f;
+    }
+    if scratch.is_empty() {
+        return;
+    }
+
+    // One inversion for every lane. `lane_inv[l] = coeff / acc[l]`, from
+    // `prefix[l] = product of acc[..l]` and a suffix walked downward.
+    let mut total = acc[0];
+    for a in &acc[1..] {
+        total *= a;
+    }
+    let mut suffix = total.inverse().unwrap() * coeff; // A product of nonzero elements.
+    let mut prefix = [F::one(); LANES];
+    for l in 1..LANES {
+        prefix[l] = prefix[l - 1] * acc[l - 1];
+    }
+    let mut lane_inv = [F::one(); LANES];
+    for l in (1..LANES).rev() {
+        lane_inv[l] = prefix[l] * suffix;
+        suffix *= acc[l];
+    }
+    lane_inv[0] = suffix;
+
+    // Second pass: step each lane's inverse chain backwards over its own elements.
+    let mut k = scratch.len();
+    for f in v.iter_mut().rev().filter(|f| !f.is_zero()) {
+        k -= 1;
+        let inv = lane_inv[k % LANES] * scratch[k];
+        lane_inv[k % LANES] *= *f;
+        *f = inv;
+    }
+}
+
+/// Given a vector of field elements {v_i}, compute the vector {coeff * v_i^(-1)}.
+/// This method is explicitly single-threaded.
+///
+/// Upstream's implementation, kept as the baseline
+/// [`serial_batch_inversion_and_mul_lanes`] is measured against.
+pub fn serial_batch_inversion_and_mul_single_chain<F: Field>(v: &mut [F], coeff: &F) {
     // Montgomery’s Trick and Fast Implementation of Masked AES
     // Genelle, Prouff and Quisquater
     // Section 3.2
@@ -473,6 +682,55 @@ mod no_std_tests {
                 random_coeffs_inv_shifted[i] * random_coeffs[i],
                 rand_multiplier
             );
+        }
+    }
+
+    /// Every lane count, and the dispatching entry point, must reproduce the single-chain
+    /// result exactly, at the lengths that straddle a lane boundary and with zeros in every
+    /// arrangement.
+    #[test]
+    fn test_batch_inversion_lanes() {
+        use ark_test_curves::ark_ff::{
+            serial_batch_inversion_and_mul, serial_batch_inversion_and_mul_lanes,
+            serial_batch_inversion_and_mul_single_chain,
+        };
+        let rng = &mut test_rng();
+        for len in [0usize, 1, 2, 3, 4, 5, 31, 32, 33, 1000] {
+            for zeros in 0..5 {
+                let coeff = Fr::rand(rng);
+                let mut src: Vec<Fr> = (0..len).map(|_| Fr::rand(rng)).collect();
+                match zeros {
+                    0 => {},
+                    1 => src.first_mut().into_iter().for_each(|f| *f = Fr::zero()),
+                    2 => src.last_mut().into_iter().for_each(|f| *f = Fr::zero()),
+                    3 => src
+                        .iter_mut()
+                        .step_by(2)
+                        .for_each(|f| *f = Fr::zero()),
+                    _ => src.iter_mut().for_each(|f| *f = Fr::zero()),
+                }
+
+                let mut expected = src.clone();
+                serial_batch_inversion_and_mul_single_chain(&mut expected, &coeff);
+                for (o, i) in expected.iter().zip(&src) {
+                    if i.is_zero() {
+                        assert!(o.is_zero(), "len {len}, zeros {zeros}: zero was written");
+                    } else {
+                        assert_eq!(*o * i, coeff, "len {len}, zeros {zeros}");
+                    }
+                }
+
+                let run = |f: fn(&mut [Fr], &Fr)| {
+                    let mut v = src.clone();
+                    f(&mut v, &coeff);
+                    assert_eq!(v, expected, "len {len}, zeros {zeros}");
+                };
+                run(serial_batch_inversion_and_mul_lanes::<Fr, 1>);
+                run(serial_batch_inversion_and_mul_lanes::<Fr, 2>);
+                run(serial_batch_inversion_and_mul_lanes::<Fr, 4>);
+                run(serial_batch_inversion_and_mul_lanes::<Fr, 8>);
+                run(serial_batch_inversion_and_mul);
+            }
         }
     }
 
