@@ -588,11 +588,14 @@ macro_rules! __test_field {
             assert!(<$field>::zero().bea_inverse().is_none());
         }
 
-        /// Multiply and square must produce the same canonical element as `mul_portable` and
-        /// `square_portable`, so nodes whose builds select different kernels agree.
+        /// Every assembly kernel must produce the same canonical element as the portable path:
+        /// multiply and square against `mul_portable` and `square_portable`, addition,
+        /// subtraction and doubling against `BigUint` arithmetic on the Montgomery
+        /// representations. Nodes whose builds select different kernels then agree.
         #[test]
         pub fn test_backend_identity() {
-            use ark_ff::BigInteger;
+            use ark_ff::{AdditiveGroup, BigInteger};
+            use $crate::num_bigint::BigUint;
             let mut rng = test_rng();
             let mut edge = vec![
                 <$field>::zero(),
@@ -605,10 +608,19 @@ macro_rules! __test_field {
             m.sub_with_borrow(&<$field as PrimeField>::BigInt::from(1u64));
             edge.push(<$field>::new_unchecked(m));
 
+            let p: BigUint = <$field>::MODULUS.into();
+            let big = |x: &$field| -> BigUint { x.0.into() };
+            let check_additive = |a: &$field, b: &$field| {
+                assert_eq!(big(&(*a + b)), (big(a) + big(b)) % &p, "add mismatch at {a} + {b}");
+                assert_eq!(big(&(*a - b)), (big(a) + &p - big(b)) % &p, "sub mismatch at {a} - {b}");
+                assert_eq!(big(&a.double()), (big(a) << 1u32) % &p, "double mismatch at {a}");
+            };
+
             // Every edge value against every other, both orders.
             for a in &edge {
                 for b in &edge {
                     assert_eq!(*a * *b, a.mul_portable(b), "mul mismatch at {a} * {b}");
+                    check_additive(a, b);
                 }
                 assert_eq!(a.square(), a.square_portable(), "square mismatch at {a}");
             }
@@ -619,12 +631,15 @@ macro_rules! __test_field {
                 for a in &edge {
                     assert_eq!(*a * r, a.mul_portable(&r), "mul mismatch at {a} * {r}");
                     assert_eq!(r * *a, r.mul_portable(a), "mul mismatch at {r} * {a}");
+                    check_additive(a, &r);
+                    check_additive(&r, a);
                 }
                 let s = <$field>::rand(&mut rng);
                 assert_eq!(r * s, r.mul_portable(&s), "mul mismatch at {r} * {s}");
                 assert_eq!(r.square(), r.square_portable(), "square mismatch at {r}");
                 // Squaring must also agree with multiplying a value by itself.
                 assert_eq!(r.square(), r.mul_portable(&r), "square/mul disagree at {r}");
+                check_additive(&r, &s);
             }
         }
 

@@ -146,6 +146,44 @@ pub(crate) fn mont_config_helper(
         (quote::quote! {}, quote::quote! {})
     };
 
+    // Pasta-shape moduli take ark-ff's `pasta_*` assembly kernels when they are compiled in, and
+    // for multiply and square also usable on the CPU.
+    let pasta_shape = limbs == 4 && modulus_limbs[2] == 0 && modulus_limbs[3] == 1 << 62;
+    let pasta = |gate: proc_macro2::TokenStream, call: proc_macro2::TokenStream| {
+        if pasta_shape {
+            quote::quote! {
+                if #gate {
+                    #call;
+                    return;
+                }
+            }
+        } else {
+            quote::quote! {}
+        }
+    };
+    let compiled = quote::quote! { ark_ff::fields::pasta_asm_compiled() };
+    let available = quote::quote! { ark_ff::fields::pasta_asm_available() };
+    let pasta_add = pasta(
+        compiled.clone(),
+        quote::quote! { ark_ff::fields::pasta_add_assign::<Self>(a, b) },
+    );
+    let pasta_sub = pasta(
+        compiled.clone(),
+        quote::quote! { ark_ff::fields::pasta_sub_assign::<Self>(a, b) },
+    );
+    let pasta_double = pasta(
+        compiled,
+        quote::quote! { ark_ff::fields::pasta_double_in_place::<Self>(a) },
+    );
+    let pasta_mul = pasta(
+        available.clone(),
+        quote::quote! { ark_ff::fields::pasta_mul_assign::<Self>(a, b) },
+    );
+    let pasta_square = pasta(
+        available,
+        quote::quote! { ark_ff::fields::pasta_square_in_place::<Self>(a) },
+    );
+
     let mixed_radix = if let Some(large_subgroup_generator) = large_subgroup_generator {
         quote::quote! {
             const SMALL_SUBGROUP_BASE: Option<u32> = Some(#small_subgroup_base);
@@ -189,16 +227,19 @@ pub(crate) fn mont_config_helper(
 
                 #[inline(always)]
                 fn add_assign(a: &mut F, b: &F) {
+                    #pasta_add
                     #add_assign
                 }
 
                 #[inline(always)]
                 fn sub_assign(a: &mut F, b: &F) {
+                    #pasta_sub
                     #sub_assign
                 }
 
                 #[inline(always)]
                 fn double_in_place(a: &mut F) {
+                    #pasta_double
                     #double_in_place
                 }
 
@@ -215,6 +256,7 @@ pub(crate) fn mont_config_helper(
                 #[inline(always)]
                 fn mul_assign(a: &mut F, b: &F) {
                     #wasm_mul
+                    #pasta_mul
                     #mul_assign
                 }
 
@@ -225,6 +267,7 @@ pub(crate) fn mont_config_helper(
                 #[inline(always)]
                 fn square_in_place(a: &mut F) {
                     #wasm_square
+                    #pasta_square
                     #square_in_place
                 }
 

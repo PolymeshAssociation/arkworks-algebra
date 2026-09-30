@@ -29,6 +29,12 @@ mod mont29;
 #[cfg(all(feature = "asm", target_arch = "x86_64"))]
 mod cpu;
 
+mod pasta_asm;
+pub use pasta_asm::{
+    is_pasta_shape, pasta_add_assign, pasta_asm_available, pasta_asm_compiled,
+    pasta_double_in_place, pasta_mul_assign, pasta_square_in_place, pasta_sub_assign,
+};
+
 /// A trait that specifies the configuration of a prime field.
 /// Also specifies how to perform arithmetic on field elements.
 pub trait FpConfig<const N: usize>: Send + Sync + 'static + Sized {
