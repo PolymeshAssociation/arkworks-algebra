@@ -5,6 +5,22 @@ use crate::{
 use ark_ff_macros::unroll_for_loops;
 use ark_std::marker::PhantomData;
 
+/// Whether the x86-64 MULX/ADX Montgomery kernels are compiled in and usable on this CPU: the
+/// `asm` feature is on, the target is x86-64, and the build enables BMI2 and ADX or a cached CPUID
+/// check finds them. Every kernel returns the same canonical element as the portable path, so nodes
+/// that answer differently here still agree.
+#[inline(always)]
+pub fn asm_backend_active() -> bool {
+    #[cfg(all(feature = "asm", target_arch = "x86_64"))]
+    {
+        cfg!(all(target_feature = "bmi2", target_feature = "adx")) || super::cpu::has_bmi2_adx()
+    }
+    #[cfg(not(all(feature = "asm", target_arch = "x86_64")))]
+    {
+        false
+    }
+}
+
 /// A trait that specifies the constants and arithmetic procedures
 /// for Montgomery arithmetic over the prime field defined by `MODULUS`.
 ///
@@ -205,57 +221,94 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
             mont29_mul_assign::<Self, N>(a, b);
             return;
         }
+        // No-carry optimisation applied to CIOS. `N == 1` tentatively avoids the assembly.
+        if Self::CAN_USE_NO_CARRY_MUL_OPT && N <= 6 && N > 1 && asm_backend_active() {
+            Self::asm_mul_assign(a, b);
+        } else {
+            Self::mul_assign_portable(a, b);
+        }
+    }
+
+    /// `a *= b` by the `ff-asm` MULX/ADX kernel. Requires [`asm_backend_active`],
+    /// `2 <= N <= 6` and `CAN_USE_NO_CARRY_MUL_OPT`.
+    #[doc(hidden)]
+    #[inline(always)]
+    fn asm_mul_assign(a: &mut Fp<MontBackend<Self, N>, N>, b: &Fp<MontBackend<Self, N>, N>) {
+        debug_assert!(asm_backend_active() && Self::CAN_USE_NO_CARRY_MUL_OPT);
+        #[cfg(all(feature = "asm", target_arch = "x86_64"))]
+        {
+            #[allow(unsafe_code)]
+            #[rustfmt::skip]
+            match N {
+                2 => { ark_ff_asm::x86_64_asm_mul!(2, (a.0).0, (b.0).0); },
+                3 => { ark_ff_asm::x86_64_asm_mul!(3, (a.0).0, (b.0).0); },
+                4 => { ark_ff_asm::x86_64_asm_mul!(4, (a.0).0, (b.0).0); },
+                5 => { ark_ff_asm::x86_64_asm_mul!(5, (a.0).0, (b.0).0); },
+                6 => { ark_ff_asm::x86_64_asm_mul!(6, (a.0).0, (b.0).0); },
+                _ => unreachable!("the assembly kernel covers 2 to 6 limbs"),
+            };
+            a.subtract_modulus();
+        }
+        #[cfg(not(all(feature = "asm", target_arch = "x86_64")))]
+        {
+            let _ = (a, b);
+            unreachable!("the assembly kernel is not compiled in");
+        }
+    }
+
+    /// `a = a^2` by the `ff-asm` MULX/ADX kernel. Requires [`asm_backend_active`],
+    /// `2 <= N <= 6` and `CAN_USE_NO_CARRY_SQUARE_OPT`.
+    #[doc(hidden)]
+    #[inline(always)]
+    fn asm_square_in_place(a: &mut Fp<MontBackend<Self, N>, N>) {
+        debug_assert!(asm_backend_active() && Self::CAN_USE_NO_CARRY_SQUARE_OPT);
+        #[cfg(all(feature = "asm", target_arch = "x86_64"))]
+        {
+            #[allow(unsafe_code)]
+            #[rustfmt::skip]
+            match N {
+                2 => { ark_ff_asm::x86_64_asm_square!(2, (a.0).0); },
+                3 => { ark_ff_asm::x86_64_asm_square!(3, (a.0).0); },
+                4 => { ark_ff_asm::x86_64_asm_square!(4, (a.0).0); },
+                5 => { ark_ff_asm::x86_64_asm_square!(5, (a.0).0); },
+                6 => { ark_ff_asm::x86_64_asm_square!(6, (a.0).0); },
+                _ => unreachable!("the assembly kernel covers 2 to 6 limbs"),
+            };
+            a.subtract_modulus();
+        }
+        #[cfg(not(all(feature = "asm", target_arch = "x86_64")))]
+        {
+            let _ = a;
+            unreachable!("the assembly kernel is not compiled in");
+        }
+    }
+
+    /// `mul_assign` with every assembly kernel excluded, the oracle `test_backend_identity`
+    /// checks `mul_assign` against. The `MontConfig` derive overrides it with its modulus-literal
+    /// body, the code a build without the assembly runs.
+    #[unroll_for_loops(12)]
+    #[inline(always)]
+    fn mul_assign_portable(a: &mut Fp<MontBackend<Self, N>, N>, b: &Fp<MontBackend<Self, N>, N>) {
         // No-carry optimisation applied to CIOS
         if Self::CAN_USE_NO_CARRY_MUL_OPT {
-            if N <= 6
-                && N > 1
-                && cfg!(all(
-                    feature = "asm",
-                    target_feature = "bmi2",
-                    target_feature = "adx",
-                    target_arch = "x86_64"
-                ))
-            {
-                #[cfg(
-                    all(
-                        feature = "asm",
-                        target_feature = "bmi2",
-                        target_feature = "adx",
-                        target_arch = "x86_64"
-                    )
-                )]
-                #[allow(unsafe_code)]
-                #[rustfmt::skip]
+            let mut r = [0u64; N];
 
-                // Tentatively avoid using assembly for `N == 1`.
-                match N {
-                    2 => { ark_ff_asm::x86_64_asm_mul!(2, (a.0).0, (b.0).0); },
-                    3 => { ark_ff_asm::x86_64_asm_mul!(3, (a.0).0, (b.0).0); },
-                    4 => { ark_ff_asm::x86_64_asm_mul!(4, (a.0).0, (b.0).0); },
-                    5 => { ark_ff_asm::x86_64_asm_mul!(5, (a.0).0, (b.0).0); },
-                    6 => { ark_ff_asm::x86_64_asm_mul!(6, (a.0).0, (b.0).0); },
-                    _ => unsafe { ark_std::hint::unreachable_unchecked() },
-                };
-            } else {
-                let mut r = [0u64; N];
+            for i in 0..N {
+                let mut carry1 = 0u64;
+                r[0] = fa::mac(r[0], (a.0).0[0], (b.0).0[i], &mut carry1);
 
-                for i in 0..N {
-                    let mut carry1 = 0u64;
-                    r[0] = fa::mac(r[0], (a.0).0[0], (b.0).0[i], &mut carry1);
+                let k = r[0].wrapping_mul(Self::INV);
 
-                    let k = r[0].wrapping_mul(Self::INV);
+                let mut carry2 = 0u64;
+                fa::mac_discard(r[0], k, Self::MODULUS.0[0], &mut carry2);
 
-                    let mut carry2 = 0u64;
-                    fa::mac_discard(r[0], k, Self::MODULUS.0[0], &mut carry2);
-
-                    for j in 1..N {
-                        r[j] = fa::mac_with_carry(r[j], (a.0).0[j], (b.0).0[i], &mut carry1);
-                        r[j - 1] = fa::mac_with_carry(r[j], k, Self::MODULUS.0[j], &mut carry2);
-                    }
-                    r[N - 1] = carry1 + carry2;
+                for j in 1..N {
+                    r[j] = fa::mac_with_carry(r[j], (a.0).0[j], (b.0).0[i], &mut carry1);
+                    r[j - 1] = fa::mac_with_carry(r[j], k, Self::MODULUS.0[j], &mut carry2);
                 }
-                (a.0).0.copy_from_slice(&r);
+                r[N - 1] = carry1 + carry2;
             }
+            (a.0).0.copy_from_slice(&r);
             a.subtract_modulus();
         } else {
             // Alternative implementation
@@ -263,6 +316,8 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
             let (carry, res) = a.mul_without_cond_subtract(b);
             *a = res;
 
+            // Standard CIOS leaves a result below `2 * MODULUS`, which fits in `N` limbs with a
+            // spare bit and otherwise carries out its top bit.
             if Self::MODULUS_HAS_SPARE_BIT {
                 a.subtract_modulus();
             } else {
@@ -285,25 +340,21 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
             *a *= *a;
             return;
         }
-        #[cfg(all(
-            feature = "asm",
-            target_feature = "bmi2",
-            target_feature = "adx",
-            target_arch = "x86_64"
-        ))]
-        #[allow(unsafe_code)]
-        if Self::CAN_USE_NO_CARRY_SQUARE_OPT && (2..=6).contains(&N) {
-            use ark_ff_asm::x86_64_asm_square;
-            #[rustfmt::skip]
-            match N {
-                2 => { x86_64_asm_square!(2, (a.0).0); },
-                3 => { x86_64_asm_square!(3, (a.0).0); },
-                4 => { x86_64_asm_square!(4, (a.0).0); },
-                5 => { x86_64_asm_square!(5, (a.0).0); },
-                6 => { x86_64_asm_square!(6, (a.0).0); },
-                _ => unsafe { ark_std::hint::unreachable_unchecked() },
-            };
-            a.subtract_modulus();
+        if Self::CAN_USE_NO_CARRY_SQUARE_OPT && (2..=6).contains(&N) && asm_backend_active() {
+            Self::asm_square_in_place(a);
+            return;
+        }
+
+        Self::square_in_place_portable(a);
+    }
+
+    /// `square_in_place` with every assembly kernel excluded; see [`Self::mul_assign_portable`].
+    #[inline(always)]
+    #[unroll_for_loops(12)]
+    fn square_in_place_portable(a: &mut Fp<MontBackend<Self, N>, N>) {
+        if N == 1 {
+            let b = *a;
+            Self::mul_assign_portable(a, &b);
             return;
         }
 
@@ -747,6 +798,22 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
 }
 
 impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
+    /// `self * other` through [`MontConfig::mul_assign_portable`], bypassing every assembly
+    /// kernel. The oracle `test_backend_identity` checks `Mul` against.
+    pub fn mul_portable(&self, other: &Self) -> Self {
+        let mut r = *self;
+        T::mul_assign_portable(&mut r, other);
+        r
+    }
+
+    /// `self * self` through [`MontConfig::square_in_place_portable`], bypassing every assembly
+    /// kernel. The oracle `test_backend_identity` checks `square` against.
+    pub fn square_portable(&self) -> Self {
+        let mut r = *self;
+        T::square_in_place_portable(&mut r);
+        r
+    }
+
     /// Binary extended Euclidean inversion: Guajardo, Kumar, Paar, Pelzl, "Efficient
     /// Software-Implementation of Finite Fields with Applications to Cryptography",
     /// Algorithm 16. The `N != 4` path of [`MontConfig::inverse`] and the oracle for the
@@ -1037,5 +1104,30 @@ mod test {
     fn test_default_mul_assign_cios_fallback() {
         check_default_mul_assign::<NoSpareBitConfig, 4>();
         check_default_mul_assign::<AllOnesConfig, 2>();
+    }
+}
+
+#[cfg(test)]
+mod asm_backend_tests {
+    extern crate std;
+    use super::asm_backend_active;
+
+    /// Fails a build that meant to run the x86-64 assembly kernel and does not. Asserts only when
+    /// `ARK_FF_REQUIRE_ASM=1`, which CI sets.
+    #[test]
+    fn asm_backend_is_active() {
+        std::println!(
+            "target_arch={} asm_feature={} asm_backend_active={}",
+            std::env::consts::ARCH,
+            cfg!(feature = "asm"),
+            asm_backend_active(),
+        );
+        if std::env::var("ARK_FF_REQUIRE_ASM").as_deref() == Ok("1") {
+            assert!(
+                asm_backend_active(),
+                "ARK_FF_REQUIRE_ASM=1 but the MULX/ADX kernel is off: the `asm` feature is off, the \
+                 target is not x86-64, or the CPU lacks BMI2 or ADX"
+            );
+        }
     }
 }

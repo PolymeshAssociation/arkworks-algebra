@@ -173,6 +173,45 @@ jobs:
                     "
         if: matrix.rust == 'nightly'
 
+  # Runs the test profile, whose debug assertions `--release` would drop.
+  test-x86-asm:
+    name: Test x86-64 assembly kernel
+    runs-on: ubuntu-latest
+    env:
+      # Empty, so it replaces .cargo/config.toml's `+bmi2,+adx` and the kernel is reached through
+      # the run-time CPUID check a distributed binary relies on.
+      RUSTFLAGS: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust (stable)
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Confirm the runner has BMI2 and ADX
+        run: |
+          grep -o -m1 -E 'bmi2|adx' /proc/cpuinfo | sort -u
+          grep -qE '\badx\b' /proc/cpuinfo || { echo "runner lacks ADX"; exit 1; }
+          grep -qE '\bbmi2\b' /proc/cpuinfo || { echo "runner lacks BMI2"; exit 1; }
+
+      - name: Confirm the kernel is live
+        run: ARK_FF_REQUIRE_ASM=1 cargo test -p ark-ff --features asm --lib asm_backend_is_active -- --nocapture
+
+      - name: Field tests with the kernel live
+        run: |
+          cargo test -p ark-ff --features asm
+          cargo test -p ark-test-curves --all-features
+
+      - name: Curve tests with the kernel live
+        run: |
+          for d in pallas vesta secp256k1 secq256k1 bn254 bls12_381; do
+            cargo test --manifest-path "curves/$d/Cargo.toml" --features asm
+          done
+
   directories: # Job that list subdirectories
     name: List directories for parallelizing tests
     runs-on: ubuntu-latest

@@ -26,6 +26,9 @@ pub use deferred::MontAccumulator;
 mod modinv62;
 mod mont29;
 
+#[cfg(all(feature = "asm", target_arch = "x86_64"))]
+mod cpu;
+
 /// A trait that specifies the configuration of a prime field.
 /// Also specifies how to perform arithmetic on field elements.
 pub trait FpConfig<const N: usize>: Send + Sync + 'static + Sized {
