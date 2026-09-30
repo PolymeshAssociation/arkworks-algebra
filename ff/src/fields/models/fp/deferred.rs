@@ -83,6 +83,50 @@ impl<T: MontConfig<N>, const N: usize> MontAccumulator<T, N> {
         self.add_carry(overflow);
     }
 
+    /// Adds `sum(a_i * b_i)` over a block to the running sum, without reducing. Comba order:
+    /// output limb `k` gathers every `a_i[l] * b_i[k - l]` of the block into four independent
+    /// three-word lanes, merged once per limb, so the carry into limb `k + 1` is resolved once per
+    /// block instead of once per product. Three words hold any realizable column, since fewer than
+    /// `2^61` products of `2^128` fit in memory. Generalizes Zakura's 4-limb
+    /// [`mul_accumulate_block`](https://github.com/zakura-core/common/blob/61aeb7e066f3e9f0afa13355d0f73f02170bcd50/crates/pasta_curves/src/deferred.rs#L188-L286) (#280) over `N`.
+    #[inline]
+    pub fn mul_accumulate_block(
+        &mut self,
+        a: &[Fp<MontBackend<T, N>, N>],
+        b: &[Fp<MontBackend<T, N>, N>],
+    ) {
+        assert_eq!(a.len(), b.len());
+        let (a_quads, a_rest) = a.split_at(a.len() - a.len() % 4);
+        let (b_quads, b_rest) = b.split_at(a_quads.len());
+        let (mut carry_low, mut carry_high) = (0u64, 0u64);
+        for k in 0..(2 * N - 1) {
+            let mut lanes = [
+                start_column(self.buf[k], carry_low, carry_high),
+                [0; 3],
+                [0; 3],
+                [0; 3],
+            ];
+            for l in k.saturating_sub(N - 1)..=k.min(N - 1) {
+                let m = k - l;
+                for (a, b) in a_quads.chunks_exact(4).zip(b_quads.chunks_exact(4)) {
+                    for lane in 0..4 {
+                        add_product(&mut lanes[lane], ((a[lane].0).0)[l], ((b[lane].0).0)[m]);
+                    }
+                }
+                for (a, b) in a_rest.iter().zip(b_rest) {
+                    add_product(&mut lanes[0], (a.0).0[l], (b.0).0[m]);
+                }
+            }
+            let column = merge_columns(lanes);
+            *self.buf.get_mut(k) = column[0];
+            (carry_low, carry_high) = (column[1], column[2]);
+        }
+        let column = start_column(self.buf[2 * N - 1], carry_low, carry_high);
+        *self.buf.get_mut(2 * N - 1) = column[0];
+        debug_assert_eq!(column[2], 0, "accumulator block overflow");
+        self.add_carry(column[1]);
+    }
+
     #[inline(always)]
     fn add_carry(&mut self, overflow: u64) {
         let (carry, wrapped) = self.carry.overflowing_add(overflow);
@@ -185,6 +229,39 @@ const fn min_deferred_len<T: MontConfig<N>, const N: usize>() -> usize {
     }
 }
 
+/// `column += lhs * rhs` on a three-word column. This and the two helpers below are Zakura's
+/// [`add_product`, `start_column` and `merge_columns`](https://github.com/zakura-core/common/blob/61aeb7e066f3e9f0afa13355d0f73f02170bcd50/crates/pasta_curves/src/deferred.rs#L375-L419).
+#[inline(always)]
+fn add_product(column: &mut [u64; 3], lhs: u64, rhs: u64) {
+    let product = (lhs as u128) * (rhs as u128);
+    let (low, low_carry) = column[0].overflowing_add(product as u64);
+    let (middle, high_carry) = column[1].overflowing_add((product >> 64) as u64);
+    let (middle, middle_carry) = middle.overflowing_add(low_carry as u64);
+    let high = column[2] + high_carry as u64 + middle_carry as u64;
+    *column = [low, middle, high];
+}
+
+/// A column seeded with an accumulator limb and the two-word carry out of the previous column.
+#[inline(always)]
+const fn start_column(limb: u64, carry_low: u64, carry_high: u64) -> [u64; 3] {
+    let (low, carry) = limb.overflowing_add(carry_low);
+    let (middle, high) = carry_high.overflowing_add(carry as u64);
+    [low, middle, high as u64]
+}
+
+#[inline(always)]
+fn merge_columns(lanes: [[u64; 3]; 4]) -> [u64; 3] {
+    let [mut result, lane1, lane2, lane3] = lanes;
+    for lane in [lane1, lane2, lane3] {
+        let mut carry = 0;
+        for w in 0..3 {
+            carry = fa::adc(&mut result[w], lane[w], carry);
+        }
+        debug_assert_eq!(carry, 0);
+    }
+    result
+}
+
 /// `sum(a_i * b_i)` with one Montgomery reduction for the whole sum. Falls back to the naive
 /// sum when the accumulator's bound does not hold ([`MontConfig::CAN_DEFER`]) or the sum is
 /// shorter than [`min_deferred_len`].
@@ -206,10 +283,41 @@ fn deferred_sum<T: MontConfig<N>, const N: usize>(
     b: &[Fp<MontBackend<T, N>, N>],
 ) -> Fp<MontBackend<T, N>, N> {
     let mut acc = MontAccumulator::<T, N>::ZERO;
-    for (a, b) in a.iter().zip(b) {
+    let mut blocked = 0;
+    if uses_blocks::<N>() {
+        let tail = a.len() % BLOCK_LEN;
+        blocked = if tail >= MIN_BLOCK_LEN {
+            a.len()
+        } else {
+            a.len() - tail
+        };
+        for (a, b) in a[..blocked]
+            .chunks(BLOCK_LEN)
+            .zip(b[..blocked].chunks(BLOCK_LEN))
+        {
+            acc.mul_accumulate_block(a, b);
+        }
+    }
+    for (a, b) in a[blocked..].iter().zip(&b[blocked..]) {
         acc.mul_accumulate(a, b);
     }
     acc.reduce()
+}
+
+/// Terms per [`MontAccumulator::mul_accumulate_block`] call in [`inner_product`]. On an Apple M3
+/// Max a Pallas inner product costs 6.4 ns per term per product and 5.0 in blocks of 128 (blocks
+/// of 32 give 1.08x, blocks past 128 nothing more), and BLS12-381 `Fq` 13.1 and 11.2.
+const BLOCK_LEN: usize = 128;
+
+/// Shortest tail given a block of its own; below it the per-product kernel wins (0.94x blocked at
+/// 20 terms, 1.07x at 32).
+const MIN_BLOCK_LEN: usize = 32;
+
+/// Whether [`inner_product`] runs in blocks: on AArch64, except for 4 limbs under the `asm`
+/// feature, whose per-product kernel is 1.1x faster than the blocks, as Zakura #522 found. In
+/// wasmtime the blocks are 0.6x, their `u128` columns being emulated; x86-64 is unmeasured.
+const fn uses_blocks<const N: usize>() -> bool {
+    cfg!(target_arch = "aarch64") && !(cfg!(feature = "asm") && N == 4)
 }
 
 #[cfg(test)]
@@ -350,6 +458,68 @@ mod tests {
                 "reduce, len {len}"
             );
         }
+    }
+
+    /// The blocked path leaves exactly the per-product path's state, on saturating limbs.
+    fn check_block<T: MontConfig<4>>() {
+        type F<T> = Fp<MontBackend<T, 4>, 4>;
+        let mut rng = test_rng();
+        fn pick<T: MontConfig<4>, R: ark_std::rand::Rng>(i: usize, rng: &mut R) -> F<T> {
+            let limbs = match i % 3 {
+                0 => [u64::MAX; 4],
+                1 => [u64::MAX, 0, u64::MAX, 0],
+                _ => rng.gen(),
+            };
+            F::<T>::new_unchecked(BigInt(limbs))
+        }
+        for len in [0usize, 1, 2, 3, 4, 5, 7, 8, 31, 32, 33, 100] {
+            let a: Vec<F<T>> = (0..len).map(|i| pick::<T, _>(i, &mut rng)).collect();
+            let b: Vec<F<T>> = (0..len).map(|i| pick::<T, _>(i + 1, &mut rng)).collect();
+            let (mut per_product, mut blocked) =
+                (MontAccumulator::<T, 4>::ZERO, MontAccumulator::<T, 4>::ZERO);
+            for (x, y) in a.iter().zip(&b) {
+                per_product.mul_accumulate(x, y);
+            }
+            // Seed both with the same nonzero state so the block's carry-in path is exercised.
+            let seed: F<T> = pick::<T, _>(0, &mut rng);
+            per_product.mul_accumulate(&seed, &seed);
+            blocked.mul_accumulate(&seed, &seed);
+            for (x, y) in a.chunks(32).zip(b.chunks(32)) {
+                blocked.mul_accumulate_block(x, y);
+            }
+            assert_eq!(
+                (per_product.buf.b0, per_product.buf.b1, per_product.carry),
+                (blocked.buf.b0, blocked.buf.b1, blocked.carry),
+                "len {len}"
+            );
+            assert_eq!(per_product.reduce(), blocked.reduce(), "len {len}");
+        }
+    }
+
+    /// `inner_product` against the naive sum at lengths around the block and tail boundaries.
+    #[test]
+    fn inner_product_across_blocks() {
+        fn run<T: MontConfig<4>>() {
+            let mut rng = test_rng();
+            for len in [31usize, 32, 33, 127, 128, 129, 159, 160, 161, 300] {
+                let a: Vec<_> = (0..len)
+                    .map(|_| Fp::<MontBackend<T, 4>, 4>::rand(&mut rng))
+                    .collect();
+                let b: Vec<_> = (0..len)
+                    .map(|_| Fp::<MontBackend<T, 4>, 4>::rand(&mut rng))
+                    .collect();
+                let naive = a.iter().zip(&b).map(|(a, b)| *a * b).sum();
+                assert_eq!(inner_product::<T, 4>(&a, &b), naive, "len {len}");
+            }
+        }
+        run::<PallasBase>();
+        run::<Secp256k1Scalar>();
+    }
+
+    #[test]
+    fn block_matches_per_product() {
+        check_block::<PallasBase>();
+        check_block::<Secp256k1Scalar>();
     }
 
     #[test]
