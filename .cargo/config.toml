@@ -1,0 +1,8 @@
+# In-repo x86-64 builds enable BMI2 and ADX. The `asm` feature's MULX/ADX kernels are selected at
+# run time by a CPUID check and need no target features; with these flags the check folds to `true`
+# and LLVM also emits MULX in the Rust code around the kernels. A binary built with them faults on a
+# CPU older than Broadwell or Zen. `-C target-cpu=x86-64-v3` does not substitute: no x86-64-v*
+# level includes ADX. Cargo reads this file only for builds invoked inside this repository, so it
+# reaches no downstream consumer, and an explicit `RUSTFLAGS` replaces it rather than merging.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-feature=+bmi2,+adx"]

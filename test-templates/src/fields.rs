@@ -588,6 +588,46 @@ macro_rules! __test_field {
             assert!(<$field>::zero().bea_inverse().is_none());
         }
 
+        /// Multiply and square must produce the same canonical element as `mul_portable` and
+        /// `square_portable`, so nodes whose builds select different kernels agree.
+        #[test]
+        pub fn test_backend_identity() {
+            use ark_ff::BigInteger;
+            let mut rng = test_rng();
+            let mut edge = vec![
+                <$field>::zero(),
+                <$field>::one(),
+                -<$field>::one(),
+                <$field>::new_unchecked(<$field>::R),
+                <$field>::new_unchecked(<$field>::R2),
+            ];
+            let mut m = <$field>::MODULUS;
+            m.sub_with_borrow(&<$field as PrimeField>::BigInt::from(1u64));
+            edge.push(<$field>::new_unchecked(m));
+
+            // Every edge value against every other, both orders.
+            for a in &edge {
+                for b in &edge {
+                    assert_eq!(*a * *b, a.mul_portable(b), "mul mismatch at {a} * {b}");
+                }
+                assert_eq!(a.square(), a.square_portable(), "square mismatch at {a}");
+            }
+
+            // Edge values against random ones, and random pairs.
+            for _ in 0..ITERATIONS {
+                let r = <$field>::rand(&mut rng);
+                for a in &edge {
+                    assert_eq!(*a * r, a.mul_portable(&r), "mul mismatch at {a} * {r}");
+                    assert_eq!(r * *a, r.mul_portable(a), "mul mismatch at {r} * {a}");
+                }
+                let s = <$field>::rand(&mut rng);
+                assert_eq!(r * s, r.mul_portable(&s), "mul mismatch at {r} * {s}");
+                assert_eq!(r.square(), r.square_portable(), "square mismatch at {r}");
+                // Squaring must also agree with multiplying a value by itself.
+                assert_eq!(r.square(), r.mul_portable(&r), "square/mul disagree at {r}");
+            }
+        }
+
         #[test]
         pub fn test_montgomery_config() {
             use ark_ff::{FpConfig, BigInteger};

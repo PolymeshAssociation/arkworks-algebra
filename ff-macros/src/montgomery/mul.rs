@@ -1,10 +1,15 @@
 use quote::quote;
 
+/// `with_asm == false` emits the body without the assembly branch, for
+/// `MontConfig::mul_assign_portable`: the oracle the assembly kernels are checked and timed
+/// against is this modulus-literal code, which a build without the assembly runs, not the trait's
+/// generic body, which measures 6% apart on aarch64.
 pub(super) fn mul_assign_impl(
     can_use_no_carry_mul_opt: bool,
     num_limbs: usize,
     modulus_limbs: &[u64],
     modulus_has_spare_bit: bool,
+    with_asm: bool,
 ) -> proc_macro2::TokenStream {
     let mut body = proc_macro2::TokenStream::new();
     let modulus_0 = modulus_limbs[0];
@@ -37,40 +42,15 @@ pub(super) fn mul_assign_impl(
         }
         default.extend(quote!((a.0).0 = r;));
         // Avoid using assembly for `N == 1`.
-        if (2..=6).contains(&num_limbs) {
+        if with_asm && (2..=6).contains(&num_limbs) {
             body.extend(quote!({
-                if cfg!(all(
-                    feature = "asm",
-                    target_feature = "bmi2",
-                    target_feature = "adx",
-                    target_arch = "x86_64"
-                )) {
-                    #[cfg(
-                        all(
-                            feature = "asm",
-                            target_feature = "bmi2",
-                            target_feature = "adx",
-                            target_arch = "x86_64"
-                        )
-                    )]
-                    ark_ff::x86_64_asm_mul!(#num_limbs, (a.0).0, (b.0).0);
-                } else {
-                    #[cfg(
-                        not(all(
-                            feature = "asm",
-                            target_feature = "bmi2",
-                            target_feature = "adx",
-                            target_arch = "x86_64"
-                        ))
-                    )]
-                    {
-                        #default
-                    }
+                if ark_ff::asm_backend_active() {
+                    Self::asm_mul_assign(a, b);
+                    return;
                 }
             }))
-        } else {
-            body.extend(quote!({ #default }))
         }
+        body.extend(quote!({ #default }));
         body.extend(quote!(__subtract_modulus(a);));
     } else {
         // We use standard CIOS

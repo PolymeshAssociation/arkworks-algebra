@@ -79,12 +79,28 @@ pub(crate) fn mont_config_helper(
         limbs,
         &modulus_limbs,
         modulus_has_spare_bit,
+        true,
     );
     let square_in_place = square_in_place_impl(
         can_use_no_carry_mul_opt,
         limbs,
         &modulus_limbs,
         modulus_has_spare_bit,
+        true,
+    );
+    let mul_assign_portable = mul_assign_impl(
+        can_use_no_carry_mul_opt,
+        limbs,
+        &modulus_limbs,
+        modulus_has_spare_bit,
+        false,
+    );
+    let square_in_place_portable = square_in_place_impl(
+        can_use_no_carry_mul_opt,
+        limbs,
+        &modulus_limbs,
+        modulus_has_spare_bit,
+        false,
     );
     let sum_of_products = sum_of_products_impl(limbs, &modulus_limbs);
     // Masked for fields wider than 4 limbs, as in `subtract_modulus_impl`. After Zakura #484
@@ -201,10 +217,20 @@ pub(crate) fn mont_config_helper(
                     #wasm_mul
                     #mul_assign
                 }
+
+                #[inline(always)]
+                fn mul_assign_portable(a: &mut F, b: &F) {
+                    #mul_assign_portable
+                }
                 #[inline(always)]
                 fn square_in_place(a: &mut F) {
                     #wasm_square
                     #square_in_place
+                }
+
+                #[inline(always)]
+                fn square_in_place_portable(a: &mut F) {
+                    #square_in_place_portable
                 }
 
                 fn sum_of_products<const M: usize>(
