@@ -34,12 +34,12 @@ pub fn glv_scalar_decomposition<P: GLVConfig>() {
         // in a decomposed scalar of up to 130 bits.
         let expected_max_bits = P::ScalarField::MODULUS_BIT_SIZE.div_ceil(2) + 2;
         assert!(
-            k1.into_bigint().num_bits() <= expected_max_bits as u32,
+            k1.into_bigint().num_bits() <= expected_max_bits,
             "k1 has {} bits",
             k1.into_bigint().num_bits()
         );
         assert!(
-            k2.into_bigint().num_bits() <= expected_max_bits as u32,
+            k2.into_bigint().num_bits() <= expected_max_bits,
             "k2 has {} bits",
             k2.into_bigint().num_bits()
         );
@@ -220,7 +220,7 @@ pub fn glv_mul_bigint_matches_double_and_add<
         vec![1],
         vec![2],
         r_minus_1.as_ref().to_vec(),
-        r.clone(),
+        r,
         r_plus_1.as_ref().to_vec(),
         two_r,
         vec![u64::MAX; n],
@@ -543,7 +543,7 @@ pub fn eisenstein_torsion_bases<P: GLVConfig>() {
                 for t in &cofactor_points {
                     let small = double_and_add(t, &m);
                     if !small.is_zero() {
-                        assert!(double_and_add(&small, &[l]).is_zero());
+                        assert!(double_and_add(&small, [l]).is_zero());
                         torsion.push(small);
                         torsion.push(-small);
                         torsion.push(P::endomorphism(&small));

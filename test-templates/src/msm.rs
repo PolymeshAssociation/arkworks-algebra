@@ -200,7 +200,7 @@ pub fn test_var_base_msm_small<G: VariableBaseMSM>() {
         let mut repeated = random.clone();
         if n > 1 {
             let first = repeated[0];
-            repeated.iter_mut().for_each(|g| *g = first);
+            repeated.fill(first);
         }
         let mut with_identity = random.clone();
         for (i, g) in with_identity.iter_mut().enumerate() {
