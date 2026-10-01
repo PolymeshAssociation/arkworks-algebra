@@ -230,3 +230,13 @@ lto = "thin"
 incremental = true
 debug-assertions = true
 debug = true
+
+# Registry crates that reach the graph through optional dependencies of the curve crates, such
+# as `ark-r1cs-std` under `ark-bn254/std`, resolve to these instead of a second copy.
+[patch.crates-io]
+ark-ec = { path = "ec" }
+ark-ff = { path = "ff" }
+ark-ff-asm = { path = "ff-asm" }
+ark-ff-macros = { path = "ff-macros" }
+ark-poly = { path = "poly" }
+ark-serialize = { path = "serialize" }

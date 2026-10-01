@@ -14,7 +14,9 @@ fn test_helios_selene_timing() {
     use crate::Fr;
     use ark_std::{rand::prelude::SliceRandom, vec::Vec};
     use ark_selene::{Projective as SProjective, Fr as SFr};
-    use ark_ec::{CurveGroup, PrimeGroup, VariableBaseMSM};
+    use ark_ec::{AffineRepr, CurveGroup, PrimeGroup, VariableBaseMSM};
+    use ark_ff::Field;
+    use ark_std::{test_rng, UniformRand};
     use std::time::{Instant, Duration};
 
     let mut rng = test_rng();

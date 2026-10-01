@@ -81,8 +81,8 @@ fn timing() {
                 break q;
             }
         };
-        bench("g2_clear_cofactor", 3000, 12, || { black_box(black_box(q).clear_cofactor()); });
-        bench("g2_mul_by_cofactor", 3000, 12, || { black_box(black_box(q).mul_by_cofactor()); });
+        bench("g2_clear_cofactor", 3000, 12, || { let _ = black_box(black_box(q).clear_cofactor()); });
+        bench("g2_mul_by_cofactor", 3000, 12, || { let _ = black_box(black_box(q).mul_by_cofactor()); });
     }
     {
         use ark_ec::{scalar_mul::double_and_add, PrimeGroup};
