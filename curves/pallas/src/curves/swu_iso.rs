@@ -54,6 +54,11 @@ const ISO_GENERATOR_Y: Fq =
 pub(crate) const ZETA_TRACE_POWER: Fq =
     MontFp!("24572433101797051318859476537138851131189150516971437659543983992465105113839");
 
+/// `sqrt(ZETA / g)` for the two-adic root of unity `g`, which the Sarkar square root's candidate
+/// for a non-square `x`, `sqrt(g x)`, turns into `sqrt(ZETA x)`.
+pub(crate) const ZETA_OVER_ROOT_SQRT: Fq =
+    MontFp!("7003529136733518259227950775588032800807760729532353866644138209790443401614");
+
 impl SWUConfig for SwuIsoConfig {
     /// ZETA = -13
     const ZETA: Fq = MontFp!("-13");
@@ -62,7 +67,12 @@ impl SWUConfig for SwuIsoConfig {
     /// [`SqrtPrecomputation::sqrt_or_scaled_sqrt`](ark_ff::SqrtPrecomputation::sqrt_or_scaled_sqrt).
     fn sqrt_or_zeta_sqrt(gx1: Fq) -> (bool, Fq) {
         match <Fq as Field>::SQRT_PRECOMP {
-            Some(precomp) => precomp.sqrt_or_scaled_sqrt(&gx1, &Self::ZETA, &ZETA_TRACE_POWER),
+            Some(precomp) => precomp.sqrt_or_scaled_sqrt(
+                &gx1,
+                &Self::ZETA,
+                &ZETA_TRACE_POWER,
+                &ZETA_OVER_ROOT_SQRT,
+            ),
             None => unreachable!("the base field has a Sarkar square-root table"),
         }
     }

@@ -134,9 +134,10 @@ impl<H: FixedOutputReset + Default + Clone> Expander for ExpanderXmd<H> {
         uniform_bytes.extend_from_slice(&bi);
         for i in 2..=ell {
             // update the hasher with xor of b_0 and b_i elements
-            for (l, r) in b0.iter().zip(bi.iter()) {
-                hasher.update(&[*l ^ *r]);
+            for (x, b0_byte) in bi.iter_mut().zip(b0.iter()) {
+                *x ^= b0_byte;
             }
+            hasher.update(&bi);
             hasher.update(&[i as u8]);
             dst_prime.update(&mut hasher);
             bi = hasher.finalize_fixed_reset();

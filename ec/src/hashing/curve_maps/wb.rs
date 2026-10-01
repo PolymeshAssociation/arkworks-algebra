@@ -1,8 +1,7 @@
 use core::marker::PhantomData;
 
 use crate::{models::short_weierstrass::SWCurveConfig, CurveConfig};
-use ark_ff::{batch_inversion, Field, One, Zero};
-use ark_std::vec::Vec;
+use ark_ff::{batch_inversion, Field, Zero};
 
 use crate::{
     hashing::{map_to_curve_hasher::MapToCurve, HashToCurveError},
@@ -52,6 +51,10 @@ where
                     horner(self.x_map_denominator, &x),
                     horner(self.y_map_denominator, &x),
                 ];
+                // The kernel maps to the identity, whatever `ZeroFlag` encodes it as.
+                if v[0].is_zero() {
+                    return Ok(Affine::identity());
+                }
                 batch_inversion(&mut v);
                 let img_x = horner(self.x_map_numerator, &x) * v[0];
                 let img_y = (horner(self.y_map_numerator, &x) * y) * v[1];
@@ -80,17 +83,20 @@ where
         .saturating_sub(1);
 
         let z2 = z.square();
-        let mut z2_powers = Vec::with_capacity(k + 1);
-        z2_powers.push(BaseField::<Domain>::one());
-        for i in 0..k {
-            z2_powers.push(z2_powers[i] * z2);
-        }
+        // `\sum_i{c_i X^i Z^{2(d - i)}}` for degree `d` by Horner's rule, times `Z^{2(k - d)}`.
         let evaluate = |coeffs: &[BaseField<Domain>]| {
-            let mut acc = BaseField::<Domain>::zero();
-            let mut x_power = BaseField::<Domain>::one();
-            for (i, c) in coeffs.iter().enumerate() {
-                acc += *c * x_power * z2_powers[k - i];
-                x_power *= x;
+            let mut iter = coeffs.iter().rev();
+            let Some(top) = iter.next() else {
+                return BaseField::<Domain>::zero();
+            };
+            let mut acc = *top;
+            let mut z2_power = z2;
+            for c in iter {
+                acc = acc * x + *c * z2_power;
+                z2_power *= z2;
+            }
+            for _ in coeffs.len()..=k {
+                acc *= z2;
             }
             acc
         };
@@ -171,15 +177,15 @@ impl<P: WBConfig> MapToCurve<Projective<P>> for WBMap<P> {
         P::ISOGENY_MAP.apply(point_on_isogenious_curve)
     }
 
-    /// Adds the two points on the isogenous curve and applies the isogeny once. Equal to the sum
-    /// of the two `map_to_curve` images since an isogeny is a group homomorphism.
+    /// Maps both elements to the isogenous curve through one shared inversion, adds the points
+    /// and applies the isogeny once. Equal to the sum of the two `map_to_curve` images since an
+    /// isogeny is a group homomorphism.
     fn map_to_curve_sum(
         u0: <Affine<P> as AffineRepr>::BaseField,
         u1: <Affine<P> as AffineRepr>::BaseField,
     ) -> Result<Projective<P>, HashToCurveError> {
-        let p0 = SWUMap::<P::IsogenousCurve>::map_to_curve(u0)?;
-        let p1 = SWUMap::<P::IsogenousCurve>::map_to_curve(u1)?;
-        Ok(P::ISOGENY_MAP.apply_projective(p0 + p1))
+        let (p0, p1) = SWUMap::<P::IsogenousCurve>::map_to_curve_pair(u0, u1);
+        Ok(P::ISOGENY_MAP.apply_projective(p0.into_group() + p1))
     }
 }
 
