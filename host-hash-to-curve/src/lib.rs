@@ -25,11 +25,16 @@ use ark_selene::SeleneConfig;
 use ark_vesta::VestaConfig;
 use ark_wei25519::Wei25519Config;
 
+/// Most points one host call hashes, about 1.3 s of single-threaded host work on Pallas. Larger
+/// batches are hashed in the guest.
+pub const MAX_HOST_GENS_PER_CALL: u32 = 1 << 16;
+
 /// Hash-to-curve for a short Weierstrass curve using the curve's `FieldHasher` and `Map`.
 /// Pallas, Vesta, Helios, Selene and Wei25519 use `LegacyFieldHasher<Sha256, 128>`, which keeps
 /// the points equal to those hashed with ark-ff 0.5, so generators derived before the RFC 9380
 /// padding fix in `DefaultFieldHasher` are unchanged. BLS12-381 and BN254 use
-/// `DefaultFieldHasher<Sha256, 128>`.
+/// `DefaultFieldHasher<Sha256, 128>`. The host serves Pallas, Vesta and G1 and G2 of BLS12-381
+/// and BN254; Helios, Selene and Wei25519 always hash in the guest.
 pub trait HashToCurveConfig: SWCurveConfig {
     /// Hash from a message to base field elements.
     type FieldHasher: HashToField<Self::BaseField>;
@@ -49,8 +54,9 @@ pub trait HashToCurveConfig: SWCurveConfig {
 
     /// Hash `msg_prefix || j.to_le_bytes()` for each `j` in `gens_offset..gens_offset + gens_count`,
     /// using `dst` as the domain separation tag. Uses the host function in a no_std build with the
-    /// `host_hash_to_curve` feature when the host supports the curve. Panics if
-    /// `gens_offset + gens_count` overflows `u32`.
+    /// `host_hash_to_curve` feature when the host supports the curve and `gens_count` is at most
+    /// [`MAX_HOST_GENS_PER_CALL`]. Panics if `gens_offset + gens_count` overflows `u32`. Allocates
+    /// `gens_count` points, so the caller bounds it.
     fn batch_hash_to_curve(
         dst: &[u8],
         msg_prefix: &[u8],
@@ -121,19 +127,34 @@ fn batch_hash_to_curve_local<C: HashToCurveConfig>(
     let gens_end = gens_offset
         .checked_add(gens_count)
         .expect("gens_offset + gens_count overflows u32");
-    let hash_one = |j: u32| {
-        let msg = [msg_prefix, j.to_le_bytes().as_slice()].concat();
-        C::hash_to_curve(dst, &msg)
+    // One hasher and one message buffer per worker; the last four bytes take `j`.
+    let new_state = || {
+        let hasher = MapToCurveBasedHasher::<Projective<C>, C::FieldHasher, C::Map>::new(dst)
+            .expect("hasher construction does not fail");
+        let mut msg = Vec::with_capacity(msg_prefix.len() + 4);
+        msg.extend_from_slice(msg_prefix);
+        msg.extend_from_slice(&[0; 4]);
+        (hasher, msg)
+    };
+    let hash_one = |(hasher, msg): &mut (_, Vec<u8>), j: u32| {
+        msg[msg_prefix.len()..].copy_from_slice(&j.to_le_bytes());
+        HashToCurve::hash(hasher, msg).expect("SWU, WB and SVDW maps do not fail")
     };
 
     #[cfg(feature = "parallel")]
     let gens = {
         use rayon::prelude::*;
-        (gens_offset..gens_end).into_par_iter().map(hash_one).collect()
+        (gens_offset..gens_end)
+            .into_par_iter()
+            .map_init(new_state, hash_one)
+            .collect()
     };
 
     #[cfg(not(feature = "parallel"))]
-    let gens = (gens_offset..gens_end).map(hash_one).collect();
+    let gens = {
+        let mut state = new_state();
+        (gens_offset..gens_end).map(|j| hash_one(&mut state, j)).collect()
+    };
 
     gens
 }
@@ -183,6 +204,9 @@ mod guest {
         gens_offset: u32,
         gens_count: u32,
     ) -> Option<Vec<Affine<C>>> {
+        if gens_count > MAX_HOST_GENS_PER_CALL {
+            return None;
+        }
         let mut buffer = Vec::new();
         curve_id::<C>().serialize_uncompressed(&mut buffer).ok()?;
 
