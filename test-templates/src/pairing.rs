@@ -5,7 +5,7 @@ macro_rules! test_pairing {
             pub const ITERATIONS: usize = 100;
             use ark_ec::{pairing::*, CurveGroup, PrimeGroup};
             use ark_ff::{CyclotomicMultSubgroup, Field, PrimeField};
-            use ark_std::{test_rng, vec::Vec, One, UniformRand, Zero};
+            use ark_std::{test_rng, vec, vec::Vec, One, UniformRand, Zero};
             #[test]
             fn test_bilinearity() {
                 for _ in 0..100 {
@@ -63,6 +63,30 @@ macro_rules! test_pairing {
                 for n in [1, 3, 4, 5, 8, 9] {
                     let expected = singles[..n].iter().sum::<PairingOutput<$Pairing>>();
                     assert_eq!(<$Pairing>::multi_pairing(&a[..n], &b[..n]), expected, "n = {n}");
+                }
+            }
+
+            /// `mul_bits_be` and `mul_bigint` agree with `pow` on GT, for scalars that are not
+            /// bit palindromes, wide ones, and ones whose length is not a multiple of 64.
+            #[test]
+            fn test_gt_mul_bits_be() {
+                use ark_ff::BitIteratorBE;
+                let rng = &mut test_rng();
+                let g = PairingOutput::<$Pairing>::generator() * <$Pairing as Pairing>::ScalarField::rand(rng);
+                let mut scalars: Vec<Vec<u64>> = vec![
+                    vec![1],
+                    vec![2],
+                    vec![0x8000_0000_0000_0001, 5],
+                    vec![u64::MAX, 0, 1],
+                    vec![7, 0, 0, 0, 0, 0, 3],
+                ];
+                scalars.push(<$Pairing as Pairing>::ScalarField::rand(rng).into_bigint().as_ref().to_vec());
+                for k in &scalars {
+                    let expected = PairingOutput::<$Pairing>(g.0.pow(k));
+                    assert_eq!(g.mul_bigint(k), expected, "mul_bigint, k = {k:?}");
+                    assert_eq!(g.mul_bits_be(BitIteratorBE::new(k)), expected, "mul_bits_be, k = {k:?}");
+                    let trimmed: Vec<bool> = BitIteratorBE::without_leading_zeros(k).collect();
+                    assert_eq!(g.mul_bits_be(trimmed.into_iter()), expected, "trimmed bits, k = {k:?}");
                 }
             }
 

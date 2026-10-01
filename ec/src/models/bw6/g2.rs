@@ -1,6 +1,8 @@
 use ark_ff::{AdditiveGroup, BitIteratorBE, Field};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::vec::*;
+use ark_serialize::{
+    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
+};
+use ark_std::{io::Read, vec::*};
 use educe::Educe;
 use num_traits::One;
 
@@ -14,7 +16,7 @@ use crate::{
 pub type G2Affine<P> = Affine<<P as BW6Config>::G2Config>;
 pub type G2Projective<P> = Projective<<P as BW6Config>::G2Config>;
 
-#[derive(Educe, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Educe, CanonicalSerialize)]
 #[educe(Clone, Debug, PartialEq, Eq)]
 pub struct G2Prepared<P: BW6Config> {
     /// Stores the coefficients of the line evaluations as calculated in
@@ -22,6 +24,58 @@ pub struct G2Prepared<P: BW6Config> {
     pub ell_coeffs_1: Vec<(P::Fp, P::Fp, P::Fp)>,
     pub ell_coeffs_2: Vec<(P::Fp, P::Fp, P::Fp)>,
     pub infinity: bool,
+}
+
+impl<P: BW6Config> Valid for G2Prepared<P> {
+    /// The line count the Miller loop consumes, none at infinity.
+    fn check(&self) -> Result<(), SerializationError> {
+        let (expected_1, expected_2) = if self.infinity {
+            (0, 0)
+        } else {
+            num_ell_coeffs::<P>()
+        };
+        if self.ell_coeffs_1.len() != expected_1 || self.ell_coeffs_2.len() != expected_2 {
+            return Err(SerializationError::InvalidData);
+        }
+        self.ell_coeffs_1.check()?;
+        self.ell_coeffs_2.check()?;
+        Ok(())
+    }
+}
+
+impl<P: BW6Config> CanonicalDeserialize for G2Prepared<P> {
+    fn deserialize_with_mode<R: Read>(
+        mut reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Self, SerializationError> {
+        let ell_coeffs_1 = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let ell_coeffs_2 = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let infinity = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let prepared = Self { ell_coeffs_1, ell_coeffs_2, infinity };
+        if validate == Validate::Yes {
+            prepared.check()?;
+        }
+        Ok(prepared)
+    }
+}
+
+/// Line counts of the two Miller loops: per bit of `ATE_LOOP_COUNT_1` after the top one a
+/// doubling and an addition for a set bit, plus the final addition; per digit of
+/// `ATE_LOOP_COUNT_2` below the top a doubling and an addition for a nonzero digit.
+fn num_ell_coeffs<P: BW6Config>() -> (usize, usize) {
+    let first = BitIteratorBE::without_leading_zeros(P::ATE_LOOP_COUNT_1)
+        .skip(1)
+        .map(|bit| 1 + usize::from(bit))
+        .sum::<usize>()
+        + 1;
+    let second = P::ATE_LOOP_COUNT_2
+        .iter()
+        .rev()
+        .skip(1)
+        .map(|digit| 1 + usize::from(*digit != 0))
+        .sum();
+    (first, second)
 }
 
 #[derive(Educe, CanonicalSerialize, CanonicalDeserialize)]
@@ -66,7 +120,7 @@ impl<P: BW6Config> From<G2Affine<P>> for G2Prepared<P> {
             z: P::Fp::one(),
         };
 
-        for i in BitIteratorBE::new(P::ATE_LOOP_COUNT_1).skip(1) {
+        for i in BitIteratorBE::without_leading_zeros(P::ATE_LOOP_COUNT_1).skip(1) {
             ell_coeffs_1.push(r.double_in_place());
 
             if i {

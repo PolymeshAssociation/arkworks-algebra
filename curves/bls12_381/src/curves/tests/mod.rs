@@ -495,3 +495,34 @@ fn test_g1_x_zero_torsion_rejected() {
         assert!(G1Affine::deserialize_with_mode(&bytes[..], Compress::Yes, Validate::Yes).is_err());
     }
 }
+
+/// Checked decoding of prepared points rejects a line vector of the wrong length and a point at
+/// infinity carrying lines, which the Miller loop would otherwise run past or misread.
+#[test]
+fn test_prepared_g2_line_count_is_validated() {
+    use ark_ec::bls12::{G2Prepared, G2PreparedFixed};
+    let q = G2Affine::rand(&mut test_rng());
+    let prepared = G2Prepared::<crate::Config>::from(q);
+    let fixed = G2PreparedFixed::<crate::Config>::from(q);
+    let decode = |bytes: &[u8]| G2Prepared::<crate::Config>::deserialize_with_mode(bytes, Compress::No, Validate::Yes);
+    let decode_fixed = |bytes: &[u8]| G2PreparedFixed::<crate::Config>::deserialize_with_mode(bytes, Compress::No, Validate::Yes);
+    fn encode<T: ark_serialize::CanonicalSerialize>(p: &T) -> ark_std::vec::Vec<u8> {
+        let mut bytes = vec![];
+        p.serialize_with_mode(&mut bytes, Compress::No).unwrap();
+        bytes
+    }
+    assert_eq!(decode(&encode(&prepared)).unwrap(), prepared);
+    assert_eq!(decode_fixed(&encode(&fixed)).unwrap(), fixed);
+
+    let mut short = prepared.clone();
+    short.ell_coeffs.pop();
+    assert!(decode(&encode(&short)).is_err());
+    assert!(G2Prepared::<crate::Config>::deserialize_with_mode(&encode(&short)[..], Compress::No, Validate::No).is_ok());
+    let mut infinite = prepared.clone();
+    infinite.infinity = true;
+    assert!(decode(&encode(&infinite)).is_err());
+
+    let mut short_fixed = fixed.clone();
+    short_fixed.lines.pop();
+    assert!(decode_fixed(&encode(&short_fixed)).is_err());
+}

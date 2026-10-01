@@ -2,8 +2,12 @@ use ark_ec::AffineRepr;
 use ark_ec::{
     bn::{gls4_digits, BnConfig},
     models::{short_weierstrass::SWCurveConfig, CurveConfig},
-    scalar_mul::{gls::gls4_mul_bigint, glv::GLVConfig},
+    scalar_mul::{
+        gls::{gls4_mul_affine_bigint, gls4_mul_bigint},
+        glv::GLVConfig,
+    },
     short_weierstrass::{Affine, Projective},
+    CurveGroup,
 };
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
 
@@ -74,6 +78,23 @@ impl SWCurveConfig for Config {
         lhs == p_power_endomorphism_projective(&psi2_x_p).double()
     }
 
+    /// `[x]P + ψ([3x]P) + ψ^2([x]P) + ψ^3(P)` of section 6.1 of Fuentes-Castañeda, Knapp and
+    /// Rodríguez-Henríquez, [Faster Hashing to G2](https://cacr.uwaterloo.ca/techreports/2011/cacr2011-26.pdf),
+    /// equal to multiplication by `-(18x^3 + 12x^2 + 3x + 1) * COFACTOR`. Matches gnark-crypto's
+    /// [`G2Jac.ClearCofactor`](https://github.com/Consensys/gnark-crypto/blob/v0.21.0/ecc/bn254/g2.go#L1024-L1045).
+    /// Evaluated as `[x](P + 3ψ(P) + ψ^2(P)) + ψ^3(P)`, so `ψ` only acts on affine points, with
+    /// `[x]` by `mul_by_seed`.
+    fn clear_cofactor(p: &G2Affine) -> G2Affine {
+        let psi_p = p_power_endomorphism(p);
+        let psi2_p = p_power_endomorphism(&psi_p);
+        let psi3_p = p_power_endomorphism(&psi2_p);
+        let mut t = psi_p.into_group().double();
+        t += &psi_p;
+        t += p;
+        t += &psi2_p;
+        (mul_by_seed(t) + psi3_p).into_affine()
+    }
+
     /// Four-dimensional GLS ([`gls4_mul_bigint`]) over the lattice digits of the scalar
     /// ([`gls4_digits`], the same as GT exponentiation's), with `psi = [6x^2]` on G2, for about
     /// 64 doublings instead of the 128 of two-dimensional GLV. Faster than GLV at every scalar
@@ -86,10 +107,11 @@ impl SWCurveConfig for Config {
         gls4_mul_bigint(p, scalar, digits, p_power_endomorphism)
     }
 
-    /// [`Self::mul_projective`] for an affine base.
+    /// [`Self::mul_projective`] for an affine base, with mixed additions for `k >= r`.
     #[inline]
     fn mul_affine(p: &G2Affine, scalar: &[u64]) -> Projective<Self> {
-        Self::mul_projective(&p.into_group(), scalar)
+        let digits = |k: &[u64]| crate::Config::GT_GLS.map(|g| gls4_digits::<crate::Config>(k, &g));
+        gls4_mul_affine_bigint(p, scalar, digits, p_power_endomorphism)
     }
 }
 
@@ -181,8 +203,8 @@ fn mul_by_seed(p1: Projective<Config>) -> Projective<Config> {
     r
 }
 
-/// `psi`, the untwist-Frobenius-twist endomorphism on `E'(Fq2)`, on Jacobian coordinates.
-/// `(X, Y, Z)` maps to `(X^p c_x, Y^p c_y, Z^p)`.
+/// [`p_power_endomorphism`] on Jacobian coordinates: `(X, Y, Z)` maps to
+/// `(X^p c_x, Y^p c_y, Z^p)`.
 fn p_power_endomorphism_projective(p: &Projective<Config>) -> Projective<Config> {
     let mut res = *p;
     res.x.frobenius_map_in_place(1);
@@ -212,6 +234,7 @@ mod test {
 
     use super::*;
     use crate::g2;
+    use ark_ec::bn::BnConfig;
     use ark_std::{rand::Rng, UniformRand};
 
     fn sample_unchecked(rng: &mut impl Rng) -> Affine<g2::Config> {
@@ -249,6 +272,22 @@ mod test {
             );
 
             let cleared = p.clear_cofactor();
+            assert!(cleared.is_in_correct_subgroup_assuming_on_curve());
+        }
+    }
+
+    /// `clear_cofactor` equals multiplication by `-(18x^3 + 12x^2 + 3x + 1) * COFACTOR`, the
+    /// `h(a)` of section 6.1 of [Faster Hashing to G2](https://cacr.uwaterloo.ca/techreports/2011/cacr2011-26.pdf).
+    #[test]
+    fn test_clear_cofactor_matches_h_eff() {
+        let mut rng = ark_std::test_rng();
+        let x = Fr::from(crate::Config::X[0]);
+        let k = Fr::from(18u64) * x * x * x + Fr::from(12u64) * x * x + Fr::from(3u64) * x + Fr::ONE;
+        for _ in 0..20 {
+            let p = sample_unchecked(&mut rng);
+            assert!(!p.is_in_correct_subgroup_assuming_on_curve());
+            let cleared = p.clear_cofactor();
+            assert_eq!(cleared, (-(p.mul_by_cofactor() * k)).into_affine());
             assert!(cleared.is_in_correct_subgroup_assuming_on_curve());
         }
     }

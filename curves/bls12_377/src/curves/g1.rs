@@ -296,10 +296,9 @@ mod test {
     use crate::g1;
     use ark_std::{rand::Rng, UniformRand};
 
-    fn sample_unchecked() -> SWAffine<g1::Config> {
-        let mut rng = ark_std::test_rng();
+    fn sample_unchecked(rng: &mut impl Rng) -> SWAffine<g1::Config> {
         loop {
-            let x = Fq::rand(&mut rng);
+            let x = Fq::rand(rng);
             let greatest = rng.gen();
 
             if let Some(p) = SWAffine::get_point_from_x_unchecked(x, greatest) {
@@ -310,9 +309,10 @@ mod test {
 
     #[test]
     fn test_cofactor_clearing() {
+        let mut rng = ark_std::test_rng();
         const SAMPLES: usize = 100;
         for _ in 0..SAMPLES {
-            let p: SWAffine<g1::Config> = sample_unchecked();
+            let p: SWAffine<g1::Config> = sample_unchecked(&mut rng);
             let p = <Config as SWCurveConfig>::clear_cofactor(&p);
             assert!(p.is_on_curve());
             assert!(p.is_in_correct_subgroup_assuming_on_curve());

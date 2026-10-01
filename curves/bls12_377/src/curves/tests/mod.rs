@@ -69,7 +69,16 @@ fn test_g1_subgroup_check() {
 
 #[test]
 fn test_g2_subgroup_check() {
+    // The G2 cofactor has no prime factor below 2^22, so only cofactor-group points are tested.
     ark_algebra_test_templates::subgroup::test_subgroup_check::<crate::g2::Config>(&[], 8);
+}
+
+/// GLV `mul_bigint` against double-and-add on subgroup and random curve points, exact off the
+/// subgroup below `2^128`.
+#[test]
+fn test_scalar_mul_matches_double_and_add() {
+    ark_algebra_test_templates::subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8, 128);
+    ark_algebra_test_templates::subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(8, 128);
 }
 
 #[test]

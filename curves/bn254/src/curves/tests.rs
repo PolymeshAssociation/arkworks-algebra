@@ -331,6 +331,29 @@ fn test_exp_by_x_chain_matches_generic() {
     }
 }
 
+/// Checked decoding of a prepared point rejects a line vector of the wrong length and a point at
+/// infinity carrying lines.
+#[test]
+fn test_prepared_g2_line_count_is_validated() {
+    use ark_ec::bn::G2Prepared;
+    use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
+    use ark_std::{test_rng, UniformRand};
+    let prepared = G2Prepared::<crate::Config>::from(crate::G2Affine::rand(&mut test_rng()));
+    let encode = |p: &G2Prepared<crate::Config>| {
+        let mut bytes = ark_std::vec::Vec::new();
+        p.serialize_with_mode(&mut bytes, Compress::No).unwrap();
+        bytes
+    };
+    let decode = |bytes: &[u8]| G2Prepared::<crate::Config>::deserialize_with_mode(bytes, Compress::No, Validate::Yes);
+    assert_eq!(decode(&encode(&prepared)).unwrap(), prepared);
+    let mut short = prepared.clone();
+    short.ell_coeffs.pop();
+    assert!(decode(&encode(&short)).is_err());
+    let mut infinite = prepared.clone();
+    infinite.infinity = true;
+    assert!(decode(&encode(&infinite)).is_err());
+}
+
 /// `cyclotomic_exp` against `pow` on GT for exponents of every length up to 130 bits, which
 /// crosses each wNAF width, and for full-width and wider ones.
 #[test]

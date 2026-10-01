@@ -5,7 +5,11 @@ use ark_ec::{
     bls12::{gls4_digits, Bls12Config},
     hashing::curve_maps::wb::{IsogenyMap, WBConfig},
     models::CurveConfig,
-    scalar_mul::{double_and_add, double_and_add_affine, gls::gls4_mul_bigint, glv::GLVConfig},
+    scalar_mul::{
+        double_and_add, double_and_add_affine,
+        gls::{gls4_mul_affine_bigint, gls4_mul_bigint},
+        glv::GLVConfig,
+    },
     short_weierstrass::{Affine, Projective, SWCurveConfig},
     AffineRepr, CurveGroup,
 };
@@ -92,10 +96,10 @@ impl SWCurveConfig for Config {
         )
     }
 
-    /// [`Self::mul_projective`] for an affine base.
+    /// [`Self::mul_projective`] for an affine base, with mixed additions for `k >= r`.
     #[inline]
     fn mul_affine(p: &G2Affine, scalar: &[u64]) -> Projective<Self> {
-        Self::mul_projective(&p.into_group(), scalar)
+        gls4_mul_affine_bigint(p, scalar, gls4_digits::<crate::Config>, p_power_endomorphism)
     }
 
     fn is_in_correct_subgroup_assuming_on_curve(point: &G2Affine) -> bool {
@@ -341,11 +345,10 @@ mod test {
     use super::*;
     use ark_std::{rand::Rng, UniformRand};
 
-    fn sample_unchecked() -> Affine<g2::Config> {
-        let mut rng = ark_std::test_rng();
+    fn sample_unchecked(rng: &mut impl Rng) -> Affine<g2::Config> {
         loop {
-            let x1 = Fq::rand(&mut rng);
-            let x2 = Fq::rand(&mut rng);
+            let x1 = Fq::rand(rng);
+            let x2 = Fq::rand(rng);
             let greatest = rng.gen();
             let x = Fq2::new(x1, x2);
 
@@ -357,7 +360,8 @@ mod test {
 
     #[test]
     fn test_psi_2() {
-        let p = sample_unchecked();
+        let mut rng = ark_std::test_rng();
+        let p = sample_unchecked(&mut rng);
         let psi_p = p_power_endomorphism(&p);
         let psi2_p_composed = p_power_endomorphism(&psi_p);
         let psi2_p_optimised = double_p_power_endomorphism(&p.into());
@@ -367,6 +371,7 @@ mod test {
 
     #[test]
     fn test_cofactor_clearing() {
+        let mut rng = ark_std::test_rng();
         // multiplying by h_eff and clearing the cofactor by the efficient
         // endomorphism-based method should yield the same result.
         let h_eff: &'static [u64] = &[
@@ -384,7 +389,7 @@ mod test {
 
         const SAMPLES: usize = 10;
         for _ in 0..SAMPLES {
-            let p: Affine<g2::Config> = sample_unchecked();
+            let p: Affine<g2::Config> = sample_unchecked(&mut rng);
             let optimised = p.clear_cofactor();
             let naive = g2::Config::mul_affine(&p, h_eff);
             assert_eq!(optimised.into_group(), naive);
