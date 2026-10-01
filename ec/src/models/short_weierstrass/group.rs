@@ -677,6 +677,9 @@ impl<P: SWCurveConfig> VariableBaseMSM for Projective<P> {
         bases: &[Self::MulBase],
         bigints: &[<Self::ScalarField as PrimeField>::BigInt],
     ) -> Self {
+        if let Some(res) = P::try_msm_bigint_full_width(bases, bigints) {
+            return res;
+        }
         if bases.len().min(bigints.len()) >= sw_pippenger::BATCH_AFFINE_MIN_POINTS {
             return sw_pippenger::msm_batch_affine_bigint::<P>(bases, bigints);
         }
