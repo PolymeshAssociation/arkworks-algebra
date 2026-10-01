@@ -165,6 +165,7 @@ pub fn msm_batch_affine_glv_bigint<P: GLVConfig>(
     }
     let mut points = vec![Affine::<P>::zero(); 2 * size];
     let mut halves = vec![<P::ScalarField as PrimeField>::BigInt::default(); 2 * size];
+    #[allow(clippy::type_complexity)]
     let split = |((p, h), (base, k)): (
         (&mut [Affine<P>], &mut [<P::ScalarField as PrimeField>::BigInt]),
         (&Affine<P>, &<P::ScalarField as PrimeField>::BigInt),
@@ -439,9 +440,7 @@ fn add_pending<F: Field>(
     let n = slots.len();
     // Each lane starts from its own first denominator, which drops a multiply by one.
     let mut acc = [F::one(); LANES];
-    for k in 0..n.min(LANES) {
-        acc[k] = den[k];
-    }
+    acc[..n.min(LANES)].copy_from_slice(&den[..n.min(LANES)]);
     for k in LANES..n {
         num[k] *= acc[k % LANES];
         acc[k % LANES] *= den[k];

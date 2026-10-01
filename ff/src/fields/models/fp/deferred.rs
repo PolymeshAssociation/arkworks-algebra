@@ -50,6 +50,7 @@ impl<T: MontConfig<N>, const N: usize> MontAccumulator<T, N> {
     /// limbs, so each accumulator limb is read once; the row's carry and the previous row's
     /// one-bit overflow land in the next untouched limb.
     #[inline]
+    #[allow(clippy::needless_range_loop)]
     pub fn mul_accumulate(&mut self, a: &Fp<MontBackend<T, N>, N>, b: &Fp<MontBackend<T, N>, N>) {
         let (a, b) = (&(a.0).0, &(b.0).0);
         let mut overflow = 0;

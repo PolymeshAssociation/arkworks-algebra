@@ -23,7 +23,7 @@ pub mod eisenstein;
 /// - `g1 = round(2^M * |n22| / r)` and `g2 = round(2^M * |n12| / r)`, each as
 ///   `N + 1` little-endian limbs (the `n_ij` are the [`GLVConfig::SCALAR_DECOMP_COEFFS`]).
 /// - `a12 = |n12|` and `a22 = |n22|` as scalar field elements. These are duplicated from
-///    [`GLVConfig::SCALAR_DECOMP_COEFFS`] to avoid multiplication during conversion
+///   [`GLVConfig::SCALAR_DECOMP_COEFFS`] to avoid multiplication during conversion
 /// - `negate_k2` is `true` when `sign(n12) * sign(n22) == -1`.
 ///
 /// These can be generated from `SCALAR_DECOMP_COEFFS` by `scripts/glv_fast_decomp.py`.
@@ -35,6 +35,12 @@ pub struct GLVFastDecomp<F: PrimeField> {
     pub a22: F,
     pub negate_k2: bool,
 }
+
+/// The GLV halves of a scalar as `(is_non_negative, magnitude)` pairs.
+pub type SignedHalves<F> = (
+    (bool, <F as PrimeField>::BigInt),
+    (bool, <F as PrimeField>::BigInt),
+);
 
 /// The GLV parameters for computing the endomorphism and scalar decomposition.
 pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
@@ -77,10 +83,7 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
     /// builds and, without [`Self::FAST_DECOMP`], in release builds too.
     fn scalar_decomposition_bigint(
         k: &<Self::ScalarField as PrimeField>::BigInt,
-    ) -> (
-        (bool, <Self::ScalarField as PrimeField>::BigInt),
-        (bool, <Self::ScalarField as PrimeField>::BigInt),
-    ) {
+    ) -> SignedHalves<Self::ScalarField> {
         debug_assert!(*k < Self::ScalarField::MODULUS);
         match Self::FAST_DECOMP {
             Some(fd) => fast_scalar_decomposition_bigint::<Self>(k, &fd),
@@ -205,6 +208,7 @@ const SMALL_MSM_MAX_PARALLEL_FLOOR: usize = 8;
 /// the thread count, floored at [`SMALL_MSM_MAX_PARALLEL_FLOOR`], when called from outside the
 /// rayon pool, whose threads the bucket path can use. [`SMALL_MSM_MAX`] from inside a pool task,
 /// where the pool is likely busy with sibling tasks.
+#[allow(clippy::missing_const_for_fn)]
 pub fn small_msm_max() -> usize {
     #[cfg(feature = "parallel")]
     if rayon::current_thread_index().is_none() {
@@ -370,10 +374,7 @@ pub fn fast_scalar_decomposition<P: GLVConfig>(
 pub fn fast_scalar_decomposition_bigint<P: GLVConfig>(
     k: &<P::ScalarField as PrimeField>::BigInt,
     precomp: &GLVFastDecomp<P::ScalarField>,
-) -> (
-    (bool, <P::ScalarField as PrimeField>::BigInt),
-    (bool, <P::ScalarField as PrimeField>::BigInt),
-) {
+) -> SignedHalves<P::ScalarField> {
     let shift = <<P::ScalarField as PrimeField>::BigInt as BigInteger>::NUM_LIMBS + 2;
     let c1 = mul_shift_round_bigint::<P::ScalarField>(k.as_ref(), precomp.g1, shift);
     let c2 = mul_shift_round_bigint::<P::ScalarField>(k.as_ref(), precomp.g2, shift);
@@ -636,7 +637,7 @@ pub fn binary_scalar_mul_shamir<G: SWCurveConfig>(
     // nonzero column, avoiding a doubling-and-add into the identity.
     let mut res = loop {
         match bits.next() {
-            Some((false, false)) => continue,
+            Some((false, false)) => {},
             Some((true, false)) => break b1,
             Some((false, true)) => break b2,
             Some((true, true)) => break b1b2,

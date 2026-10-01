@@ -22,8 +22,8 @@ impl Fp2Config for Fq2Config {
 
     #[inline(always)]
     fn mul_fp_by_nonresidue_in_place(fe: &mut Self::Fp) -> &mut Self::Fp {
-        fe.neg_in_place();
-        *fe = *fe + fe.double_in_place().double_in_place();
+        let minus_fe = -*fe;
+        *fe = minus_fe + minus_fe.double().double();
         fe
     }
 

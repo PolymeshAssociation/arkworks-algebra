@@ -111,10 +111,10 @@ impl SingleBitSWFlags {
     }
 
     #[inline]
-    pub fn is_positive(&self) -> bool {
+    pub const fn is_positive(&self) -> bool {
         match self {
-            SingleBitSWFlags::YIsPositive => true,
-            SingleBitSWFlags::YIsNegative => false,
+            Self::YIsPositive => true,
+            Self::YIsNegative => false,
         }
     }
 }
@@ -123,7 +123,7 @@ impl Default for SingleBitSWFlags {
     #[inline]
     fn default() -> Self {
         // YIsPositive doesn't change the serialization
-        SingleBitSWFlags::YIsPositive
+        Self::YIsPositive
     }
 }
 
@@ -132,13 +132,12 @@ impl Flags for SingleBitSWFlags {
 
     #[inline]
     fn u8_bitmask(&self) -> u8 {
-        let mut mask = 0;
-        match self {
-            // Set MSB as 1
-            SingleBitSWFlags::YIsNegative => mask |= 1 << 7,
-            _ => (),
+        // Set MSB as 1
+        if *self == Self::YIsNegative {
+            1 << 7
+        } else {
+            0
         }
-        mask
     }
 
     #[inline]
@@ -146,8 +145,8 @@ impl Flags for SingleBitSWFlags {
         // true if MSB is 1
         let is_msb_1 = (value >> 7) & 1 == 1;
         match is_msb_1 {
-            true => Some(SingleBitSWFlags::YIsNegative),
-            false => Some(SingleBitSWFlags::YIsPositive),
+            true => Some(Self::YIsNegative),
+            false => Some(Self::YIsPositive),
         }
     }
 }

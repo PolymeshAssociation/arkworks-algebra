@@ -87,13 +87,13 @@ impl GLVConfig for Config {
     ];
 
     fn endomorphism(p: &SWProjective<Self>) -> SWProjective<Self> {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
 
     fn endomorphism_affine(p: &SWAffine<Self>) -> SWAffine<Self> {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
