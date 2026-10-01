@@ -41,6 +41,7 @@ pub mod table_cache {
     const MAX_THREADS_FOR_TABLE: usize = 8;
 
     /// Whether the caller's rayon pool is small enough for the table path to pay.
+    #[allow(clippy::missing_const_for_fn)]
     fn table_pays() -> bool {
         #[cfg(feature = "parallel")]
         return rayon::current_num_threads() <= MAX_THREADS_FOR_TABLE;
@@ -66,7 +67,7 @@ pub mod table_cache {
     impl<P: SWCurveConfig> CurveTable<P> {
         fn new(bases: &[Affine<P>]) -> Self {
             let tables = FixedBaseMSM::new(bases);
-            let base_index = bases.into_iter().enumerate().map(|(i, b)| (*b, i)).collect();
+            let base_index = bases.iter().enumerate().map(|(i, b)| (*b, i)).collect();
             Self {
                 num_bases: bases.len(),
                 tables,
@@ -76,7 +77,7 @@ pub mod table_cache {
 
         pub fn new_given_window_size(bases: &[Affine<P>], size: usize) -> Self {
             let tables = FixedBaseMSM::new_given_window_size(bases, size);
-            let base_index = bases.into_iter().enumerate().map(|(i, b)| (*b, i)).collect();
+            let base_index = bases.iter().enumerate().map(|(i, b)| (*b, i)).collect();
             Self {
                 num_bases: bases.len(),
                 tables,
@@ -92,6 +93,7 @@ pub mod table_cache {
 
         /// Split `(bases, scalars)` into the fixed part — an indexed scalar vector aligned with
         /// the table's bases — and the variable part (bases/scalars not in the table).
+        #[allow(clippy::type_complexity)]
         pub(crate) fn split(
             &self,
             bases: &[Affine<P>],
@@ -232,10 +234,16 @@ pub struct RegisteredCurves {
     curves: BTreeMap<CurveMSMId, CurveMSMFn>,
 }
 
+impl Default for RegisteredCurves {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RegisteredCurves {
     /// Pallas, Vesta, and G1 and G2 of BLS12-381 and BN254.
     pub fn new() -> Self {
-        let mut curves = RegisteredCurves {
+        let mut curves = Self {
             curves: BTreeMap::new(),
         };
         let registered = [
@@ -278,7 +286,7 @@ impl RegisteredCurves {
         if (buf_len as usize) < CURVE_ID_LEN || buf_len as usize > buffer.len() {
             return 0;
         }
-        if let Some(curve_id) = CurveMSMId::deserialize_uncompressed_unchecked(&buffer[..]).ok() {
+        if let Ok(curve_id) = CurveMSMId::deserialize_uncompressed_unchecked(&buffer[..]) {
             if let Some(msm_fn) = self.curves.get(&curve_id) {
                 return if buf_len as usize > CURVE_ID_LEN {
                     // Prefer the fixed-base table path when a table is registered for this curve.
@@ -346,6 +354,7 @@ pub fn host_msm_unchecked(buffer: &mut [u8], buf_len: u32) -> u32 {
 
 /// Deserialize the `(bases, scalars)` MSM input from `buffer[CURVE_ID_LEN..buf_len]`. Returns
 /// `None` on a deserialization failure instead of panicking across the host-function boundary.
+#[allow(clippy::type_complexity)]
 fn read_msm_input<P: SWCurveConfig>(
     buffer: &[u8],
     buf_len: usize,

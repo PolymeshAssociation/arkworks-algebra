@@ -9,7 +9,7 @@ use num_bigint::BigUint;
 use crate::impls::compact::CompactU64;
 
 impl Valid for bool {
-    const TRIVIAL_CHECK: bool = true;
+    const TRIVIAL_CHECK: Self = true;
     fn check(&self) -> Result<(), SerializationError> {
         Ok(())
     }
@@ -149,7 +149,7 @@ impl CanonicalDeserialize for usize {
         _validate: Validate,
     ) -> Result<Self, SerializationError> {
         let len = CompactU64::deserialize_with_mode(&mut reader, _compress, _validate)?.0;
-        Ok(len as usize)
+        Ok(len as Self)
     }
 }
 

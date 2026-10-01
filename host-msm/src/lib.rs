@@ -22,14 +22,14 @@ pub struct CurveMSMId([u8; CURVE_ID_LEN]);
 
 impl CurveMSMId {
     /// Creates a `CurveMSMId` from a curve name string. The curve name is truncated to fit into `CURVE_ID_LEN` bytes if necessary.
-    pub fn from_curve_name(curve_name: &str) -> CurveMSMId {
+    pub fn from_curve_name(curve_name: &str) -> Self {
         let curve_name = curve_name.trim_start_matches("ark_");
         let curve_name = curve_name.split("::").next().unwrap_or(curve_name);
         let mut id = [0u8; CURVE_ID_LEN];
         let bytes = curve_name.as_bytes();
         let len = bytes.len().min(CURVE_ID_LEN);
         id[..len].copy_from_slice(&bytes[..len]);
-        CurveMSMId(id)
+        Self(id)
     }
 
     /// Returns the curve name string from the `CurveMSMId`. The returned string is trimmed to remove trailing zeros.
@@ -42,14 +42,14 @@ impl CurveMSMId {
 }
 
 /// Pack a fat pointer (ptr and length) into a u64.
-pub fn pack_fat_pointer(ptr: u32, len: u32) -> u64 {
+pub const fn pack_fat_pointer(ptr: u32, len: u32) -> u64 {
     let ptr_val = ptr as u64;
     let len_val = len as u64;
     (len_val << 32) | ptr_val
 }
 
 /// Unpack a fat pointer (ptr and length) from a u64.
-pub fn unpack_fat_pointer(fat_ptr: u64) -> (u32, u32) {
+pub const fn unpack_fat_pointer(fat_ptr: u64) -> (u32, u32) {
     let ptr = (fat_ptr & 0xFFFFFFFF) as u32;
     let len = (fat_ptr >> 32) as u32;
     (ptr, len)

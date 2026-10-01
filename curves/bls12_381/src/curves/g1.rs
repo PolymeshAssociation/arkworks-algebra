@@ -95,7 +95,7 @@ impl SWCurveConfig for Config {
         //
         // It is enough to multiply by (1 - x), instead of (x - 1)^2 / 3
         let h_eff = one_minus_x().into_bigint();
-        Config::mul_affine(&p, h_eff.as_ref()).into()
+        Config::mul_affine(p, h_eff.as_ref()).into()
     }
 
     fn deserialize_with_mode<R: ark_serialize::Read>(
@@ -175,13 +175,13 @@ impl GLVConfig for Config {
     ];
 
     fn endomorphism(p: &G1Projective) -> G1Projective {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
 
     fn endomorphism_affine(p: &Affine<Self>) -> Affine<Self> {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
@@ -215,7 +215,7 @@ pub fn endomorphism(p: &Affine<Config>) -> Affine<Config> {
     // Endomorphism of the points on the curve.
     // endomorphism_p(x,y) = (BETA * x, y)
     // where BETA is a non-trivial cubic root of unity in Fq.
-    let mut res = (*p).clone();
+    let mut res = *p;
     res.x *= BETA;
     res
 }

@@ -141,7 +141,7 @@ impl GLVConfig for VestaConfig {
         // Endomorphism of the points on the curve.
         // endomorphism_p(x,y) = (BETA * x, y)
         // where BETA is a non-trivial cubic root of unity in Fq.
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
@@ -150,7 +150,7 @@ impl GLVConfig for VestaConfig {
         // Endomorphism of the points on the curve.
         // endomorphism_p(x,y) = (BETA * x, y)
         // where BETA is a non-trivial cubic root of unity in Fq.
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }

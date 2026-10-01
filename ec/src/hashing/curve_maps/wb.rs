@@ -91,13 +91,13 @@ pub struct WBMap<P: WBConfig> {
 impl<P: WBConfig> MapToCurve<Projective<P>> for WBMap<P> {
     /// Checks if `P` represents a valid map.
     fn check_parameters() -> Result<(), HashToCurveError> {
-        match P::ISOGENY_MAP.apply(P::IsogenousCurve::GENERATOR) {
-            Ok(point_on_curve) => {
-                debug_assert!(point_on_curve.is_on_curve(),
-			      "the isogeny maps the generator of its domain: {} into {} which does not belong to its codomain.",P::IsogenousCurve::GENERATOR, point_on_curve);
-            },
-            Err(e) => return Err(e),
-        }
+        let point_on_curve = P::ISOGENY_MAP.apply(P::IsogenousCurve::GENERATOR)?;
+        debug_assert!(
+            point_on_curve.is_on_curve(),
+            "the isogeny maps the generator of its domain: {} into {} which does not belong to its codomain.",
+            P::IsogenousCurve::GENERATOR,
+            point_on_curve
+        );
 
         SWUMap::<P::IsogenousCurve>::check_parameters().unwrap(); // Or ?
         Ok(())

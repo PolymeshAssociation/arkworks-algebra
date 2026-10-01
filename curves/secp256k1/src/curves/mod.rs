@@ -109,13 +109,13 @@ impl GLVConfig for Config {
     });
 
     fn endomorphism(p: &Projective) -> Projective {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
 
     fn endomorphism_affine(p: &Affine) -> Affine {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }

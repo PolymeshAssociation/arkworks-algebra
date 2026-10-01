@@ -114,7 +114,7 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
     /// Builds a table with an explicit window `c` (`2 <= c < 31`). Larger `c` gives fewer windows
     /// (a smaller table) but a `2^{c-1}`-entry bucket array.
     pub fn new_given_window_size(bases: &[Affine<P>], c: usize) -> Self {
-        assert!(2 <= c && c < 31, "window size out of range");
+        assert!((2..31).contains(&c), "window size out of range");
         let n = bases.len();
         let num_bits = P::ScalarField::MODULUS_BIT_SIZE as usize;
         let num_windows = num_bits.div_ceil(c);
@@ -392,17 +392,17 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
     }
 
     /// Radix `2^c`.
-    pub fn window(&self) -> usize {
+    pub const fn window(&self) -> usize {
         self.c
     }
 
     /// Multiples stored per base, `W = ceil(bits / c)`.
-    pub fn num_windows(&self) -> usize {
+    pub const fn num_windows(&self) -> usize {
         self.num_windows
     }
 
     /// Shared bucket-array size.
-    pub fn num_buckets(&self) -> usize {
+    pub const fn num_buckets(&self) -> usize {
         self.num_buckets
     }
 
@@ -448,6 +448,7 @@ fn best_window<P: SWCurveConfig>(n: usize) -> usize {
 /// is a smaller `c` than [`best_window`] (more, smaller windows), the more so at fewer bases, and
 /// reduces to [`best_window`] at one thread. Never exceeds [`best_window`].
 #[cfg(feature = "parallel")]
+#[allow(clippy::suboptimal_flops)]
 fn best_window_parallel<P: SWCurveConfig>(n: usize, threads: usize) -> usize {
     let num_bits = P::ScalarField::MODULUS_BIT_SIZE as usize;
     let weight = 1.0 + (threads.max(1) - 1) as f64 * PAR_BUCKET_SLOPE;

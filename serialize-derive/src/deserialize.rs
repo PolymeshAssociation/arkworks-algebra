@@ -152,9 +152,7 @@ pub(super) fn impl_canonical_deserialize(ast: &syn::DeriveInput) -> TokenStream 
 
     let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
 
-    let deserialize_body;
-
-    match ast.data {
+    let deserialize_body = match ast.data {
         Data::Struct(ref data_struct) => {
             let mut field_cases = Vec::<TokenStream>::with_capacity(data_struct.fields.len());
             let mut tuple = false;
@@ -173,7 +171,7 @@ pub(super) fn impl_canonical_deserialize(ast: &syn::DeriveInput) -> TokenStream 
                 }
             }
 
-            deserialize_body = if tuple {
+            if tuple {
                 quote!({
                     Ok(#name (
                         #(#field_cases)*
@@ -185,7 +183,7 @@ pub(super) fn impl_canonical_deserialize(ast: &syn::DeriveInput) -> TokenStream 
                         #(#field_cases)*
                     })
                 })
-            };
+            }
         },
         _ => panic!(
             "`CanonicalDeserialize` can only be derived for structs, {} is not a Struct",

@@ -128,7 +128,7 @@ pub fn digit_scalar<P: GLVConfig>(code: u8) -> P::ScalarField {
 type Half = (bool, u128);
 
 /// The value's residue mod 8.
-fn residue((negative, magnitude): Half) -> u128 {
+const fn residue((negative, magnitude): Half) -> u128 {
     if negative {
         0u128.wrapping_sub(magnitude) & 7
     } else {
@@ -284,17 +284,17 @@ impl<P: GLVConfig> Decomposed<P> {
     }
 
     /// Digit positions in use.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.len
     }
 
     /// Whether the scalar was zero.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// The digit code at `position`, zero past [`Self::len`].
-    pub fn digit(&self, position: usize) -> u8 {
+    pub const fn digit(&self, position: usize) -> u8 {
         self.digits[position]
     }
 }
@@ -564,13 +564,13 @@ impl<P: GLVConfig> Table<P> {
     }
 
     /// Whether this is the identity's table.
-    pub fn is_identity(&self) -> bool {
+    pub const fn is_identity(&self) -> bool {
         self.identity_entries & 1 != 0
     }
 
     /// Whether some `[\Delta_i]P` is the identity, which needs `P` of order dividing the norm of
     /// some `\Delta_i` (3, 7, 9, 13 or 19), the identity included.
-    pub fn has_identity_entry(&self) -> bool {
+    pub const fn has_identity_entry(&self) -> bool {
         self.identity_entries != 0
     }
 
