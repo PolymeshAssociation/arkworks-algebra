@@ -187,6 +187,35 @@ mod tests {
         check::<Narrow, 2>();
     }
 
+    // The BW6-761 base field: twelve limbs, so a sum needs about `2^14` maximal products before
+    // the accumulator carries past `2^{128N}`.
+    #[derive(MontConfig)]
+    #[modulus = "6891450384315732539396789682275657542479668912536150109513790160209623422243491736087683183289411687640864567753786613451161759120554247759349511699125301598951605099378508850372543631423596795951899700429969112842764913119068299"]
+    #[generator = "2"]
+    pub struct Twelve;
+
+    /// A seeded carry `c` stands for `c 2^{128N} = c R^2`, which the reduction maps to `c`.
+    #[test]
+    fn carry_folds_on_twelve_limbs() {
+        type F = Fp<MontBackend<Twelve, 12>, 12>;
+        assert!(Twelve::CAN_DEFER);
+        let mut rng = test_rng();
+        let mut max = Twelve::MODULUS;
+        max.0[0] -= 1;
+        let extremes = [F::new_unchecked(max), F::rand(&mut rng)];
+        for carry in [1u64, 7, 1 << 20, u64::MAX >> 8] {
+            for a in extremes {
+                let mut acc = MontAccumulator::<Twelve, 12>::ZERO;
+                for _ in 0..50 {
+                    acc.mul_accumulate(&a, &a);
+                }
+                acc.carry += carry;
+                let expected = a * a * F::from(50u64) + F::from(carry);
+                assert_eq!(acc.reduce(), expected, "carry {carry}");
+            }
+        }
+    }
+
     #[test]
     fn default_is_the_empty_sum() {
         use crate::AdditiveGroup;

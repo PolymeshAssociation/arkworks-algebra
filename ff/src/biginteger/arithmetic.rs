@@ -122,9 +122,11 @@ pub const fn mac_with_carry(a: u64, b: u64, c: u64, carry: &mut u64) -> u64 {
     tmp as u64
 }
 
-/// Compute the NAF (non-adjacent form) of num
+/// Compute the NAF (non-adjacent form) of num. Works on a copy with one spare limb, which takes
+/// the carry of the final `+1` when `num = 2^{64n} - 1`.
 pub fn find_naf(num: &[u64]) -> Vec<i8> {
     let mut num = num.to_vec();
+    num.push(0);
     let mut res = vec![];
 
     // Helper functions for arithmetic operations
@@ -424,6 +426,24 @@ mod tests {
             };
 
             assert_eq!(test, test_expected);
+        }
+    }
+
+    /// Values just below each limb boundary, whose final `+1` carries out of the input width.
+    #[test]
+    fn test_find_naf_reconstructs_limb_boundaries() {
+        use num_bigint::BigInt;
+        for limbs in 1..=4usize {
+            for j in 1..=130u64 {
+                let mut num = vec![u64::MAX; limbs];
+                num[0] = u64::MAX - (j - 1);
+                let expected = (BigInt::from(1) << (64 * limbs)) - BigInt::from(j);
+                let mut value = BigInt::from(0);
+                for (i, &d) in find_naf(&num).iter().enumerate() {
+                    value += BigInt::from(d) << i;
+                }
+                assert_eq!(value, expected, "{limbs} limbs, 2^(64n) - {j}");
+            }
         }
     }
 

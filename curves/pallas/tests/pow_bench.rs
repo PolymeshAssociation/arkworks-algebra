@@ -57,7 +57,7 @@ fn crossover(bits: usize) {
         // The paths must agree before either is timed.
         assert!(bases
             .iter()
-            .all(|a| pow_windowed(a, exp, bits) == pow_binary(a, exp)));
+            .all(|a| pow_windowed(a, exp) == pow_binary(a, exp)));
         let mut ratios = Vec::with_capacity(REPS);
         let (mut t_new, mut t_old) = (0.0f64, 0.0f64);
         for _ in 0..REPS {
@@ -70,7 +70,7 @@ fn crossover(bits: usize) {
             let old = t.elapsed().as_secs_f64() / bases.len() as f64;
             let t = Instant::now();
             for a in &bases {
-                core::hint::black_box(pow_windowed(a, exp, bits));
+                core::hint::black_box(pow_windowed(a, exp));
             }
             let new = t.elapsed().as_secs_f64() / bases.len() as f64;
             ratios.push(old / new);

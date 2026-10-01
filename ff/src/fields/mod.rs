@@ -334,8 +334,7 @@ pub trait Field:
     fn pow<S: AsRef<[u64]>>(&self, exp: S) -> Self {
         let exp = exp.as_ref();
         if use_pow_windowed(exp) {
-            let bits = significant_bits(exp);
-            pow_windowed(self, exp, bits)
+            pow_windowed(self, exp)
         } else {
             pow_binary(self, exp)
         }
@@ -365,7 +364,7 @@ pub trait Field:
 /// Window width of [`pow_windowed`].
 const POW_WINDOW_BITS: usize = 4;
 
-/// Multiplies [`pow_windowed`] spends on its table: `x^2 .. x^15`.
+/// Products [`pow_windowed`] spends on its table, `x^2 .. x^15`, half of them squarings.
 const POW_WINDOW_TABLE_MULS: usize = (1 << POW_WINDOW_BITS) - 2;
 
 /// Whether the fixed window beats binary square-and-multiply on `exp`. Both square once per bit,
@@ -423,16 +422,23 @@ pub fn pow_binary<F: Field>(base: &F, exp: &[u64]) -> F {
     res
 }
 
-/// `base^exp` by a 4-bit fixed window, most significant window first. `bits` must be
-/// [`significant_bits`] of `exp` and at least one.
+/// `base^exp` by a 4-bit fixed window, most significant window first.
 /// [Handbook of Applied Cryptography](https://cacr.uwaterloo.ca/hac/about/chap14.pdf),
 /// Algorithm 14.82, left-to-right k-ary exponentiation,
-pub fn pow_windowed<F: Field>(base: &F, exp: &[u64], bits: usize) -> F {
+pub fn pow_windowed<F: Field>(base: &F, exp: &[u64]) -> F {
     const W: usize = POW_WINDOW_BITS;
+    let bits = significant_bits(exp);
+    if bits == 0 {
+        return F::one();
+    }
     let mut table = [F::one(); 1 << W];
     table[1] = *base;
     for i in 2..(1 << W) {
-        table[i] = table[i - 1] * base;
+        table[i] = if i % 2 == 0 {
+            table[i / 2].square()
+        } else {
+            table[i - 1] * base
+        };
     }
 
     // The most significant window is short whenever `bits` is not a multiple of `W`.
@@ -731,6 +737,28 @@ mod no_std_tests {
                 run(serial_batch_inversion_and_mul_lanes::<Fr, 8>);
                 run(serial_batch_inversion_and_mul);
             }
+        }
+    }
+
+    /// The dispatching entry point at lengths around the parallel split, with zeros at the ends,
+    /// at every 256th element (each possible chunk start) and scattered, against the single chain.
+    /// Under `parallel` this covers the chunked path.
+    #[test]
+    fn test_batch_inversion_parallel_lengths() {
+        use ark_test_curves::ark_ff::serial_batch_inversion_and_mul_single_chain;
+        let rng = &mut test_rng();
+        for len in [4095usize, 4096, 4097, 8193, 30001] {
+            let coeff = Fr::rand(rng);
+            let mut src: Vec<Fr> = (0..len).map(|_| Fr::rand(rng)).collect();
+            src[0] = Fr::zero();
+            src[len - 1] = Fr::zero();
+            src.iter_mut().step_by(256).for_each(|f| *f = Fr::zero());
+            src.iter_mut().skip(255).step_by(1031).for_each(|f| *f = Fr::zero());
+            let mut expected = src.clone();
+            serial_batch_inversion_and_mul_single_chain(&mut expected, &coeff);
+            let mut got = src.clone();
+            batch_inversion_and_mul(&mut got, &coeff);
+            assert_eq!(got, expected, "len {len}");
         }
     }
 
