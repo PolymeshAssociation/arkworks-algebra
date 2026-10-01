@@ -633,6 +633,11 @@ pub(crate) fn pippenger_setup<F: PrimeField>(scalars: &[F::BigInt], size: usize)
     )
 }
 
+/// Fewest scalars one parallel task recodes in [`pippenger_setup_given_window`], a few tens of
+/// microseconds of work.
+#[cfg(feature = "parallel")]
+const DIGITS_MIN_SCALARS_PER_TASK: usize = 256;
+
 /// [`pippenger_setup`] over the low `num_bits` bits of each scalar in `c`-bit windows.
 pub(crate) fn pippenger_setup_given_window<F: PrimeField>(
     scalars: &[F::BigInt],
@@ -643,16 +648,23 @@ pub(crate) fn pippenger_setup_given_window<F: PrimeField>(
     let scalars = &scalars[..size];
 
     let digits_count = num_bits.div_ceil(c);
+    let mut scalar_digits = vec![0i64; size * digits_count];
+    let fill = |(row, s): (&mut [i64], &F::BigInt)| {
+        row.iter_mut()
+            .zip(make_digits(s, c, num_bits))
+            .for_each(|(d, v)| *d = v)
+    };
     #[cfg(feature = "parallel")]
-    let scalar_digits = scalars
-        .into_par_iter()
-        .flat_map_iter(|s| make_digits(s, c, num_bits))
-        .collect::<Vec<_>>();
+    scalar_digits
+        .par_chunks_mut(digits_count)
+        .zip(scalars)
+        .with_min_len(DIGITS_MIN_SCALARS_PER_TASK)
+        .for_each(fill);
     #[cfg(not(feature = "parallel"))]
-    let scalar_digits = scalars
-        .iter()
-        .flat_map(|s| make_digits(s, c, num_bits))
-        .collect::<Vec<_>>();
+    scalar_digits
+        .chunks_mut(digits_count)
+        .zip(scalars)
+        .for_each(fill);
 
     // Bucket-array sizing. `make_digits` is a signed windowed encoding: every digit but the
     // most-significant lies in `[-2^(c-1), 2^(c-1)-1]`, so indexing buckets by `|digit| - 1`
