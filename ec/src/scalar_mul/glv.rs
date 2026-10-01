@@ -71,9 +71,10 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
         }
     }
 
-    /// [`Self::scalar_decomposition`] on the integer `k < r`, returning the halves as integers.
+    /// [`Self::scalar_decomposition`] on the integer `k`, returning the halves as integers.
     /// Dispatches to [`fast_scalar_decomposition_bigint`] when [`Self::FAST_DECOMP`] is set,
-    /// which needs no scalar field arithmetic.
+    /// which needs no scalar field arithmetic. Requires `k < r`; a larger `k` panics in debug
+    /// builds and, without [`Self::FAST_DECOMP`], in release builds too.
     fn scalar_decomposition_bigint(
         k: &<Self::ScalarField as PrimeField>::BigInt,
     ) -> (
@@ -183,23 +184,39 @@ pub fn jsf_mul_affine_projective<P: GLVConfig>(p: Affine<P>, k: P::ScalarField) 
     binary_scalar_mul_jsf_affine(b1, k1, b2, k2)
 }
 
-/// Largest multi scalar multiplication routed to [`eisenstein::eisenstein_msm`]. The bucket
-/// algorithm pays 255 projective doublings and 85 window reductions whatever `n` is, which the
-/// Straus ladder replaces by about 126 doublings shared across the sum, so it wins while `n` is
-/// small and falls behind as the per-point work grows. On Pallas (`straus` in `msm_small_bench`,
-/// Apple M3 Max) the serial ladder still wins 1.08x at `n = 96` and ties near 120. With `parallel`
-/// on an idle 16-thread pool the buckets overtake it near 48, but a caller already inside a
-/// saturated pool gets the serial crossover, so parallel builds keep 64. Re-measure before
-/// changing it.
+/// Largest multi scalar multiplication routed to [`eisenstein::eisenstein_msm`] on one thread.
+/// The bucket algorithm pays 255 projective doublings and 85 window reductions whatever `n` is,
+/// which the Straus ladder replaces by about 126 doublings shared across the sum, so it wins while
+/// `n` is small and falls behind as the per-point work grows. On Pallas and secp256k1 (Apple M3
+/// Max) the serial ladder wins 1.03x at `n = 48` and loses 1.03x at 56 against the bucket path with
+/// its GLV split.
 ///
 /// Zakura routes the same way from `try_multiexp` into `strauss_multiexp`,
 /// <https://github.com/zakura-core/common/blob/98846ee/crates/pasta_curves/src/glv.rs#L1199-L1236>;
 /// their crossover data is in [PR #143](https://github.com/zakura-core/common/pull/143).
-pub const SMALL_MSM_MAX: usize = if cfg!(feature = "parallel") { 64 } else { 96 };
+pub const SMALL_MSM_MAX: usize = 48;
+
+/// Floor of [`small_msm_max`] on a multi-threaded pool. On Pallas the parallel bucket path
+/// overtakes the ladder near 24 terms on 2 threads, 12 on 4 and 8 on 16.
+#[cfg(feature = "parallel")]
+const SMALL_MSM_MAX_PARALLEL_FLOOR: usize = 8;
+
+/// The largest `n` [`try_glv_msm_small`] routes to the serial ladder. [`SMALL_MSM_MAX`] divided by
+/// the thread count, floored at [`SMALL_MSM_MAX_PARALLEL_FLOOR`], when called from outside the
+/// rayon pool, whose threads the bucket path can use. [`SMALL_MSM_MAX`] from inside a pool task,
+/// where the pool is likely busy with sibling tasks.
+pub fn small_msm_max() -> usize {
+    #[cfg(feature = "parallel")]
+    if rayon::current_thread_index().is_none() {
+        return (SMALL_MSM_MAX / rayon::current_num_threads().max(1))
+            .max(SMALL_MSM_MAX_PARALLEL_FLOOR);
+    }
+    SMALL_MSM_MAX
+}
 
 /// `sum(bases_i * scalars_i)` for the sizes where a shared-doubling ladder beats the bucket
 /// algorithm: one GLV multiplication at `n = 1`, [`eisenstein::eisenstein_msm`] up to
-/// [`SMALL_MSM_MAX`]. Declines with `None` above that, and when a decomposition misses the
+/// [`small_msm_max`]. Declines with `None` above that, and when a decomposition misses the
 /// Eisenstein recoding's bound, which sends the caller back to
 /// [`VariableBaseMSM::msm_bigint`](crate::VariableBaseMSM). Both are cases where this ladder has
 /// nothing to offer rather than cases where the sum is undefined.
@@ -210,7 +227,7 @@ pub fn try_glv_msm_small<P: GLVConfig>(
     match bases.len().min(scalars.len()) {
         0 => Some(Projective::zero()),
         1 => Some(P::glv_mul_affine_projective(bases[0], scalars[0])),
-        n if n <= SMALL_MSM_MAX => eisenstein::eisenstein_msm::<P>(bases, scalars),
+        n if n <= small_msm_max() => eisenstein::eisenstein_msm::<P>(bases, scalars),
         _ => None,
     }
 }
@@ -339,10 +356,11 @@ pub fn fast_scalar_decomposition<P: GLVConfig>(
 }
 
 /// [`fast_scalar_decomposition`] in wrapping `64 N`-bit integer arithmetic on the limbs of
-/// `k < r`. With `n_{ij} = s_{ij} a_{ij}` the entries of [`GLVConfig::SCALAR_DECOMP_COEFFS`],
-/// `s_{ij} = \pm 1`, the same roundings `c_1 = round(k a_{22} / r)` and
-/// `c_2 = round(k a_{12} / r)` give the lattice point `\beta_1 (n_{11}, n_{12}) +
-/// \beta_2 (n_{21}, n_{22})` with `\beta_1 = s_{22} c_1` and `\beta_2 = -s_{12} c_2`, and
+/// `k < r`; the bounds below do not hold for larger `k`. With `n_{ij} = s_{ij} a_{ij}` the
+/// entries of [`GLVConfig::SCALAR_DECOMP_COEFFS`], `s_{ij} = \pm 1`, the same roundings
+/// `c_1 = round(k a_{22} / r)` and `c_2 = round(k a_{12} / r)` give the lattice point
+/// `\beta_1 (n_{11}, n_{12}) + \beta_2 (n_{21}, n_{22})` with `\beta_1 = s_{22} c_1` and
+/// `\beta_2 = -s_{12} c_2`, and
 /// `k_1 = k - s_{11} s_{22} c_1 a_{11} + s_{12} s_{21} c_2 a_{21}`,
 /// `k_2 = s_{12} s_{22} (c_2 a_{22} - c_1 a_{12})`. Both are below `2^{64 N - 1}` in absolute
 /// value, so their residues mod `2^{64 N}` determine them, and they equal the halves

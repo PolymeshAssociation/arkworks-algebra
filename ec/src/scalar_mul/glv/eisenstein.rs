@@ -233,9 +233,12 @@ impl<P: GLVConfig> Decomposed<P> {
         // one `into_bigint` that `half` pays on the hit anyway. Generalizes two narrower forms of
         // the same skip in Zakura `glv/zero.rs`: canonical 10-bit table values recoded as
         // `(q, 0)`, and exact zeros.
+        if P::ScalarField::MODULUS_BIT_SIZE > MAX_SCALAR_BITS {
+            return None;
+        }
         let nonzero = !k.is_zero();
-        if let Some(d) = Self::from_halves(true, k, true, P::ScalarField::ZERO, nonzero) {
-            return Some(d);
+        if let Some(a) = half(true, k) {
+            return Self::from_recoded_halves(a, (false, 0), nonzero);
         }
         let ((sgn_a, a), (sgn_b, b)) = P::scalar_decomposition(k);
         Self::from_halves(sgn_a, a, sgn_b, b, nonzero)
@@ -264,7 +267,11 @@ impl<P: GLVConfig> Decomposed<P> {
         if P::ScalarField::MODULUS_BIT_SIZE > MAX_SCALAR_BITS {
             return None;
         }
-        let (a, b) = (half(sgn_a, a)?, half(sgn_b, b)?);
+        Self::from_recoded_halves(half(sgn_a, a)?, half(sgn_b, b)?, scalar_nonzero)
+    }
+
+    /// [`Self::from_halves`] on halves already in sign and magnitude form.
+    fn from_recoded_halves(a: Half, b: Half, scalar_nonzero: bool) -> Option<Self> {
         let half_bits = u128::BITS - (a.1 | b.1).leading_zeros();
         let (digits, len) = joint_digits(a, b)?;
         Some(Self {
@@ -369,12 +376,21 @@ pub struct Table<P: GLVConfig> {
     xs: [[P::BaseField; 8]; 3],
     /// `ys[i] = y([\Delta_i]P)`.
     ys: [P::BaseField; 8],
+    /// Bit `i` is set when `[\Delta_i]P` is the identity, whose coordinates above are zero.
+    identity_entries: u8,
 }
 
 impl<P: GLVConfig> Table<P> {
     /// One table, at the cost of one field inversion. Amortize that with [`Self::batch`].
     pub fn new(p: &Projective<P>) -> Self {
         Self::from_window_points(&Projective::normalize_batch(&Self::window_points(p)))
+    }
+
+    /// [`Self::new`] for an affine point, whose chain takes mixed additions.
+    pub fn new_from_affine(p: &Affine<P>) -> Self {
+        Self::from_window_points(&Projective::normalize_batch(
+            &Self::window_points_from_affine(p),
+        ))
     }
 
     /// One table per point. Above [`TABLE_BATCH_AFFINE_MIN_POINTS`] points the addition
@@ -496,14 +512,42 @@ impl<P: GLVConfig> Table<P> {
         ]
     }
 
+    /// [`Self::window_points`] for an affine point. Every addition with `\phi(P)` is mixed.
+    fn window_points_from_affine(p: &Affine<P>) -> [Projective<P>; 8] {
+        let endo = P::endomorphism;
+        let phi_p = P::endomorphism_affine(p); // \omega
+        let d1 = p.into_group() - phi_p; // 1 - \omega
+        let b = d1 - endo(&d1); // (1 - \omega)^2 = -3\omega
+        let b_endo = endo(&b); // -3\omega^2
+        let m3 = endo(&b_endo); // -3
+        let t3a = m3 + phi_p; // -3 + \omega
+        let t3b = -(m3 - phi_p); // 3 + \omega
+        let r3 = -b_endo; // 3\omega^2
+        let t4a = r3 + phi_p; // -3 - 2\omega
+        let t4b = -(r3 - phi_p); // 3 + 4\omega
+        let t19 = t4b + phi_p; // 3 + 5\omega
+        [
+            p.into_group(),
+            d1,
+            endo(&t4a),
+            -endo(&t3b),
+            -m3,
+            -t3a,
+            endo(&endo(&t4b)),
+            endo(&endo(&t19)),
+        ]
+    }
+
     /// Assembles a table from one normalized 8-entry window, materializing the `\zeta`-rotations
     /// of each x-coordinate. `\zeta` is a nontrivial cube root of unity, so `\zeta^2 x = -x - \zeta x`.
     fn from_window_points(w: &[Affine<P>]) -> Self {
         let zeta = P::ENDO_COEFFS[0];
         let mut xs = [[P::BaseField::ZERO; 8]; 3];
         let mut ys = [P::BaseField::ZERO; 8];
+        let mut identity_entries = 0u8;
         for (i, p) in w.iter().enumerate() {
             if p.is_zero() {
+                identity_entries |= 1 << i;
                 continue;
             }
             let xz = p.x * zeta;
@@ -512,13 +556,22 @@ impl<P: GLVConfig> Table<P> {
             xs[2][i] = -p.x - xz;
             ys[i] = p.y;
         }
-        Self { xs, ys }
+        Self {
+            xs,
+            ys,
+            identity_entries,
+        }
     }
 
-    /// Whether this is the identity's table. Identity windows are all `(0, 0)`, and the group
-    /// has odd prime order so no valid point has `y = 0`.
+    /// Whether this is the identity's table.
     pub fn is_identity(&self) -> bool {
-        self.ys[0].is_zero()
+        self.identity_entries & 1 != 0
+    }
+
+    /// Whether some `[\Delta_i]P` is the identity, which needs `P` of order dividing the norm of
+    /// some `\Delta_i` (3, 7, 9, 13 or 19), the identity included.
+    pub fn has_identity_entry(&self) -> bool {
+        self.identity_entries != 0
     }
 
     /// The affine coordinates a nonzero digit contributes, `\pm\phi^e([\Delta_i]P)`: one lookup and
@@ -535,6 +588,10 @@ impl<P: GLVConfig> Table<P> {
 
     /// The affine point a nonzero digit contributes.
     pub fn digit_point(&self, code: u8) -> Affine<P> {
+        let (orbit, _, _) = decode_digit(code);
+        if self.identity_entries & (1 << orbit) != 0 {
+            return Affine::zero();
+        }
         let (x, y) = self.digit_coords(code);
         Affine::new_unchecked(x, y)
     }
@@ -559,32 +616,37 @@ impl<P: GLVConfig> Table<P> {
     }
 
     /// One `k * P` per table, sharing the whole column schedule across the batch. Equal, table by
-    /// table, to [`Self::mul_decomposed`]. With at least [`AFFINE_LADDER_MIN_POINTS`]
-    /// non-identity tables and an [`affine_ladder_safe`] schedule, the ladder runs on affine
-    /// accumulators with one batch inversion per column; otherwise every table falls back to its
-    /// own per-point ladder.
+    /// table, to [`Self::mul_decomposed`]. With at least [`AFFINE_LADDER_MIN_POINTS`] tables
+    /// free of identity entries and an [`affine_ladder_safe`] schedule, those tables run the
+    /// ladder on affine accumulators with one batch inversion per column; the rest, and every
+    /// lane the ladder reports as exceptional, take their own per-point ladder.
     pub fn mul_decomposed_batch(tables: &[Self], k: &Decomposed<P>) -> Vec<Projective<P>> {
         if k.len == 0 {
             return vec![Projective::zero(); tables.len()];
         }
-        let non_zero: Vec<&Self> = tables.iter().filter(|t| !t.is_identity()).collect();
-        if non_zero.len() < AFFINE_LADDER_MIN_POINTS
+        let regular: Vec<&Self> = tables.iter().filter(|t| !t.has_identity_entry()).collect();
+        if regular.len() < AFFINE_LADDER_MIN_POINTS
             || !(k.ladder_safe_by_norm || affine_ladder_safe(k))
         {
             return tables.iter().map(|t| t.mul_decomposed(k)).collect();
         }
-        let (xs, ys) = batch_affine_ladder_raw(&non_zero, k);
-        let mut products = xs
-            .into_iter()
-            .zip(ys)
-            .map(|(x, y)| Affine::<P>::new_unchecked(x, y).into_group());
+        let (xs, ys, exceptional) = batch_affine_ladder_raw(&regular, k);
+        let mut products = regular.into_iter().zip(xs.into_iter().zip(ys)).zip(exceptional).map(
+            |((t, (x, y)), exceptional)| {
+                if exceptional {
+                    t.mul_decomposed(k)
+                } else {
+                    Affine::<P>::new_unchecked(x, y).into_group()
+                }
+            },
+        );
         tables
             .iter()
             .map(|t| {
-                if t.is_identity() {
-                    Projective::zero()
+                if t.has_identity_entry() {
+                    t.mul_decomposed(k)
                 } else {
-                    products.next().expect("one product per non-zero table")
+                    products.next().expect("one product per regular table")
                 }
             })
             .collect()
@@ -701,15 +763,16 @@ fn double_add_finish_batch<F: Field>(
 /// in lockstep on affine accumulators (structure-of-arrays `xs`/`ys`), sharing each column's
 /// inversion: a zero digit is a batched affine doubling, a nonzero digit a direct affine `2P + D`
 /// whose two dependent chord denominators are algebraically combined into one inversion batch.
-/// Returns the raw accumulator coordinates. Callers guarantee `k.len > 0`, every table
-/// non-identity, and an [`affine_ladder_safe`] schedule, so no denominator is zero and no
-/// accumulator is the identity.
+/// Returns the raw accumulator coordinates and, per lane, whether some denominator was zero.
+/// Callers guarantee `k.len > 0`, no identity entry in any table, and an [`affine_ladder_safe`]
+/// schedule, so a zero denominator needs a base with no order-`r` component; the batch inversion
+/// skips it, which leaves the other lanes exact and that lane's coordinates meaningless.
 ///
 /// Ported from Zakura `glv.rs` `batch_affine_ladder_raw`.
 fn batch_affine_ladder_raw<P: GLVConfig>(
     tables: &[&Table<P>],
     k: &Decomposed<P>,
-) -> (Vec<P::BaseField>, Vec<P::BaseField>) {
+) -> (Vec<P::BaseField>, Vec<P::BaseField>, Vec<bool>) {
     // The doubling numerator is `3x^2`, omitting `+ a`; every curve carrying this endomorphism has
     // `a = 0`, which the whole module already relies on.
     debug_assert!(P::COEFF_A.is_zero(), "affine ladder assumes COEFF_A = 0");
@@ -729,13 +792,15 @@ fn batch_affine_ladder_raw<P: GLVConfig>(
     // One prefix-product buffer for the per-column batch inversion, reused across all columns
     // instead of allocated per column.
     let mut inv_scratch = Vec::with_capacity(n);
+    let mut exceptional = vec![false; n];
     let one = P::BaseField::one();
 
     for &code in k.digits[..k.len - 1].iter().rev() {
         if code == 0 {
             // Batched affine doubling: m = 3x^2 / 2y, x' = m^2 - 2x, y' = m(x - x') - y.
-            for (a, y) in a.iter_mut().zip(&ys) {
+            for ((a, y), exceptional) in a.iter_mut().zip(&ys).zip(&mut exceptional) {
                 *a = y.double();
+                *exceptional |= a.is_zero();
             }
             serial_batch_inversion_and_mul_with_scratch(&mut a, &one, &mut inv_scratch);
             for i in 0..n {
@@ -765,6 +830,7 @@ fn batch_affine_ladder_raw<P: GLVConfig>(
             mul_assign_batch(&mut a, &h_squares);
             for i in 0..n {
                 a[i] -= r[i].square();
+                exceptional[i] |= a[i].is_zero();
             }
             serial_batch_inversion_and_mul_with_scratch(&mut a, &one, &mut inv_scratch);
             double_add_finish_batch(&ys, &mut h, &mut r, &mut h_squares, &mut a);
@@ -775,7 +841,7 @@ fn batch_affine_ladder_raw<P: GLVConfig>(
             }
         }
     }
-    (xs, ys)
+    (xs, ys, exceptional)
 }
 
 /// `sum(bases_i * scalars_i)` by Straus over the joint Eisenstein digit strings: every scalar
@@ -794,20 +860,21 @@ pub fn eisenstein_msm<P: GLVConfig>(
 ) -> Option<Projective<P>> {
     let n = bases.len().min(scalars.len());
     let mut decomposed = Vec::with_capacity(n);
-    for k in &scalars[..n] {
-        decomposed.push(Decomposed::<P>::new(*k)?);
+    let mut live_bases = Vec::with_capacity(n);
+    for (base, k) in bases.iter().zip(&scalars[..n]) {
+        let d = Decomposed::<P>::new(*k)?;
+        if !d.is_empty() && !base.is_zero() {
+            decomposed.push(d);
+            live_bases.push(*base);
+        }
     }
     let columns = decomposed.iter().map(Decomposed::len).max().unwrap_or(0);
     if columns == 0 {
         return Some(Projective::zero());
     }
 
-    let tables = Table::<P>::batch_from_affine(&bases[..n]);
-    let non_zero = tables
-        .iter()
-        .zip(&decomposed)
-        .filter(|(t, _)| !t.is_identity())
-        .collect::<Vec<_>>();
+    let tables = Table::<P>::batch_from_affine(&live_bases);
+    let non_zero = tables.iter().zip(&decomposed).collect::<Vec<_>>();
 
     let mut acc = Projective::zero();
     for column in (0..columns).rev() {
@@ -855,7 +922,7 @@ pub fn eisenstein_mul_affine<P: GLVConfig>(p: Affine<P>, k: P::ScalarField) -> P
         if d.is_empty() || p.is_zero() {
             return Projective::zero();
         }
-        return Table::new(&p.into_group()).mul_decomposed(&d);
+        return Table::new_from_affine(&p).mul_decomposed(&d);
     }
     // Only the fallback needs the halves, so it pays the decomposition a second time.
     let ((sa, a), (sb, b)) = P::scalar_decomposition(k);
