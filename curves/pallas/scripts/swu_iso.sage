@@ -83,13 +83,26 @@ if Integer(gy) % 2 == 1:
 G = E_iso(gx, gy)
 assert r * G == E_iso(0)
 
+# The square-root constants: with p - 1 = T * 2^32, T odd, `ZETA_TRACE_POWER = ZETA^((T - 1) / 2)`,
+# and `ZETA_OVER_ROOT_SQRT` is either square root of ZETA / g for the two-adic root of unity
+# g = 5^T, 5 being the field's multiplicative generator.
+T = (p - 1) >> 32
+assert T % 2 == 1
+g = Fp(5)^T
+assert g^(2^31) == -1
+zeta_trace_power = Fp(ZETA)^((T - 1) / 2)
+
 # Compare with `src/curves/swu_iso.rs`. Its `MontFp!` literals in file order are COEFF_A, COEFF_B,
-# the generator x and y, ZETA, then the isogeny map coefficients.
+# the generator x and y, ZETA_TRACE_POWER, ZETA_OVER_ROOT_SQRT, ZETA, then the isogeny map
+# coefficients.
 src = open("src/curves/swu_iso.rs").read()
 lits = [Fp(Integer(v)) for v in re.findall(r'MontFp!\("(-?\d+)"\)', src)]
-expected = [A, B, gx, gy, ZETA] + x_num + x_den + y_num + y_den
+expected = [A, B, gx, gy, zeta_trace_power, None, ZETA] + x_num + x_den + y_num + y_den
 assert len(lits) == len(expected), "unexpected number of MontFp! literals"
-assert lits == [Fp(v) for v in expected], "swu_iso.rs constants do not match"
+assert lits[5]^2 * g == Fp(ZETA), "ZETA_OVER_ROOT_SQRT does not square to ZETA / g"
+assert [l for l, e in zip(lits, expected) if e is not None] == [
+    Fp(e) for e in expected if e is not None
+], "swu_iso.rs constants do not match"
 
 print("E_iso order == r, ZETA is a non-square")
 print("isogeny matches Sage; denominators are (x - x_K)^2 and (x - x_K)^3 with K not in E_iso(F_p)")
@@ -98,4 +111,5 @@ print("x_map_numerator:   %s" % x_num)
 print("x_map_denominator: %s" % x_den)
 print("y_map_numerator:   %s" % y_num)
 print("y_map_denominator: %s" % y_den)
+print("ZETA_TRACE_POWER = %d" % zeta_trace_power)
 print("swu_iso.rs matches")
