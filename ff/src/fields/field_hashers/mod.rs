@@ -205,6 +205,59 @@ mod test {
         }
     }
 
+    /// `HashToField::new` with SHA-384 and SHA-512 takes their 128-byte block as the Z_pad, on the
+    /// RFC 9380 appendix J.8.1 DST, with the expected values from a Python `expand_message_xmd`
+    /// over `hashlib`.
+    #[test]
+    fn test_hash_to_field_sha384_sha512_block_size() {
+        fn check<H: digest::FixedOutputReset + Default + Clone + digest::core_api::BlockSizeUser>(
+            vectors: [(&str, [&str; 2]); 2],
+        ) where
+            DefaultFieldHasher<H, 128>: HashToField<Fq>,
+        {
+            let hasher = <DefaultFieldHasher<H, 128> as HashToField<Fq>>::new(
+                b"QUUX-V01-CS02-with-secp256k1_XMD:SHA-256_SSWU_RO_",
+            );
+            for (msg, want) in vectors {
+                let got: [Fq; 2] = hasher.hash_to_field(msg.as_bytes());
+                let want = want.map(|u| Fq::from_be_bytes_mod_order(&hex::decode(u).unwrap()));
+                assert_eq!(got, want, "msg = {msg:?}");
+            }
+        }
+        check::<sha2::Sha384>([
+            (
+                "",
+                [
+                    "77584cd08349aa6ebb6d7e511bb58d4a4c30eb07ba9bcb64e19cb62d17352a54",
+                    "1f4e3b062a26c9a11a718b00a11283cc01b39105a3280f5d0de093267080cc7b",
+                ],
+            ),
+            (
+                "abc",
+                [
+                    "c054081108c0f44dbb71b0447f567421fbedaabaf1a7497e184491aa6e1a9407",
+                    "cd1fd5df9b7c3745875338b48b8e50b9b6ca29cddc58d47816d3637498bfefe7",
+                ],
+            ),
+        ]);
+        check::<sha2::Sha512>([
+            (
+                "",
+                [
+                    "e5fdfdd81349a5327255d12eeb74571654f4016e7de187df8d35ccb1f8bc9d20",
+                    "97d526d6060326f4e83062167c4b0a3895d550e56948e6b65ad01c2494854d2b",
+                ],
+            ),
+            (
+                "abc",
+                [
+                    "d91abdd89ac56a16422606f5aa2cd8e4f672a3c840275785686740a5b32339b2",
+                    "e95477246b7afcaea17388114adf19a31fc1d3037224d15cd6d17096f06e7d74",
+                ],
+            ),
+        ]);
+    }
+
     /// `LegacyFieldHasher` on the RFC 9380 appendix J.8.1 inputs, with the expected values computed
     /// by `expand_message_xmd` with a 48-byte Z_pad.
     #[test]

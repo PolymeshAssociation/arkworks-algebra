@@ -5,6 +5,7 @@ use ark_bn254::{g1::Config as Bn254G1Config, g2::Config as Bn254G2Config};
 use ark_ec::short_weierstrass::Affine;
 pub use ark_host_hash_to_curve::{
     batch_serialized_size, curve_id, BatchHashToCurveRequest, HashToCurveConfig,
+    MAX_HOST_GENS_PER_CALL,
 };
 pub use ark_host_msm::{pack_fat_pointer, unpack_fat_pointer, CurveMSMId, CURVE_ID_LEN};
 use ark_pallas::PallasConfig;
@@ -20,23 +21,38 @@ pub struct RegisteredCurves {
     curves: BTreeMap<CurveMSMId, HashToCurveFn>,
 }
 
+impl Default for RegisteredCurves {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RegisteredCurves {
+    /// Pallas, Vesta, and G1 and G2 of BLS12-381 and BN254.
     pub fn new() -> Self {
-        let mut curves = RegisteredCurves {
+        let mut curves = Self {
             curves: BTreeMap::new(),
         };
-        curves.register_curve::<PallasConfig>();
-        curves.register_curve::<VestaConfig>();
-        curves.register_curve::<Bls12_381G1Config>();
-        curves.register_curve::<Bls12_381G2Config>();
-        curves.register_curve::<Bn254G1Config>();
-        curves.register_curve::<Bn254G2Config>();
+        let registered = [
+            curves.register_curve::<PallasConfig>(),
+            curves.register_curve::<VestaConfig>(),
+            curves.register_curve::<Bls12_381G1Config>(),
+            curves.register_curve::<Bls12_381G2Config>(),
+            curves.register_curve::<Bn254G1Config>(),
+            curves.register_curve::<Bn254G2Config>(),
+        ];
+        debug_assert!(registered.iter().all(|r| *r), "hash-to-curve curve IDs collide");
         curves
     }
 
+    /// Serves `C` under its [`curve_id`]. Returns `false`, registering nothing, when another curve
+    /// already holds the ID, as G1 and G2 of one crate would under the default name.
     pub fn register_curve<C: HashToCurveConfig + 'static>(&mut self) -> bool {
-        self.curves
-            .insert(curve_id::<C>(), Box::new(batch_hash_to_curve_impl::<C>));
+        let id = curve_id::<C>();
+        if self.curves.contains_key(&id) {
+            return false;
+        }
+        self.curves.insert(id, Box::new(batch_hash_to_curve_impl::<C>));
         true
     }
 
@@ -67,16 +83,33 @@ lazy_static::lazy_static! {
 }
 
 #[cfg(not(feature = "std"))]
-static mut SUPPORTED_CURVES: Option<RegisteredCurves> = None;
+static SUPPORTED_CURVES: core::sync::atomic::AtomicPtr<RegisteredCurves> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
+/// The registry, built on first use. Racing first calls each build one and the loser frees its
+/// copy, so every caller sees the same `'static` registry.
 #[cfg(not(feature = "std"))]
-#[allow(static_mut_refs)]
 fn get_supported_curves() -> &'static RegisteredCurves {
-    unsafe {
-        if SUPPORTED_CURVES.is_none() {
-            SUPPORTED_CURVES = Some(RegisteredCurves::new());
-        }
-        SUPPORTED_CURVES.as_ref().unwrap()
+    use core::sync::atomic::Ordering;
+    let current = SUPPORTED_CURVES.load(Ordering::Acquire);
+    if !current.is_null() {
+        // SAFETY: a non-null pointer came from `Box::into_raw` below and is never freed.
+        return unsafe { &*current };
+    }
+    let fresh = Box::into_raw(Box::new(RegisteredCurves::new()));
+    match SUPPORTED_CURVES.compare_exchange(
+        core::ptr::null_mut(),
+        fresh,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        // SAFETY: `fresh` is now owned by the static and never freed.
+        Ok(_) => unsafe { &*fresh },
+        Err(winner) => {
+            // SAFETY: `fresh` was never shared; `winner` is owned by the static.
+            drop(unsafe { Box::from_raw(fresh) });
+            unsafe { &*winner }
+        },
     }
 }
 
@@ -94,14 +127,16 @@ pub fn host_batch_hash_to_curve(buffer: &mut [u8], buf_len: u32) -> u32 {
 
 /// Decodes the `BatchHashToCurveRequest` in `buffer[CURVE_ID_LEN..buf_len]`, hashes, and writes the
 /// uncompressed points to the start of `buffer`. Returns the result length, or 0 when the request
-/// does not decode, `gens_offset + gens_count` overflows, or the result does not fit in `buf_len`.
+/// does not decode, asks for more than [`MAX_HOST_GENS_PER_CALL`] points, `gens_offset +
+/// gens_count` overflows, or the result does not fit in `buf_len`.
 fn batch_hash_to_curve_impl<C: HashToCurveConfig>(buffer: &mut [u8], buf_len: usize) -> u32 {
     let Ok(req) =
         BatchHashToCurveRequest::deserialize_uncompressed(&buffer[CURVE_ID_LEN..buf_len])
     else {
         return 0;
     };
-    if req.gens_offset.checked_add(req.gens_count).is_none()
+    if req.gens_count > MAX_HOST_GENS_PER_CALL
+        || req.gens_offset.checked_add(req.gens_count).is_none()
         || batch_serialized_size::<C>(req.gens_count) > buf_len
     {
         return 0;
@@ -213,5 +248,21 @@ mod tests {
         request(0, 16).serialize_uncompressed(&mut buffer).unwrap();
         let len = buffer.len() as u32;
         assert_eq!(host_batch_hash_to_curve(&mut buffer, len), 0);
+
+        // More points than one call hashes, with room for the result.
+        let mut buffer = Vec::new();
+        curve_id::<PallasConfig>().serialize_uncompressed(&mut buffer).unwrap();
+        request(0, MAX_HOST_GENS_PER_CALL + 1).serialize_uncompressed(&mut buffer).unwrap();
+        buffer.resize(batch_serialized_size::<PallasConfig>(MAX_HOST_GENS_PER_CALL + 1), 0);
+        let len = buffer.len() as u32;
+        assert_eq!(host_batch_hash_to_curve(&mut buffer, len), 0);
+    }
+
+    /// A second curve under a taken ID is refused instead of replacing the first.
+    #[test]
+    fn duplicate_ids_are_refused() {
+        let mut curves = RegisteredCurves::new();
+        assert!(!curves.register_curve::<PallasConfig>());
+        assert!(!curves.register_curve::<Bn254G2Config>());
     }
 }
