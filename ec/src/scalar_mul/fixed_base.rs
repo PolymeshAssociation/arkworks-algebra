@@ -5,7 +5,7 @@
 //! precompute for each base and each radix-`2^c` window `j` the multiple `G_i^{(j)} = 2^{c j} G_i`.
 //! Then
 //!
-//! ```
+//! ```text
 //! \sum_i k_i G_i  =  \sum_i \sum_j d_{i,j} G_i^{(j)}
 //! ```
 //!
@@ -40,7 +40,7 @@
 use crate::{
     scalar_mul::{
         sw_pippenger::{counting_sort, reduce_tree, running_bucket_sum},
-        variable_base::make_digits,
+        variable_base::{make_digits, VariableBaseMSM},
     },
     short_weierstrass::{Affine, Projective, SWCurveConfig},
     AdditiveGroup, AffineRepr, CurveGroup,
@@ -94,6 +94,9 @@ pub struct FixedBaseMSM<P: SWCurveConfig> {
     n: usize,
     /// Tables in base-major form: `table[i * num_windows + j] = 2^{c*j} G_i`.
     table: Vec<Affine<P>>,
+    /// Some entry `2^{c*j} G_i` with `j > 0` is the identity while `G_i` is not, which needs a
+    /// base of order a power of two.
+    has_identity_multiples: bool,
 }
 
 impl<P: SWCurveConfig> FixedBaseMSM<P> {
@@ -127,6 +130,9 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
         let proj: Vec<Projective<P>> = bases.iter().flat_map(base_mults).collect();
 
         let table = Projective::<P>::normalize_batch(&proj);
+        let has_identity_multiples = table
+            .chunks_exact(num_windows)
+            .any(|row| !row[0].is_zero() && row[1..].iter().any(|t| t.is_zero()));
 
         Self {
             c,
@@ -134,12 +140,13 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
             num_buckets,
             n,
             table,
+            has_identity_multiples,
         }
     }
 
     /// The modeled-best window if its table fits in `max_bytes`, else the next wider `c` (fewer
-    /// windows, a smaller table, a larger bucket array) that fits. `None` if even `c = 30` does
-    /// not.
+    /// windows, a smaller table, a larger bucket array) up to [`MAX_WINDOW`] that fits. `None` if
+    /// even that does not.
     pub fn new_given_size_limit(bases: &[Affine<P>], max_bytes: usize) -> Option<Self> {
         let num_bits = P::ScalarField::MODULUS_BIT_SIZE as usize;
         let entry = core::mem::size_of::<Affine<P>>();
@@ -150,7 +157,7 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
                 .saturating_mul(entry)
                 <= max_bytes
         };
-        (best_window::<P>(bases.len().max(1))..31)
+        (best_window::<P>(bases.len().max(1))..=MAX_WINDOW)
             .find(|&c| fits(c))
             .map(|c| Self::new_given_window_size(bases, c))
     }
@@ -161,14 +168,29 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
         self.msm_bigint(&bigints)
     }
 
-    /// [`Self::msm`] taking scalars already reduced to `BigInt`. The batch-affine reduction cannot
-    /// fail over a prime field of characteristic > 2, so there is no fallback path.
+    /// [`Self::msm`] taking scalars as `BigInt`s. The table covers `MODULUS_BIT_SIZE` bits, so
+    /// terms with a scalar at least `r` go through the variable-base MSM on their bases, which is
+    /// exact on every point. The batch-affine reduction cannot fail over a prime field of
+    /// characteristic > 2, so there is no other fallback path.
     pub fn msm_bigint(&self, scalars: &[<P::ScalarField as PrimeField>::BigInt]) -> Projective<P> {
         let n = scalars.len().min(self.n);
         if n == 0 {
             return Projective::zero();
         }
         let scalars = &scalars[..n];
+        if scalars.iter().any(|s| *s >= P::ScalarField::MODULUS) {
+            let mut canonical = scalars.to_vec();
+            let mut wide_bases = Vec::new();
+            let mut wide_scalars = Vec::new();
+            for (i, s) in canonical.iter_mut().enumerate() {
+                if *s >= P::ScalarField::MODULUS {
+                    wide_bases.push(self.table[i * self.num_windows]);
+                    wide_scalars.push(core::mem::take(s));
+                }
+            }
+            return self.msm_bigint(&canonical)
+                + Projective::<P>::msm_bigint(&wide_bases, &wide_scalars);
+        }
         #[cfg(feature = "parallel")]
         if n * self.num_windows >= MIN_PARALLEL_ENTRIES && rayon::current_num_threads() > 1 {
             return self.par_eval(scalars);
@@ -191,10 +213,11 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
                 if self.non_zero(i) {
                     Either::Left(make_digits(s, c, num_bits))
                 } else {
-                    Either::Right(ark_std::iter::repeat_n(0i64, self.num_windows))
+                    Either::Right(ark_std::iter::repeat(0i64).take(self.num_windows))
                 }
             })
             .collect::<Vec<_>>();
+        let digits = self.drop_identity_multiples(digits);
 
         // A digit's index is its table index: both are base-major with `W` per base.
         let (mut offsets, mut points) =
@@ -234,6 +257,7 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
                     }
                 }
             });
+        let digits = self.drop_identity_multiples(digits);
 
         // `k` equal chunks of `L` buckets; a thread group owns `CHUNK_PER_THREAD`
         // consecutive chunks, so a group's bucket range is `group_len` long and a bucket's
@@ -354,6 +378,19 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
         !self.table[i * self.num_windows].is_zero()
     }
 
+    /// Zeroes the digits whose table entry is the identity, whose affine coordinates the bucket
+    /// additions would otherwise read as a point. Base-major digits share the table's indices.
+    fn drop_identity_multiples<D: Copy + Default>(&self, mut digits: Vec<D>) -> Vec<D> {
+        if self.has_identity_multiples {
+            for (d, t) in digits.iter_mut().zip(&self.table) {
+                if t.is_zero() {
+                    *d = D::default();
+                }
+            }
+        }
+        digits
+    }
+
     /// Radix `2^c`.
     pub fn window(&self) -> usize {
         self.c
@@ -394,10 +431,13 @@ fn base_multiples<P: SWCurveConfig>(base: &Affine<P>, num_windows: usize, c: usi
     row
 }
 
+/// Widest window the constructors choose on their own, a `2^19`-entry bucket array.
+pub const MAX_WINDOW: usize = 20;
+
 /// Window minimizing the modeled addition count `n ceil(bits/c) + 2^{c-1}`.
 fn best_window<P: SWCurveConfig>(n: usize) -> usize {
     let num_bits = P::ScalarField::MODULUS_BIT_SIZE as usize;
-    (2..=20)
+    (2..=MAX_WINDOW)
         .min_by_key(|&c| n * num_bits.div_ceil(c) + (1usize << (c - 1)))
         .unwrap()
 }

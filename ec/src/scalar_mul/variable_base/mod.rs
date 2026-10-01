@@ -1,7 +1,7 @@
 use ark_ff::prelude::*;
 use ark_std::{
     borrow::Borrow,
-    cfg_chunks, cfg_into_iter, cfg_iter,
+    cfg_chunks, cfg_into_iter,
     iterable::Iterable,
     ops::{AddAssign, SubAssign},
     vec,
@@ -205,15 +205,21 @@ pub(crate) fn route_msm<V: VariableBaseMSM>(
     bases: &[V::MulBase],
     scalars: &[V::ScalarField],
 ) -> Either<V, Vec<<V::ScalarField as PrimeField>::BigInt>> {
+    let size = bases.len().min(scalars.len());
+    if size == 0 {
+        return Either::Left(V::zero());
+    }
+
     #[cfg(all(feature = "host_msm", not(feature = "std")))]
     if let Some(curve_name) = V::curve_name() {
-        if let Some(res) = ark_host_msm::use_host_msm_unchecked(curve_name, bases, scalars) {
+        if let Some(res) =
+            ark_host_msm::use_host_msm_unchecked(curve_name, &bases[..size], &scalars[..size])
+        {
             return Either::Left(res);
         }
         // Fall through to the in-guest path if the host doesn't support this curve or errors.
     }
 
-    let size = bases.len().min(scalars.len());
     if let Some(res) = V::try_msm_small(&bases[..size], &scalars[..size]) {
         return Either::Left(res);
     }
@@ -238,9 +244,11 @@ fn large_value_unzip<A: Send + Sync, B: Send + Sync>(
     grouped: &[PackedIndex],
     f: impl Fn(usize) -> (A, B) + Send + Sync,
 ) -> (Vec<A>, Vec<B>) {
-    cfg_iter!(grouped)
-        .map(|&i| f(i.index()))
-        .unzip::<_, _, Vec<_>, Vec<_>>()
+    #[cfg(feature = "parallel")]
+    if grouped.len() >= MIN_PARALLEL_SCALARS {
+        return grouped.par_iter().map(|&i| f(i.index())).unzip();
+    }
+    grouped.iter().map(|&i| f(i.index())).unzip()
 }
 
 #[inline]
@@ -248,9 +256,23 @@ fn small_value_unzip<A: Send + Sync, B: Send + Sync>(
     grouped: &[PackedIndex],
     f: impl Fn(usize, u16) -> (A, B) + Send + Sync,
 ) -> (Vec<A>, Vec<B>) {
-    cfg_iter!(grouped)
-        .map(|&i| f(i.index(), i.value()))
-        .unzip::<_, _, Vec<_>, Vec<_>>()
+    #[cfg(feature = "parallel")]
+    if grouped.len() >= MIN_PARALLEL_SCALARS {
+        return grouped.par_iter().map(|&i| f(i.index(), i.value())).unzip();
+    }
+    grouped.iter().map(|&i| f(i.index(), i.value())).unzip()
+}
+
+/// Whether `msm_signed` puts `scalar` in the full-width group: more than 64 bits, and so is its
+/// negation mod `MODULUS`.
+#[inline]
+fn is_full_width<F: PrimeField>(scalar: &F::BigInt) -> bool {
+    if scalar.num_bits() <= 64 {
+        return false;
+    }
+    let mut negated = F::MODULUS;
+    negated.sub_with_borrow(scalar);
+    negated.num_bits() > 64
 }
 
 #[inline(always)]
@@ -340,49 +362,78 @@ fn msm_signed<V: VariableBaseMSM>(
     let bases = &bases[..size];
     let scalars = &scalars[..size];
 
+    // Random scalars are all full width, which needs no partition. Below the floor the scan and
+    // the partition run serially; their per-scalar work is lighter than `into_bigint`'s.
+    let full_width = |s: &<V::ScalarField as PrimeField>::BigInt| {
+        s.is_zero() || is_full_width::<V::ScalarField>(s)
+    };
+    #[cfg(feature = "parallel")]
+    let parallel = size >= MIN_PARALLEL_SCALARS;
+    #[cfg(feature = "parallel")]
+    let all_full_width = if parallel {
+        scalars.par_iter().all(full_width)
+    } else {
+        scalars.iter().all(full_width)
+    };
+    #[cfg(not(feature = "parallel"))]
+    let all_full_width = scalars.iter().all(full_width);
+    if all_full_width {
+        return V::msm_bigint_full_width(bases, scalars);
+    }
+
     // Partition scalars according to their size. For scalars (or -scalar) that fit in 16 bits,
     // store the value, rest wont fit in 64-bit PackedIndex.
-    let mut grouped = cfg_iter!(scalars)
-        .enumerate()
-        .filter(|(_, scalar)| !scalar.is_zero())
-        .map(|(i, scalar)| {
-            use ScalarSize::*;
-            let mut value = 0;
-            let group = match scalar.num_bits() {
-                0..=1 => U1,
-                2..=8 => U8,
-                9..=16 => U16,
-                17..=32 => U32,
-                33..=64 => U64,
-                _ => {
-                    // take bit size of -scalar
-                    let mut p_minus_scalar = V::ScalarField::MODULUS;
-                    p_minus_scalar.sub_with_borrow(scalar);
-                    let group = match p_minus_scalar.num_bits() {
-                        0..=1 => NegU1,
-                        2..=8 => NegU8,
-                        9..=16 => NegU16,
-                        17..=32 => NegU32,
-                        33..=64 => NegU64,
-                        _ => ScalarSize::BigInt,
-                    };
-                    if matches!(group, NegU1 | NegU8 | NegU16) {
-                        value = p_minus_scalar.as_ref()[0] as u16
-                    }
-                    group
-                },
-            };
-            if matches!(group, U1 | U8 | U16) {
-                value = (scalar.as_ref()[0]) as u16;
-            };
-            PackedIndex::new(i, group, value)
-        })
-        .collect::<Vec<_>>();
+    let classify = |(i, scalar): (usize, &<V::ScalarField as PrimeField>::BigInt)| {
+        use ScalarSize::*;
+        let mut value = 0;
+        let group = match scalar.num_bits() {
+            0..=1 => U1,
+            2..=8 => U8,
+            9..=16 => U16,
+            17..=32 => U32,
+            33..=64 => U64,
+            _ => {
+                // take bit size of -scalar
+                let mut p_minus_scalar = V::ScalarField::MODULUS;
+                p_minus_scalar.sub_with_borrow(scalar);
+                let group = match p_minus_scalar.num_bits() {
+                    0..=1 => NegU1,
+                    2..=8 => NegU8,
+                    9..=16 => NegU16,
+                    17..=32 => NegU32,
+                    33..=64 => NegU64,
+                    _ => ScalarSize::BigInt,
+                };
+                if matches!(group, NegU1 | NegU8 | NegU16) {
+                    value = p_minus_scalar.as_ref()[0] as u16
+                }
+                group
+            },
+        };
+        if matches!(group, U1 | U8 | U16) {
+            value = (scalar.as_ref()[0]) as u16;
+        };
+        PackedIndex::new(i, group, value)
+    };
+    let nonzero = |(_, scalar): &(usize, &<V::ScalarField as PrimeField>::BigInt)| !scalar.is_zero();
 
     #[cfg(feature = "parallel")]
-    grouped.par_sort_unstable_by_key(|i| i.group());
+    let grouped = if parallel {
+        let mut grouped: Vec<_> =
+            scalars.par_iter().enumerate().filter(nonzero).map(classify).collect();
+        grouped.par_sort_unstable_by_key(|i| i.group());
+        grouped
+    } else {
+        let mut grouped: Vec<_> = scalars.iter().enumerate().filter(nonzero).map(classify).collect();
+        grouped.sort_unstable_by_key(|i| i.group());
+        grouped
+    };
     #[cfg(not(feature = "parallel"))]
-    grouped.sort_unstable_by_key(|i| i.group());
+    let grouped = {
+        let mut grouped: Vec<_> = scalars.iter().enumerate().filter(nonzero).map(classify).collect();
+        grouped.sort_unstable_by_key(|i| i.group());
+        grouped
+    };
 
     // Split scalars based on their bit sizes
     // u1s are scalars of 1-bit
@@ -628,9 +679,20 @@ pub(crate) fn pippenger_setup<F: PrimeField>(scalars: &[F::BigInt], size: usize)
     pippenger_setup_given_window::<F>(
         scalars,
         size,
-        F::MODULUS_BIT_SIZE as usize,
+        scalar_bit_width::<F>(&scalars[..size]),
         window_size(size),
     )
+}
+
+/// Bits a recoding must cover: `MODULUS_BIT_SIZE`, or the whole `BigInt` when some scalar is at
+/// least `2^MODULUS_BIT_SIZE`, whose top bits a `MODULUS_BIT_SIZE`-bit cover would drop.
+pub(crate) fn scalar_bit_width<F: PrimeField>(scalars: &[F::BigInt]) -> usize {
+    let bits = F::MODULUS_BIT_SIZE as usize;
+    if scalars.iter().any(|s| s.num_bits() as usize > bits) {
+        64 * <F::BigInt as BigInteger>::NUM_LIMBS
+    } else {
+        bits
+    }
 }
 
 /// Fewest scalars one parallel task recodes in [`pippenger_setup_given_window`], a few tens of
@@ -758,7 +820,7 @@ pub fn msm_bigint<V: VariableBaseMSM>(
         return V::zero();
     }
     let size = scalars.len();
-    let num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
+    let num_bits = scalar_bit_width::<V::ScalarField>(scalars);
     let c = window_size(size);
 
     // Split each scalar into `c`-bit windows and accumulate each window's

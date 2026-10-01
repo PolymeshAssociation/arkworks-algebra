@@ -33,6 +33,37 @@ pub fn test_var_base_msm<G: VariableBaseMSM>() {
 
 type F<G> = <G as ark_ec::PrimeGroup>::ScalarField;
 
+/// `msm_bigint` on scalars at least `r`, including all-ones limbs and the top bit alone, mixed with
+/// canonical ones, at sizes on both sides of every routing threshold. Window widths that divide
+/// `MODULUS_BIT_SIZE` would drop the bits above it without the full-width cover.
+pub fn test_var_base_msm_wide_bigints<G: VariableBaseMSM>() {
+    use ark_ff::BigInteger;
+    let mut rng = ark_std::test_rng();
+    let limbs = <F<G> as PrimeField>::BigInt::NUM_LIMBS;
+    let mut all_ones = <F<G> as PrimeField>::BigInt::default();
+    all_ones.as_mut().iter_mut().for_each(|l| *l = u64::MAX);
+    let mut top_bit = <F<G> as PrimeField>::BigInt::default();
+    top_bit.as_mut()[limbs - 1] = 1 << 63;
+    let mut r_plus_1 = F::<G>::MODULUS;
+    r_plus_1.add_with_carry(&1u64.into());
+    let wide = [all_ones, top_bit, F::<G>::MODULUS, r_plus_1];
+    for n in [1usize, 2, 3, 5, 31, 32, 40, 255, 256, 300, 1100] {
+        let g = (0..n).map(|_| G::rand(&mut rng)).collect::<Vec<_>>();
+        let bases = G::batch_convert_to_mul_base(&g);
+        let scalars = (0..n)
+            .map(|i| {
+                if i % 2 == 0 {
+                    wide[(i / 2) % wide.len()]
+                } else {
+                    F::<G>::rand(&mut rng).into_bigint()
+                }
+            })
+            .collect::<Vec<_>>();
+        let expected: G = g.iter().zip(&scalars).map(|(p, s)| p.mul_bigint(s)).sum();
+        assert_eq!(G::msm_bigint(&bases, &scalars), expected, "n = {n}");
+    }
+}
+
 pub fn test_var_base_msm_mixed_scalars<G: VariableBaseMSM>() {
     const SAMPLES: usize = 1 << 10;
 

@@ -86,3 +86,52 @@ fn scalars_shorter_than_bases_are_truncated() {
     let expected = Projective::<PallasConfig>::msm_unchecked(&bases[..4], &scalars);
     assert_eq!(pc.msm(&scalars), expected);
 }
+
+/// Scalars at least `r`, including all-ones limbs, mixed with canonical ones at windows whose top
+/// digit would overflow the bucket array or whose windows stop at bit 255, serial and segmented.
+#[test]
+fn non_canonical_scalars() {
+    use ark_ec::scalar_mul::double_and_add_affine;
+    use ark_ff::{BigInt, BigInteger, PrimeField};
+    use ark_pallas::{Fr, PallasConfig};
+    let rng = &mut test_rng();
+    let r = Fr::MODULUS;
+    let mut r_plus_1 = r;
+    r_plus_1.add_with_carry(&BigInt::from(1u64));
+    let mut top_bit = BigInt::<4>::zero();
+    top_bit.0[3] = 1 << 63;
+    let wide = [BigInt([u64::MAX; 4]), r, r_plus_1, top_bit];
+    for n in [8usize, 700] {
+        let bases = Projective::<PallasConfig>::normalize_batch(
+            &(0..n).map(|_| Projective::<PallasConfig>::rand(rng)).collect::<Vec<_>>(),
+        );
+        let scalars: Vec<BigInt<4>> = (0..n)
+            .map(|i| if i % 3 == 0 { wide[i % 4] } else { Fr::rand(rng).into_bigint() })
+            .collect();
+        let expected: Projective<PallasConfig> = bases
+            .iter()
+            .zip(&scalars)
+            .map(|(b, s)| double_and_add_affine(b, s))
+            .sum();
+        for c in [3usize, 5, 8, 13, 15, 16] {
+            let pc = FixedBaseMSM::<PallasConfig>::new_given_window_size(&bases, c);
+            assert_eq!(pc.msm_bigint(&scalars), expected, "n={n} c={c}");
+        }
+    }
+}
+
+/// The window search stops at `MAX_WINDOW` instead of choosing a `2^29`-entry bucket array.
+#[test]
+fn size_limit_search_is_capped() {
+    use ark_ec::scalar_mul::fixed_base::MAX_WINDOW;
+    use ark_pallas::PallasConfig;
+    let rng = &mut test_rng();
+    let bases = Projective::<PallasConfig>::normalize_batch(
+        &(0..64).map(|_| Projective::<PallasConfig>::rand(rng)).collect::<Vec<_>>(),
+    );
+    let entry = core::mem::size_of::<Affine<PallasConfig>>();
+    let at_max = 64 * 255usize.div_ceil(MAX_WINDOW) * entry;
+    let pc = FixedBaseMSM::<PallasConfig>::new_given_size_limit(&bases, at_max).unwrap();
+    assert!(pc.window() <= MAX_WINDOW);
+    assert!(FixedBaseMSM::<PallasConfig>::new_given_size_limit(&bases, at_max - 1).is_none());
+}
