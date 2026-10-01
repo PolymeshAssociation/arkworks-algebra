@@ -330,3 +330,31 @@ fn test_exp_by_x_chain_matches_generic() {
         }
     }
 }
+
+/// `cyclotomic_exp` against `pow` on GT for exponents of every length up to 130 bits, which
+/// crosses each wNAF width, and for full-width and wider ones.
+#[test]
+fn test_cyclotomic_exp_matches_pow_at_every_width() {
+    use ark_ec::{pairing::PairingOutput, PrimeGroup};
+    use ark_ff::{CyclotomicMultSubgroup, Field};
+    use ark_std::{test_rng, vec, vec::Vec, UniformRand};
+    let rng = &mut test_rng();
+    let g = PairingOutput::<crate::Bn254>::generator().0;
+    let mut exps: Vec<Vec<u64>> = (1..=130usize)
+        .map(|bits| {
+            let mut e = vec![0u64; bits.div_ceil(64)];
+            for (i, limb) in e.iter_mut().enumerate() {
+                *limb = u64::rand(rng);
+                if i == (bits - 1) / 64 && bits % 64 != 0 {
+                    *limb &= (1u64 << (bits % 64)) - 1;
+                }
+            }
+            e[(bits - 1) / 64] |= 1u64 << ((bits - 1) % 64);
+            e
+        })
+        .collect();
+    exps.extend([vec![u64::MAX; 4], vec![u64::MAX; 6], vec![2], vec![11], vec![103]]);
+    for e in &exps {
+        assert_eq!(g.cyclotomic_exp(e), g.pow(e), "e = {e:?}");
+    }
+}
