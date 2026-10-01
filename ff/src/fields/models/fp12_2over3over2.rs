@@ -403,7 +403,7 @@ pub struct CompressedCyclotomic<P: Fp12Config> {
 
 impl<P: Fp12Config> Fp12<P> {
     /// The [`CompressedCyclotomic`] form of `self`, which must be in the cyclotomic subgroup.
-    pub fn compress_cyclotomic(&self) -> CompressedCyclotomic<P> {
+    pub const fn compress_cyclotomic(&self) -> CompressedCyclotomic<P> {
         CompressedCyclotomic {
             g1: self.c0.c1,
             g2: self.c0.c2,

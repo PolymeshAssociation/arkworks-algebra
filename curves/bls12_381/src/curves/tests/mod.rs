@@ -17,7 +17,7 @@ test_h2c!(g2_hc2; "./src/curves/tests"; "BLS12381G2"; crate::g2::Config; crate::
 
 #[test]
 fn test_g1_endomorphism_beta() {
-    assert!(crate::g1::BETA.pow(&[3u64]).is_one());
+    assert!(crate::g1::BETA.pow([3u64]).is_one());
 }
 
 #[test]

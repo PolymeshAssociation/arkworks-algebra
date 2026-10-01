@@ -8,7 +8,7 @@ use core::marker::PhantomData;
 /// Whether the Montgomery `sum_of_products` over `C::Fp` reduces six products at once, which it
 /// does for a modulus with at least 3 spare bits.
 #[inline(always)]
-pub(crate) fn reduces_six_products<C: Fp2Config>() -> bool {
+pub(crate) const fn reduces_six_products<C: Fp2Config>() -> bool {
     let bits = 64 * <C::Fp as PrimeField>::BigInt::NUM_LIMBS as u32;
     bits - <C::Fp as PrimeField>::MODULUS_BIT_SIZE >= 3
 }

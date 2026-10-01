@@ -95,10 +95,10 @@ pub fn gls4_mul<P: SWCurveConfig>(
             let d = nafs[i].0[j];
             if d != 0 {
                 let t = &tables[i][usize::from(d.unsigned_abs() / 2)];
-                if (d < 0) != digits[i].0 {
-                    acc -= t;
-                } else {
+                if (d < 0) == digits[i].0 {
                     acc += t;
+                } else {
+                    acc -= t;
                 }
             }
         }

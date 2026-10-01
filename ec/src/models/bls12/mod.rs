@@ -367,7 +367,7 @@ impl<P: Bls12Config> Bls12<P> {
     pub fn multi_miller_loop_fixed(
         a: impl IntoIterator<Item = impl Into<G1Affine<P>>>,
         b: &[G2PreparedFixed<P>],
-    ) -> MillerLoopOutput<Bls12<P>> {
+    ) -> MillerLoopOutput<Self> {
         use itertools::Itertools;
 
         let mut g1s = Vec::new();
@@ -401,9 +401,9 @@ impl<P: Bls12Config> Bls12<P> {
             }
             first = false;
             for (idx, it) in lines.iter_mut().enumerate() {
-                Bls12::<P>::mul_fixed_line(&mut f, it.next().unwrap(), &yinv[idx], &pxyinv[idx]);
+                Self::mul_fixed_line(&mut f, it.next().unwrap(), &yinv[idx], &pxyinv[idx]);
                 if i {
-                    Bls12::<P>::mul_fixed_line(&mut f, it.next().unwrap(), &yinv[idx], &pxyinv[idx]);
+                    Self::mul_fixed_line(&mut f, it.next().unwrap(), &yinv[idx], &pxyinv[idx]);
                 }
             }
         }
