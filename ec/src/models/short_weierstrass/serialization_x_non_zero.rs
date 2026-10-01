@@ -50,7 +50,9 @@ pub fn serialize_with_single_bit_flags<C: SWSerializationXNonZero, W: Write>(
 
 /// Deserializes an affine point using `SingleBitSWFlags`.
 /// 
-/// If `validate` is `Yes`, calls `check()` to make sure the element is valid.
+/// If `validate` is `Yes`, calls `check()` to make sure the element is valid. Infinity is accepted
+/// only in its canonical all-zero form: `x = 0` with the sign bit set, or with a nonzero `y`
+/// uncompressed, returns `SerializationError::InvalidData` whatever `validate` is.
 pub fn deserialize_with_single_bit_flags<C: SWSerializationXNonZero, R: Read>(
     mut reader: R,
     compress: Compress,
@@ -62,6 +64,9 @@ pub fn deserialize_with_single_bit_flags<C: SWSerializationXNonZero, R: Read>(
             let (x, flags): (C::BaseField, SingleBitSWFlags) =
                 CanonicalDeserializeWithFlags::deserialize_with_flags(reader)?;
             if x.is_zero() {
+                if !flags.is_positive() {
+                    return Err(SerializationError::InvalidData);
+                }
                 is_infinity = true;
                 let identity = Affine::<C>::identity();
                 (identity.x, identity.y)
@@ -79,9 +84,12 @@ pub fn deserialize_with_single_bit_flags<C: SWSerializationXNonZero, R: Read>(
         Compress::No => {
             let x: C::BaseField =
                 CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
-            let (y, _): (_, SingleBitSWFlags) =
+            let (y, flags): (C::BaseField, SingleBitSWFlags) =
                 CanonicalDeserializeWithFlags::deserialize_with_flags(&mut reader)?;
             if x.is_zero() {
+                if !y.is_zero() || !flags.is_positive() {
+                    return Err(SerializationError::InvalidData);
+                }
                 is_infinity = true;
             }
             (x, y)
