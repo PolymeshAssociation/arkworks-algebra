@@ -460,6 +460,7 @@ macro_rules! __test_group {
             $crate::glv::eisenstein_orbit_points_match_native::<Config>();
             $crate::glv::eisenstein_matches_jsf::<Config>();
             $crate::glv::eisenstein_same_scalar_batch::<Config>();
+            $crate::glv::eisenstein_torsion_bases::<Config>();
         }
 
         #[test]

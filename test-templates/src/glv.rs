@@ -501,6 +501,103 @@ pub fn eisenstein_same_scalar_batch<P: GLVConfig>() {
     }
 }
 
+/// `COFACTOR / l` for a word-sized `l`, or `None` when `l` does not divide it.
+fn cofactor_div(cofactor: &[u64], l: u64) -> Option<Vec<u64>> {
+    let mut q = vec![0u64; cofactor.len()];
+    let mut rem = 0u128;
+    for (i, &limb) in cofactor.iter().enumerate().rev() {
+        let cur = (rem << 64) | u128::from(limb);
+        q[i] = (cur / u128::from(l)) as u64;
+        rem = cur % u128::from(l);
+    }
+    (rem == 0).then_some(q)
+}
+
+/// Every GLV entry point against double-and-add on bases with no order-`r` component: points of
+/// the cofactor group, points of each prime order below `2^16` dividing the cofactor (the order-3
+/// points `x = 0` and 2-torsion among them), their sums with subgroup points, and the identity,
+/// spread over more lanes than the batch-affine ladder's minimum. GLV is exact on every point
+/// for scalars below `2^128`. A no-op on prime-order curves.
+pub fn eisenstein_torsion_bases<P: GLVConfig>() {
+    use ark_ec::scalar_mul::glv::eisenstein::{eisenstein_msm, glv_mul_same_scalar};
+    if P::cofactor_is_one() {
+        return;
+    }
+    let rng = &mut test_rng();
+    let r = P::ScalarField::MODULUS;
+    let mut cofactor_points = Vec::new();
+    while cofactor_points.len() < 4 {
+        let x = P::BaseField::rand(rng);
+        if let Some(p) = Affine::<P>::get_point_from_x_unchecked(x, bool::rand(rng)) {
+            let t = double_and_add_affine(&p, r);
+            if !t.is_zero() {
+                cofactor_points.push(t);
+            }
+        }
+    }
+    let mut torsion = cofactor_points.clone();
+    let mut l = 2u64;
+    while l < 1 << 16 {
+        if (2..l).take_while(|d| d * d <= l).all(|d| l % d != 0) {
+            if let Some(m) = cofactor_div(P::COFACTOR, l) {
+                for t in &cofactor_points {
+                    let small = double_and_add(t, &m);
+                    if !small.is_zero() {
+                        assert!(double_and_add(&small, &[l]).is_zero());
+                        torsion.push(small);
+                        torsion.push(-small);
+                        torsion.push(P::endomorphism(&small));
+                    }
+                }
+            }
+        }
+        l += 1;
+    }
+
+    let mut bases: Vec<Projective<P>> = Vec::new();
+    for (i, t) in torsion.iter().enumerate() {
+        bases.push(*t);
+        let s = Projective::<P>::rand(rng);
+        bases.push(s + t);
+        if i % 4 == 0 {
+            bases.push(Projective::zero());
+        }
+    }
+    while bases.len() < 48 {
+        bases.push(Projective::<P>::rand(rng));
+    }
+    let affine = Projective::normalize_batch(&bases);
+
+    let mut scalars: Vec<P::ScalarField> = vec![
+        P::ScalarField::zero(),
+        P::ScalarField::one(),
+        P::ScalarField::from(2u64),
+        P::ScalarField::from(3u64),
+        P::ScalarField::from(11u64),
+        P::ScalarField::from(u128::MAX),
+    ];
+    for _ in 0..24 {
+        scalars.push(P::ScalarField::from(u128::rand(rng)));
+        scalars.push(P::ScalarField::from(u64::rand(rng)));
+    }
+    for k in &scalars {
+        let k_repr = k.into_bigint();
+        let expected: Vec<Projective<P>> = bases.iter().map(|b| double_and_add(b, k_repr)).collect();
+        assert_eq!(glv_mul_same_scalar::<P>(&affine, *k), expected, "glv_mul_same_scalar, k = {k}");
+        for ((b, a), e) in bases.iter().zip(&affine).zip(&expected) {
+            assert_eq!(b.mul_bigint(k_repr), *e, "projective mul_bigint, k = {k}");
+            assert_eq!(a.mul_bigint(k_repr), *e, "affine mul_bigint, k = {k}");
+        }
+    }
+    let lanes = affine.len().min(scalars.len());
+    let sum: Projective<P> = affine[..lanes]
+        .iter()
+        .zip(&scalars)
+        .map(|(a, s)| double_and_add_affine(a, s.into_bigint()))
+        .sum();
+    assert_eq!(eisenstein_msm::<P>(&affine[..lanes], &scalars[..lanes]), Some(sum));
+}
+
 /// [`msm_batch_affine_glv_bigint`](ark_ec::scalar_mul::sw_pippenger::msm_batch_affine_glv_bigint)
 /// and the routed [`VariableBaseMSM::msm_bigint`](ark_ec::VariableBaseMSM::msm_bigint) and
 /// [`msm_batch_affine`](ark_ec::scalar_mul::sw_pippenger::msm_batch_affine) against the

@@ -1,7 +1,7 @@
 use ark_ec::{
     bn,
     models::{short_weierstrass::SWCurveConfig, CurveConfig},
-    scalar_mul::glv::GLVConfig,
+    scalar_mul::glv::{try_glv_msm_bigint_full_width, GLVConfig, GLVFastDecomp},
     short_weierstrass::{Affine, Projective},
 };
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
@@ -60,6 +60,14 @@ impl SWCurveConfig for Config {
     }
 
     #[inline]
+    fn try_msm_bigint_full_width(
+        bases: &[G1Affine],
+        bigints: &[<Fr as PrimeField>::BigInt],
+    ) -> Option<Projective<Self>> {
+        try_glv_msm_bigint_full_width::<Self>(bases, bigints)
+    }
+
+    #[inline]
     fn is_in_correct_subgroup_assuming_on_curve(_p: &G1Affine) -> bool {
         // G1 = E(Fq) so if the point is on the curve, it is also in the subgroup.
         true
@@ -81,13 +89,34 @@ impl GLVConfig for Config {
         (false, BigInt!("147946756881789319010696353538189108491")),
     ];
 
+    // Derived from `SCALAR_DECOMP_COEFFS` by `scripts/glv_fast_decomp.py`.
+    const FAST_DECOMP: Option<GLVFastDecomp<Self::ScalarField>> = Some(GLVFastDecomp {
+        g1: &[
+            0x163b4843cb4b9a5f,
+            0x149d540fd5e495cc,
+            0x5398fd0300ff6565,
+            0x4ccef014a773d2d2,
+            0x0000000000000002,
+        ],
+        g2: &[
+            0x8fa7d32d2fafba64,
+            0x6eb9c714773a6ef2,
+            0xd91d232ec7e0b3d7,
+            0x0000000000000002,
+            0x0000000000000000,
+        ],
+        a12: MontFp!("9931322734385697763"),
+        a22: MontFp!("147946756881789319010696353538189108491"),
+        negate_k2: true,
+    });
+
     fn endomorphism(p: &Projective<Self>) -> Projective<Self> {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
     fn endomorphism_affine(p: &Affine<Self>) -> Affine<Self> {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
