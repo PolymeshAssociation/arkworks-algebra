@@ -298,12 +298,16 @@ macro_rules! __test_field {
                         let a = <$field>::rand(&mut rng);
                         let expected = pow_binary(&a, &exp);
                         assert_eq!(a.pow(&exp), expected, "{bits} bits");
-                        assert_eq!(pow_windowed(&a, &exp, bits), expected, "{bits} bits");
+                        assert_eq!(pow_windowed(&a, &exp), expected, "{bits} bits");
                     }
                 }
             }
-            // A zero exponent, and a zero base.
+            // A zero exponent, leading zero limbs, and a zero base.
             assert_eq!(<$field>::rand(&mut rng).pow([0u64; 4]), <$field>::one());
+            let a = <$field>::rand(&mut rng);
+            assert_eq!(pow_windowed(&a, &[]), <$field>::one());
+            assert_eq!(pow_windowed(&a, &[0u64; 3]), <$field>::one());
+            assert_eq!(pow_windowed(&a, &[0x1234_5678_9abc_def1, 7, 0, 0]), pow_binary(&a, &[0x1234_5678_9abc_def1, 7]));
             assert_eq!(<$field>::zero().pow([1u64, 0, 0, 1]), <$field>::zero());
         }
 
