@@ -325,19 +325,14 @@ impl<P: Pairing> PrimeGroup for PairingOutput<P> {
         Self(P::gt_exp(&self.0, other.as_ref()))
     }
 
+    /// [`Self::mul_bigint`] on the big-endian bits, packed into little-endian limbs from the end.
     fn mul_bits_be(&self, other: impl Iterator<Item = bool>) -> Self {
-        // Convert back from bits to [u64] limbs
-        let other = other
-            .collect::<Vec<_>>()
-            .chunks(64)
-            .map(|chunk| {
-                chunk
-                    .iter()
-                    .enumerate()
-                    .fold(0, |r, (i, bit)| r | u64::from(*bit) << i)
-            })
+        let bits = other.collect::<Vec<_>>();
+        let limbs = bits
+            .rchunks(64)
+            .map(|chunk| chunk.iter().fold(0u64, |r, bit| (r << 1) | u64::from(*bit)))
             .collect::<Vec<_>>();
-        Self(self.0.cyclotomic_exp(&other))
+        self.mul_bigint(limbs)
     }
 }
 

@@ -235,11 +235,10 @@ mod test {
     use super::*;
     use ark_std::{rand::Rng, UniformRand};
 
-    fn sample_unchecked() -> Affine<g2::Config> {
-        let mut rng = ark_std::test_rng();
+    fn sample_unchecked(rng: &mut impl Rng) -> Affine<g2::Config> {
         loop {
-            let x1 = Fq::rand(&mut rng);
-            let x2 = Fq::rand(&mut rng);
+            let x1 = Fq::rand(rng);
+            let x2 = Fq::rand(rng);
             let greatest = rng.gen();
             let x = Fq2::new(x1, x2);
 
@@ -251,7 +250,8 @@ mod test {
 
     #[test]
     fn test_psi_2() {
-        let p = sample_unchecked();
+        let mut rng = ark_std::test_rng();
+        let p = sample_unchecked(&mut rng);
         let psi_p = p_power_endomorphism(&p);
         let psi2_p_composed = p_power_endomorphism(&psi_p);
         let psi2_p_optimised = double_p_power_endomorphism(&p.into());
@@ -261,6 +261,7 @@ mod test {
 
     #[test]
     fn test_cofactor_clearing() {
+        let mut rng = ark_std::test_rng();
         let h_eff = &[
             0x1e34800000000000,
             0xcf664765b0000003,
@@ -275,7 +276,7 @@ mod test {
         ];
         const SAMPLES: usize = 10;
         for _ in 0..SAMPLES {
-            let p: Affine<g2::Config> = sample_unchecked();
+            let p: Affine<g2::Config> = sample_unchecked(&mut rng);
             let optimised = p.clear_cofactor();
             let naive = g2::Config::mul_affine(&p, h_eff);
             assert_eq!(optimised.into_group(), naive);

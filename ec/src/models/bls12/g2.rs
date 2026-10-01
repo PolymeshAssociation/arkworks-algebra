@@ -1,6 +1,8 @@
 use ark_ff::{AdditiveGroup, BitIteratorBE, Field, Fp2};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::{ops::Neg, vec::*, One, Zero};
+use ark_serialize::{
+    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
+};
+use ark_std::{io::Read, ops::Neg, vec::*, One, Zero};
 use educe::Educe;
 
 use crate::{
@@ -21,13 +23,41 @@ pub type G2Projective<P> = Projective<<P as Bls12Config>::G2Config>;
 /// doubling keeps its point scaled by 4, and [`G2Prepared::normalize_lines`] and
 /// [`G2PreparedFixed`] rescale each line on this basis, so raw `MillerLoopOutput` values depend on
 /// the implementation and only final-exponentiated values are canonical.
-#[derive(Educe, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Educe, CanonicalSerialize)]
 #[educe(Clone, Debug, PartialEq, Eq)]
 pub struct G2Prepared<P: Bls12Config> {
     /// Stores the coefficients of the line evaluations as calculated in
     /// <https://eprint.iacr.org/2013/722.pdf>
     pub ell_coeffs: Vec<EllCoeff<P>>,
     pub infinity: bool,
+}
+
+impl<P: Bls12Config> Valid for G2Prepared<P> {
+    /// The line count the Miller loop consumes, none at infinity.
+    fn check(&self) -> Result<(), SerializationError> {
+        let expected = if self.infinity { 0 } else { num_ell_coeffs::<P>() };
+        if self.ell_coeffs.len() != expected {
+            return Err(SerializationError::InvalidData);
+        }
+        self.ell_coeffs.check()?;
+        Ok(())
+    }
+}
+
+impl<P: Bls12Config> CanonicalDeserialize for G2Prepared<P> {
+    fn deserialize_with_mode<R: Read>(
+        mut reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Self, SerializationError> {
+        let ell_coeffs = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let infinity = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let prepared = Self { ell_coeffs, infinity };
+        if validate == Validate::Yes {
+            prepared.check()?;
+        }
+        Ok(prepared)
+    }
 }
 
 pub type EllCoeff<P> = (
@@ -64,7 +94,7 @@ impl<P: Bls12Config> From<G2Affine<P>> for G2Prepared<P> {
                 z: Fp2::one(),
             };
 
-            let mut iter = BitIteratorBE::new(P::X).skip(1).peekable();
+            let mut iter = BitIteratorBE::without_leading_zeros(P::X).skip(1).peekable();
             while let Some(i) = iter.next() {
                 if iter.peek().is_none() && !i {
                     // Last iteration with no trailing addition: the doubled
@@ -275,11 +305,39 @@ fn num_ell_coeffs<P: Bls12Config>() -> usize {
 /// whose normalized two-coefficient lines are consumed by
 /// [`MulBy01`](https://github.com/Consensys/gnark-crypto/blob/v0.21.0/ecc/bls12-381/internal/fptower/e12_pairing.go#L70-L89) /
 /// [`MulBy34`](https://github.com/Consensys/gnark-crypto/blob/v0.21.0/ecc/bls12-377/internal/fptower/e12_pairing.go#L67-L85).
-#[derive(Educe, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Educe, CanonicalSerialize)]
 #[educe(Clone, Debug, PartialEq, Eq)]
 pub struct G2PreparedFixed<P: Bls12Config> {
     pub lines: Vec<(Fp2<P::Fp2Config>, Fp2<P::Fp2Config>)>,
     pub infinity: bool,
+}
+
+impl<P: Bls12Config> Valid for G2PreparedFixed<P> {
+    /// The line count the Miller loop consumes, none at infinity.
+    fn check(&self) -> Result<(), SerializationError> {
+        let expected = if self.infinity { 0 } else { num_ell_coeffs::<P>() };
+        if self.lines.len() != expected {
+            return Err(SerializationError::InvalidData);
+        }
+        self.lines.check()?;
+        Ok(())
+    }
+}
+
+impl<P: Bls12Config> CanonicalDeserialize for G2PreparedFixed<P> {
+    fn deserialize_with_mode<R: Read>(
+        mut reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Self, SerializationError> {
+        let lines = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let infinity = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let prepared = Self { lines, infinity };
+        if validate == Validate::Yes {
+            prepared.check()?;
+        }
+        Ok(prepared)
+    }
 }
 
 impl<P: Bls12Config> From<G2Prepared<P>> for G2PreparedFixed<P> {

@@ -402,9 +402,8 @@ impl<P: BnConfig> Pairing for Bn<P> {
         // f^(2 x p^3) == f^(1 + x + x p + x p^2). On GT the Frobenius is
         // [p mod r] = [6x^2], and 1 + x + x p + x p^2 == 2 x p^3 (mod r) there, so the
         // check is necessary. Dai et al. show it is sufficient on the cyclotomic
-        // subgroup. exp_by_neg_x raises to -x, so conjugating it gives f^x.
-        let mut t = Bn::<P>::exp_by_neg_x(*f);
-        t.cyclotomic_inverse_in_place(); // f^x
+        // subgroup.
+        let mut t = P::exp_by_x(*f); // f^x
         let mut r = t;
         r.frobenius_map_in_place(1); // f^(x p)
         t *= f; // f^x * f

@@ -14,9 +14,9 @@
 //! examples 3 and 5 in section 6 (the BLS12 and BN splits), and section 7 (interleaved w-NAF).
 
 use crate::{
-    scalar_mul::{double_and_add, glv::scalar_below_modulus},
+    scalar_mul::{double_and_add, double_and_add_affine, glv::scalar_below_modulus},
     short_weierstrass::{Affine, Projective, SWCurveConfig},
-    AdditiveGroup, CurveGroup,
+    AdditiveGroup, AffineRepr, CurveGroup,
 };
 use ark_std::{vec::Vec, Zero};
 
@@ -41,6 +41,20 @@ pub fn gls4_mul_bigint<P: SWCurveConfig>(
     match scalar_below_modulus::<P::ScalarField>(k).and_then(|_| digits(k)) {
         Some(d) => gls4_mul(p, &d, psi),
         None => double_and_add(p, k),
+    }
+}
+
+/// [`gls4_mul_bigint`] for an affine base, whose `k >= r` fallback is `double_and_add_affine`
+/// with mixed additions.
+pub fn gls4_mul_affine_bigint<P: SWCurveConfig>(
+    p: &Affine<P>,
+    k: &[u64],
+    digits: impl FnOnce(&[u64]) -> Option<[(bool, u64); 4]>,
+    psi: impl Fn(&Affine<P>) -> Affine<P>,
+) -> Projective<P> {
+    match scalar_below_modulus::<P::ScalarField>(k).and_then(|_| digits(k)) {
+        Some(d) => gls4_mul(&p.into_group(), &d, psi),
+        None => double_and_add_affine(p, k),
     }
 }
 

@@ -537,7 +537,7 @@ fn cofactor_div(cofactor: &[u64], l: u64) -> Option<Vec<u64>> {
     (rem == 0).then_some(q)
 }
 
-/// Every GLV entry point against double-and-add on bases with no order-`r` component: points of
+/// The GLV entry points against double-and-add on bases with no order-`r` component: points of
 /// the cofactor group, points of each prime order below `2^16` dividing the cofactor (the order-3
 /// points `x = 0` and 2-torsion among them), their sums with subgroup points, and the identity,
 /// spread over more lanes than the batch-affine ladder's minimum. GLV is exact on every point
@@ -608,9 +608,11 @@ pub fn eisenstein_torsion_bases<P: GLVConfig>() {
         let k_repr = k.into_bigint();
         let expected: Vec<Projective<P>> = bases.iter().map(|b| double_and_add(b, k_repr)).collect();
         assert_eq!(glv_mul_same_scalar::<P>(&affine, *k), expected, "glv_mul_same_scalar, k = {k}");
+        // The GLV entry points, which a curve's `mul_bigint` may override with a split that is
+        // exact off the subgroup over a narrower range.
         for ((b, a), e) in bases.iter().zip(&affine).zip(&expected) {
-            assert_eq!(b.mul_bigint(k_repr), *e, "projective mul_bigint, k = {k}");
-            assert_eq!(a.mul_bigint(k_repr), *e, "affine mul_bigint, k = {k}");
+            assert_eq!(P::glv_mul_projective_bigint(b, k_repr.as_ref()), *e, "projective, k = {k}");
+            assert_eq!(P::glv_mul_affine_projective_bigint(a, k_repr.as_ref()), *e, "affine, k = {k}");
         }
     }
     let lanes = affine.len().min(scalars.len());
@@ -619,7 +621,11 @@ pub fn eisenstein_torsion_bases<P: GLVConfig>() {
         .zip(&scalars)
         .map(|(a, s)| double_and_add_affine(a, s.into_bigint()))
         .sum();
-    assert_eq!(eisenstein_msm::<P>(&affine[..lanes], &scalars[..lanes]), Some(sum));
+    // `None` only where the scalar field is wider than the recoding's 256 bits.
+    match eisenstein_msm::<P>(&affine[..lanes], &scalars[..lanes]) {
+        Some(res) => assert_eq!(res, sum),
+        None => assert!(P::ScalarField::MODULUS_BIT_SIZE > 256),
+    }
 }
 
 /// [`msm_batch_affine_glv_bigint`](ark_ec::scalar_mul::sw_pippenger::msm_batch_affine_glv_bigint)

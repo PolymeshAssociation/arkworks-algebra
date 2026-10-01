@@ -2,8 +2,10 @@ use ark_ff::{
     fields::{Field, Fp2},
     AdditiveGroup,
 };
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::{ops::Neg, vec::*};
+use ark_serialize::{
+    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
+};
+use ark_std::{io::Read, ops::Neg, vec::*};
 use educe::Educe;
 use num_traits::{One, Zero};
 
@@ -25,13 +27,41 @@ pub type G2Projective<P> = Projective<<P as BnConfig>::G2Config>;
 /// element of `Fp2` to 1. The doubling keeps its point scaled by 4 and
 /// [`G2Prepared::normalize_lines`] rescales each line on this basis, so raw `MillerLoopOutput`
 /// values depend on the implementation and only final-exponentiated values are canonical.
-#[derive(Educe, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Educe, CanonicalSerialize)]
 #[educe(Clone, Debug, PartialEq, Eq)]
 pub struct G2Prepared<P: BnConfig> {
     /// Stores the coefficients of the line evaluations as calculated in
     /// <https://eprint.iacr.org/2013/722.pdf>
     pub ell_coeffs: Vec<EllCoeff<P>>,
     pub infinity: bool,
+}
+
+impl<P: BnConfig> Valid for G2Prepared<P> {
+    /// The line count the Miller loop consumes, none at infinity.
+    fn check(&self) -> Result<(), SerializationError> {
+        let expected = if self.infinity { 0 } else { num_ell_coeffs::<P>() };
+        if self.ell_coeffs.len() != expected {
+            return Err(SerializationError::InvalidData);
+        }
+        self.ell_coeffs.check()?;
+        Ok(())
+    }
+}
+
+impl<P: BnConfig> CanonicalDeserialize for G2Prepared<P> {
+    fn deserialize_with_mode<R: Read>(
+        mut reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Self, SerializationError> {
+        let ell_coeffs = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let infinity = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let prepared = Self { ell_coeffs, infinity };
+        if validate == Validate::Yes {
+            prepared.check()?;
+        }
+        Ok(prepared)
+    }
 }
 
 pub type EllCoeff<P> = (
