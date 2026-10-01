@@ -93,33 +93,44 @@ pub trait CyclotomicMultSubgroup: crate::Field {
     }
 }
 
-/// Width-`W` windowed cyclotomic exponentiation for fields with a fast inverse.
-/// Precomputes the `2^(W-2)` odd powers `f, f^3, ..., f^(2^(W-1) - 1)` and serves negative
-/// wNAF digits by conjugating the corresponding power. Nonzero digits average `1/(W+1)`
-/// of the exponent length, against `1/3` for NAF, which matters for dense exponents such as
-/// the BN254 `x`.
+/// Window width of [`wnaf_exp`] for a `bits`-bit exponent, minimizing the table's
+/// `2^(w-2) - 1` multiplications plus about `bits / (w + 1)` for the digits, with the table's
+/// one cyclotomic squaring counted as a third of a multiplication.
+const fn wnaf_width(bits: usize) -> usize {
+    match bits {
+        0..=15 => 2,
+        16..=39 => 3,
+        40..=119 => 4,
+        _ => 5,
+    }
+}
+
+/// Windowed cyclotomic exponentiation for fields with a fast inverse, at the width
+/// [`wnaf_width`] picks. Precomputes the `2^(w-2)` odd powers `f, f^3, ..., f^(2^(w-1) - 1)` and
+/// serves negative wNAF digits by conjugating the corresponding power. Nonzero digits average
+/// `1/(w+1)` of the exponent length, against `1/3` for NAF, which matters for dense exponents
+/// such as the BN254 `x`.
 ///
 /// Window-NAF exponentiation (Hankerson, Menezes, Vanstone, Guide to Elliptic
 /// Curve Cryptography (2004), Algorithm 3.36). A negative wNAF digit is free
 /// because inversion in the cyclotomic subgroup is a conjugation.
 fn wnaf_exp<F: CyclotomicMultSubgroup>(f: &mut F, e: &[u64]) {
-    const W: usize = 5;
-    let wnaf = crate::biginteger::arithmetic::find_wnaf(e, W);
+    let w = wnaf_width(crate::fields::significant_bits(e));
+    let wnaf = crate::biginteger::arithmetic::find_wnaf(e, w);
     if wnaf.is_empty() {
         *f = F::one();
         return;
     }
 
-    // f2 = f^2; table[k] = f^(2k + 1).
-    let mut f2 = *f;
-    f2.cyclotomic_square_in_place();
-    let table_len = 1usize << (W - 2);
-    let mut table = ark_std::vec::Vec::with_capacity(table_len);
-    table.push(*f);
-    for k in 1..table_len {
-        let mut t = table[k - 1];
-        t *= &f2;
-        table.push(t);
+    // table[k] = f^(2k + 1), with f^2 only when the table goes past f.
+    let table_len = 1usize << (w - 2);
+    let mut table = [*f; 8];
+    if table_len > 1 {
+        let mut f2 = *f;
+        f2.cyclotomic_square_in_place();
+        for k in 1..table_len {
+            table[k] = table[k - 1] * &f2;
+        }
     }
 
     let mut res = F::one();

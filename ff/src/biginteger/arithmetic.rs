@@ -211,7 +211,7 @@ pub fn find_relaxed_naf(num: &[u64]) -> Vec<i8> {
 /// Hankerson, Menezes, Vanstone, Guide to Elliptic Curve Cryptography (2004),
 /// Algorithm 3.35 (computing the width-`w` NAF). The `w = 2` case is `find_naf`.
 pub fn find_wnaf(num: &[u64], w: usize) -> Vec<i8> {
-    debug_assert!((2..=8).contains(&w));
+    assert!((2..=8).contains(&w), "wNAF width {w} outside 2..=8");
     // One spare limb takes the carry of a negative digit's correction when `num` is within
     // `2^(w-1)` of `2^(64 * num.len())`.
     let mut num = num.to_vec();
@@ -265,6 +265,18 @@ pub fn find_wnaf(num: &[u64], w: usize) -> Vec<i8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "outside 2..=8")]
+    fn test_find_wnaf_rejects_width_one() {
+        find_wnaf(&[3], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside 2..=8")]
+    fn test_find_wnaf_rejects_width_nine() {
+        find_wnaf(&[3], 9);
+    }
 
     #[test]
     fn test_find_wnaf_correctness() {

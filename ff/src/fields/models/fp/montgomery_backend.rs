@@ -408,6 +408,13 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         a: &[Fp<MontBackend<Self, N>, N>; M],
         b: &[Fp<MontBackend<Self, N>, N>; M],
     ) -> Fp<MontBackend<Self, N>, N> {
+        // On wasm32 the fused loop below emulates every 64x64->128 product, and separate
+        // radix-2^29 products are faster (BN254 Fq two terms: 78 ns against 107 ns in wasmtime).
+        #[cfg(target_family = "wasm")]
+        if <Self as super::mont29::Mont29Params<N>>::APPLIES {
+            return a.iter().zip(b).map(|(a, b)| *a * b).sum();
+        }
+
         // Adapted from https://github.com/zkcrypto/bls12_381/pull/84 by @str4d.
 
         // For a single `a x b` multiplication, operand scanning (schoolbook) takes each

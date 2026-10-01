@@ -38,8 +38,9 @@ pub(super) trait Mont29Params<const N: usize>: MontConfig<N> {
     /// `-p^{-1} mod 2^29`, the low bits of [`MontConfig::INV`].
     const INV29: u64 = Self::INV & MASK29;
     /// A Yuval step costs 9 products; a standard step one per nonzero limb of `p` and one
-    /// for `k` unless `-p^{-1} = -1 mod 2^29`.
-    const USE_YUVAL: bool = nonzero(&Self::P29) + (Self::INV29 != MASK29) as usize > 9;
+    /// for `k` unless `-p^{-1} = -1 mod 2^29`. At a tie the Yuval step is faster, 34.6 against
+    /// 37.5 ns per BLS12-381 `Fr` product in wasmtime.
+    const USE_YUVAL: bool = nonzero(&Self::P29) + (Self::INV29 != MASK29) as usize >= 9;
 }
 
 impl<T: MontConfig<N>, const N: usize> Mont29Params<N> for T {}
@@ -286,6 +287,30 @@ mod tests {
     #[generator = "2"]
     pub struct Curve25519FqConfig;
 
+    #[derive(MontConfig)]
+    #[modulus = "8444461749428370424248824938781546531375899335154063827935233455917409239041"]
+    #[generator = "22"]
+    pub struct Bls12377FrConfig;
+
+    #[derive(MontConfig)]
+    #[modulus = "28948022309329048855892746252171976963363056481941647379679742748393362948097"]
+    #[generator = "5"]
+    pub struct PallasFrConfig;
+
+    /// `a b 2^{-256} mod p` on raw Montgomery limbs, independent of any field multiply.
+    fn reference<C: MontConfig<4>>(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+        use num_bigint::BigUint;
+        let to_big = |x: &[u64; 4]| BigUint::from_slice(&x.iter().flat_map(|l| [*l as u32, (l >> 32) as u32]).collect::<Vec<_>>());
+        let p = to_big(&C::MODULUS.0);
+        let r_inv = (BigUint::from(1u8) << 256u32).modpow(&(&p - 2u8), &p);
+        let v = (to_big(a) * to_big(b) * r_inv) % &p;
+        let mut out = [0u64; 4];
+        for (i, d) in v.to_u64_digits().into_iter().enumerate() {
+            out[i] = d;
+        }
+        out
+    }
+
     fn check<C: MontConfig<4>>(yuval: bool) {
         type F<C> = Fp256<MontBackend<C, 4>>;
         assert!(<C as Mont29Params<4>>::APPLIES);
@@ -297,29 +322,34 @@ mod tests {
         let mut edge = vec![F::<C>::ZERO, F::<C>::ONE, -F::<C>::ONE, -F::<C>::from(2u64)];
         edge.push(F::<C>::from_bigint(BigInt([u64::MAX, u64::MAX, 0, 0])).unwrap());
         let mut values: Vec<F<C>> = (0..20_000).map(|_| F::<C>::rand(&mut rng)).collect();
+        // The raw maximum canonical limbs, `p - 1`, as a Montgomery representation.
+        let mut max = C::MODULUS;
+        max.sub_with_borrow(&BigInt::from(1u64));
+        edge.push(F::<C>::new_unchecked(max));
         values.extend(edge.iter().copied());
+        // Against `*`, which is CIOS on the host and mont29 itself on wasm32, and against the
+        // big-integer reference, which is independent on both.
         for (i, a) in values.iter().enumerate() {
             let b = values[(i * 7919 + 13) % values.len()];
-            assert_eq!(mul::<C, 4>(&a.0, &b.0), (*a * b).0 .0);
-            assert_eq!(square::<C, 4>(&a.0), a.square().0 .0);
+            let expected = reference::<C>(&(a.0).0, &(b.0).0);
+            assert_eq!(mul::<C, 4>(&a.0, &b.0), expected);
+            assert_eq!(square::<C, 4>(&a.0), reference::<C>(&(a.0).0, &(a.0).0));
+            assert_eq!((*a * b).0 .0, expected);
         }
         for a in &edge {
             for b in &edge {
-                assert_eq!(mul::<C, 4>(&a.0, &b.0), (*a * b).0 .0);
+                assert_eq!(mul::<C, 4>(&a.0, &b.0), reference::<C>(&(a.0).0, &(b.0).0));
             }
         }
-        // The raw maximum canonical limbs, p - 1, in both operands.
-        let mut max = C::MODULUS;
-        max.sub_with_borrow(&BigInt::from(1u64));
-        let max = F::<C>::from_bigint(max).unwrap();
-        assert_eq!(mul::<C, 4>(&max.0, &max.0), (max * max).0 .0);
     }
 
     #[test]
-    fn matches_cios() {
+    fn matches_reference() {
         check::<Bn254FqConfig>(true);
         check::<PallasFqConfig>(false);
-        check::<Bls12381FrConfig>(false);
+        check::<PallasFrConfig>(false);
+        check::<Bls12381FrConfig>(true);
+        check::<Bls12377FrConfig>(true);
         check::<Curve25519FqConfig>(true);
     }
 }

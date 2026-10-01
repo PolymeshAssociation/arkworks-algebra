@@ -43,6 +43,15 @@ pub(super) fn sum_of_products_impl(num_limbs: usize, modulus: &[u64]) -> proc_ma
         // `2p` while `(M + 1) p < R`, which `M = 2^s - 1` meets for `s >= 2` spare bits.
         let spare_bits = num_limbs * 64 - modulus_size;
         let chunk_size = (1usize << spare_bits.min(16)) - 1;
+        // The fields whose products take the radix-2^29 path on wasm32, where the fused loop
+        // below emulates every 64x64->128 product and separate products are faster.
+        if num_limbs == 4 && modulus[3] >> 63 == 0 {
+            body.extend(quote! {
+                if cfg!(target_family = "wasm") {
+                    return a.iter().zip(b).map(|(a, b)| *a * b).sum();
+                }
+            });
+        }
         body.extend(quote! {
             if M <= #chunk_size {
                 // Algorithm 2, line 2
