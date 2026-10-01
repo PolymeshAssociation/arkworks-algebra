@@ -34,6 +34,11 @@ impl SWCurveConfig for PallasConfig {
     /// AFFINE_GENERATOR_COEFFS = (G1_GENERATOR_X, G1_GENERATOR_Y)
     const GENERATOR: Affine = Affine::new_unchecked(G_GENERATOR_X, G_GENERATOR_Y);
 
+    /// Host MSM name, fixed so the ID does not depend on `core::any::type_name`.
+    fn curve_name() -> Option<&'static str> {
+        Some("pallas")
+    }
+
     /// Correctness:
     /// The curve equation is y^2 = x^3 + b
     /// Substituting (0, 0) gives 0^2 = 0^3 + b which simplifies to 0 = b.

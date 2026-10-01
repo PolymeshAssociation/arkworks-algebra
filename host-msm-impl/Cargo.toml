@@ -28,9 +28,10 @@ ark-bls12-381 = { workspace = true, default-features = false, features = ["curve
 ark-bn254 = { workspace = true, default-features = false, features = ["curve"] }
 
 lazy_static = { version = "1.5.0", default-features = false, optional = true }
+rayon = { workspace = true, optional = true }
 
 [features]
 default = ["std"]
 std = ["ark-std/std", "ark-ec/std", "ark-serialize/std", "lazy_static"]
-parallel = ["std", "ark-std/parallel", "ark-ec/parallel", "ark-serialize/parallel"]
+parallel = ["std", "ark-std/parallel", "ark-ec/parallel", "ark-serialize/parallel", "rayon"]
 asm = ["ark-ff/asm"]

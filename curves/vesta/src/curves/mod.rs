@@ -34,6 +34,11 @@ impl SWCurveConfig for VestaConfig {
     /// AFFINE_GENERATOR_COEFFS = (G1_GENERATOR_X, G1_GENERATOR_Y)
     const GENERATOR: Affine = Affine::new_unchecked(G_GENERATOR_X, G_GENERATOR_Y);
 
+    /// Host MSM name, fixed so the ID does not depend on `core::any::type_name`.
+    fn curve_name() -> Option<&'static str> {
+        Some("vesta")
+    }
+
     /// Correctness:
     /// Substituting (0, 0) into the curve equation gives 0^2 = b.
     /// Since b is not zero, the point (0, 0) is not on the curve.

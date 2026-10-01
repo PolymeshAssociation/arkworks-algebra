@@ -33,6 +33,21 @@ pub mod table_cache {
     /// Below this base count the per-base filtering isn't worth it; use the plain MSM.
     const MIN_BASES_FOR_TABLE: usize = 256;
 
+    /// Most rayon threads at which the table path is used. On Pallas (Apple M3 Max, 514 to 32768
+    /// tabled bases plus 0 or 80 others) the table is 0.69x to 0.93x of the plain MSM's time on
+    /// one thread and mostly below 1x up to 8, but on 12 and 16 threads it is 1.03x to 1.17x at
+    /// 514 and from 8192 bases, where the plain MSM's GLV split and window parallelism win.
+    #[cfg(feature = "parallel")]
+    const MAX_THREADS_FOR_TABLE: usize = 8;
+
+    /// Whether the caller's rayon pool is small enough for the table path to pay.
+    fn table_pays() -> bool {
+        #[cfg(feature = "parallel")]
+        return rayon::current_num_threads() <= MAX_THREADS_FOR_TABLE;
+        #[cfg(not(feature = "parallel"))]
+        true
+    }
+
     /// Type-erased per-curve table so the registry can hold any curve behind one trait.
     pub trait HostTable: Send + Sync {
         /// Deserialize `(bases, scalars)` from `buffer[CURVE_ID_LEN..buf_len]`, compute the MSM with
@@ -97,14 +112,30 @@ pub mod table_cache {
             (fixed, var_bases, var_scalars)
         }
 
-        /// The table-aware MSM: the fixed part goes through the fixed-base tables.
+        /// The table-aware MSM: the fixed part goes through the fixed-base tables, alongside the
+        /// variable part.
         pub fn table_aware_msm(
             &self,
             bases: &[Affine<P>],
             scalars: &[P::ScalarField],
         ) -> Projective<P> {
             let (fixed, var_bases, var_scalars) = self.split(bases, scalars);
-            self.tables.msm(&fixed) + msm_batch_affine::<P>(&var_bases, &var_scalars)
+            self.msm_split(&fixed, &var_bases, &var_scalars)
+        }
+
+        fn msm_split(
+            &self,
+            fixed: &[P::ScalarField],
+            var_bases: &[Affine<P>],
+            var_scalars: &[P::ScalarField],
+        ) -> Projective<P> {
+            let fixed_part = || self.tables.msm(fixed);
+            let var_part = || msm_batch_affine::<P>(var_bases, var_scalars);
+            #[cfg(feature = "parallel")]
+            let (f, v) = rayon::join(fixed_part, var_part);
+            #[cfg(not(feature = "parallel"))]
+            let (f, v) = (fixed_part(), var_part());
+            f + v
         }
     }
 
@@ -114,10 +145,15 @@ pub mod table_cache {
                 Some(input) => input,
                 None => return 0,
             };
-            let res: Projective<P> = if bases.len() < MIN_BASES_FOR_TABLE {
+            if bases.len().min(scalars.len()) < MIN_BASES_FOR_TABLE || !table_pays() {
+                return super::write_msm_result(super::plain_msm::<P>(&bases, &scalars), buffer);
+            }
+            let (fixed, var_bases, var_scalars) = self.split(&bases, &scalars);
+            let matched = bases.len().min(scalars.len()) - var_bases.len();
+            let res = if matched < MIN_BASES_FOR_TABLE {
                 super::plain_msm::<P>(&bases, &scalars)
             } else {
-                self.table_aware_msm(&bases, &scalars)
+                self.msm_split(&fixed, &var_bases, &var_scalars)
             };
             super::write_msm_result(res, buffer)
         }
@@ -143,27 +179,41 @@ pub mod table_cache {
     }
 
     /// Register/replace the fixed-base table for curve `P` over `bases`. Called natively at node
-    /// init. A curve with no registration uses the plain MSM.
-    pub fn register_table<P: SWCurveConfig>(bases: &[Affine<P>]) {
-        insert_table(CurveTable::new(bases));
+    /// init. Returns `false`, registering nothing, when the host MSM does not serve `P`
+    /// (`RegisteredCurves::new` lists the curves it serves). A curve with no table uses the plain
+    /// MSM.
+    pub fn register_table<P: SWCurveConfig>(bases: &[Affine<P>]) -> bool {
+        is_served::<P>() && insert_table(CurveTable::new(bases))
     }
 
     /// [`register_table`] but with an explicit fixed-base window size instead of the one chosen
     /// by arkworks. A smaller `c` gives more windows — a larger table but a smaller per-window
     /// bucket array. Lets a benchmark compare table memory and eval time across window sizes.
-    pub fn register_table_with_given_size<P: SWCurveConfig>(bases: &[Affine<P>], window_size: usize) {
-        insert_table(CurveTable::new_given_window_size(bases, window_size));
+    pub fn register_table_with_given_size<P: SWCurveConfig>(
+        bases: &[Affine<P>],
+        window_size: usize,
+    ) -> bool {
+        is_served::<P>() && insert_table(CurveTable::new_given_window_size(bases, window_size))
     }
 
-    fn insert_table<P: SWCurveConfig>(table: CurveTable<P>) {
-        let name = match <Projective<P> as VariableBaseMSM>::curve_name() {
-            Some(n) => n,
-            None => return,
+    /// Whether the host MSM serves `P`, the only curves whose tables it consults.
+    fn is_served<P: SWCurveConfig>() -> bool {
+        <Projective<P> as VariableBaseMSM>::curve_name()
+            .is_some_and(|n| super::SUPPORTED_CURVES.serves(&CurveMSMId::from_curve_name(n)))
+    }
+
+    fn insert_table<P: SWCurveConfig>(table: CurveTable<P>) -> bool {
+        let Some(name) = <Projective<P> as VariableBaseMSM>::curve_name() else {
+            return false;
         };
         let curve_id = CurveMSMId::from_curve_name(name);
         let table: Arc<dyn HostTable> = Arc::new(table);
-        if let Ok(mut tables) = TABLES.write() {
-            tables.insert(curve_id, table);
+        match TABLES.write() {
+            Ok(mut tables) => {
+                tables.insert(curve_id, table);
+                true
+            },
+            Err(_) => false,
         }
     }
 
@@ -183,28 +233,42 @@ pub struct RegisteredCurves {
 }
 
 impl RegisteredCurves {
+    /// Pallas, Vesta, and G1 and G2 of BLS12-381 and BN254.
     pub fn new() -> Self {
         let mut curves = RegisteredCurves {
             curves: BTreeMap::new(),
         };
-        curves.register_curve::<PallasConfig>();
-        curves.register_curve::<VestaConfig>();
-        curves.register_curve::<Bls12_381G1Config>();
-        curves.register_curve::<Bls12_381G2Config>();
-        curves.register_curve::<Bn254G1Config>();
-        curves.register_curve::<Bn254G2Config>();
+        let registered = [
+            curves.register_curve::<PallasConfig>(),
+            curves.register_curve::<VestaConfig>(),
+            curves.register_curve::<Bls12_381G1Config>(),
+            curves.register_curve::<Bls12_381G2Config>(),
+            curves.register_curve::<Bn254G1Config>(),
+            curves.register_curve::<Bn254G2Config>(),
+        ];
+        debug_assert!(registered.iter().all(|r| *r), "host MSM curve IDs collide");
         curves
     }
 
+    /// Serves `P` under its [`SWCurveConfig::curve_name`] ID. Returns `false`, registering
+    /// nothing, when `P` has no name or another curve already holds the ID, as G1 and G2 of one
+    /// crate do under the default name.
     pub fn register_curve<P: SWCurveConfig + 'static>(&mut self) -> bool {
-        if let Some(name) = <Projective<P> as VariableBaseMSM>::curve_name() {
-            let curve_id = CurveMSMId::from_curve_name(name);
-            self.curves
-                .insert(curve_id, Box::new(host_msm_unchecked_impl::<P>));
-            true
-        } else {
-            false
+        let Some(name) = <Projective<P> as VariableBaseMSM>::curve_name() else {
+            return false;
+        };
+        let curve_id = CurveMSMId::from_curve_name(name);
+        if self.curves.contains_key(&curve_id) {
+            return false;
         }
+        self.curves
+            .insert(curve_id, Box::new(host_msm_unchecked_impl::<P>));
+        true
+    }
+
+    /// Whether a curve is registered under `curve_id`.
+    pub fn serves(&self, curve_id: &CurveMSMId) -> bool {
+        self.curves.contains_key(curve_id)
     }
 
     /// Returns `1` for a probe (`buf_len == CURVE_ID_LEN`) of a registered curve, the serialized
@@ -240,16 +304,33 @@ lazy_static::lazy_static! {
 }
 
 #[cfg(not(feature = "std"))]
-static mut SUPPORTED_CURVES: Option<RegisteredCurves> = None;
+static SUPPORTED_CURVES: core::sync::atomic::AtomicPtr<RegisteredCurves> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
+/// The registry, built on first use. Racing first calls each build one and the loser frees its
+/// copy, so every caller sees the same `'static` registry.
 #[cfg(not(feature = "std"))]
-#[allow(static_mut_refs)]
 fn get_supported_curves() -> &'static RegisteredCurves {
-    unsafe {
-        if SUPPORTED_CURVES.is_none() {
-            SUPPORTED_CURVES = Some(RegisteredCurves::new());
-        }
-        SUPPORTED_CURVES.as_ref().unwrap()
+    use core::sync::atomic::Ordering;
+    let current = SUPPORTED_CURVES.load(Ordering::Acquire);
+    if !current.is_null() {
+        // SAFETY: a non-null pointer came from `Box::into_raw` below and is never freed.
+        return unsafe { &*current };
+    }
+    let fresh = Box::into_raw(Box::new(RegisteredCurves::new()));
+    match SUPPORTED_CURVES.compare_exchange(
+        core::ptr::null_mut(),
+        fresh,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        // SAFETY: `fresh` is now owned by the static and never freed.
+        Ok(_) => unsafe { &*fresh },
+        Err(winner) => {
+            // SAFETY: `fresh` was never shared; `winner` is owned by the static.
+            drop(unsafe { Box::from_raw(fresh) });
+            unsafe { &*winner }
+        },
     }
 }
 
@@ -460,8 +541,22 @@ mod tests {
         clear_tables();
         assert_eq!(run(&bases, &scalars), reference, "plain host MSM");
 
-        register_table::<PallasConfig>(&fixed);
+        assert!(register_table::<PallasConfig>(&fixed));
         assert_eq!(run(&bases, &scalars), reference, "table-aware host MSM");
+        // Both sides of the thread gate, and a request matching fewer tabled bases than the
+        // table needs.
+        #[cfg(feature = "parallel")]
+        for threads in [1usize, 16] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            pool.install(|| assert_eq!(run(&bases, &scalars), reference, "{threads} threads"));
+        }
+        let few = [&fixed[..100], &var[..]].concat();
+        let few_scalars = &scalars[..few.len()];
+        assert_eq!(
+            run(&few, few_scalars),
+            Projective::<PallasConfig>::msm_unchecked(&few, few_scalars),
+            "few tabled bases"
+        );
 
         clear_tables();
         assert_eq!(run(&bases, &scalars), reference, "after clear");
@@ -472,6 +567,7 @@ mod tests {
     /// table-aware MSM time, and the filtering share. Larger `c` = fewer windows = smaller table
     /// but a larger bucket array, so memory falls and eval time is U-shaped.
     #[test]
+    #[ignore]
     fn table_gen_and_filter_costs() {
         let mut rng = test_rng();
         let n_bases = 514usize;

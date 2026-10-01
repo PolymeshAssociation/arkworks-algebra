@@ -68,6 +68,34 @@ extern "C" {
     fn host_msm_unchecked(fat_ptr: u64) -> u32;
 }
 
+/// Curve names whose support probe the host answered with `1`, keyed by the name's address.
+/// The answer is fixed for a node binary, so later calls skip the probe. A full cache leaves the
+/// remaining curves probing on every call.
+#[cfg(not(feature = "std"))]
+mod supported_cache {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    #[allow(clippy::declare_interior_mutable_const)]
+    const EMPTY: AtomicUsize = AtomicUsize::new(0);
+    static NAMES: [AtomicUsize; 8] = [EMPTY; 8];
+
+    pub(super) fn contains(name: &'static str) -> bool {
+        let key = name.as_ptr() as usize;
+        NAMES.iter().any(|slot| slot.load(Ordering::Relaxed) == key)
+    }
+
+    pub(super) fn insert(name: &'static str) {
+        let key = name.as_ptr() as usize;
+        for slot in &NAMES {
+            match slot.compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return,
+                Err(current) if current == key => return,
+                Err(_) => {},
+            }
+        }
+    }
+}
+
 #[cfg(not(feature = "std"))]
 pub fn use_host_msm_unchecked<
     B: CanonicalSerialize,
@@ -82,12 +110,16 @@ pub fn use_host_msm_unchecked<
     let curve_id = CurveMSMId::from_curve_name(curve_name);
     curve_id.serialize_uncompressed(&mut buffer).ok()?;
 
-    // Call the host function with only the curve ID to check if the host supports MSM for this curve.
-    let fat_ptr = pack_fat_pointer(buffer.as_ptr() as u32, buffer.len() as u32);
-    let res_len = unsafe { host_msm_unchecked(fat_ptr) as usize };
-    if res_len == 0 {
-        // Host does not support MSM for this curve or an error occurred.
-        return None;
+    // Call the host function with only the curve ID to check if the host supports MSM for this
+    // curve, once per curve that it does.
+    if !supported_cache::contains(curve_name) {
+        let fat_ptr = pack_fat_pointer(buffer.as_ptr() as u32, buffer.len() as u32);
+        let res_len = unsafe { host_msm_unchecked(fat_ptr) as usize };
+        if res_len == 0 {
+            // Host does not support MSM for this curve or an error occurred.
+            return None;
+        }
+        supported_cache::insert(curve_name);
     }
 
     bases.serialize_uncompressed(&mut buffer).ok()?;
