@@ -39,9 +39,9 @@ use itertools::Either;
 use rayon::prelude::*;
 
 /// Smallest multi scalar multiplication routed here; below it the counting sort and the tree's
-/// bookkeeping outweigh the cheaper additions. Against the projective wNAF on Pallas (Apple M3
-/// Max, `batch_affine_bench`) it is level at `2^6`, 1.13x faster at `2^7` and 1.2x at `2^8`
-/// serially, and 1.05x at `2^8` with `parallel` on 16 threads.
+/// bookkeeping outweigh the cheaper additions. Against the projective wNAF (Apple M3 Max) the
+/// crossover is near `2^8` on BLS12-381 G1, 1.01x slower at `2^8` and 1.06x faster at 384 serially,
+/// and below `2^7` on Pallas, whose GLV split takes these sizes first.
 pub const BATCH_AFFINE_MIN_POINTS: usize = 1 << 8;
 
 #[derive(Clone, Copy, Default)]
@@ -97,6 +97,13 @@ pub(crate) struct ReduceScratch<F: Zero> {
     b_off: Vec<usize>,
     pending: Pending<F>,
 }
+
+/// Most window scratch the parallel windows hold at once. A window holds about two and a half
+/// points' worth per base: its sorted copy of the points, two reduction levels and the pending
+/// records. On Pallas with 16 threads at `2^20` bases this caps peak memory at 2.3 GB instead of
+/// 3.0 GB at the same speed; sizes up to `2^19` run every window at once as before.
+#[cfg(feature = "parallel")]
+const WINDOW_SCRATCH_BUDGET: usize = 2 << 30;
 
 /// Buffers for one [`window_sum`], reused across the windows a worker runs: the counting sort's
 /// output and the reduction levels.
@@ -224,10 +231,15 @@ fn sum_windows<P: SWCurveConfig>(bases: &[Affine<P>], setup: PippengerSetup) -> 
         window_sum::<P>(&scalar_digits, digits_count, i, bases, n, scratch)
     };
     #[cfg(feature = "parallel")]
-    let window_sums: Vec<_> = (0..digits_count)
-        .into_par_iter()
-        .map_init(WindowScratch::default, |scratch, i| window(i, scratch))
-        .collect();
+    let window_sums: Vec<_> = {
+        let per_window = bases.len() * core::mem::size_of::<Point<P::BaseField>>() * 5 / 2;
+        let in_flight = (WINDOW_SCRATCH_BUDGET / per_window.max(1)).max(1);
+        (0..digits_count)
+            .into_par_iter()
+            .with_min_len(digits_count.div_ceil(in_flight))
+            .map_init(WindowScratch::default, |scratch, i| window(i, scratch))
+            .collect()
+    };
     #[cfg(not(feature = "parallel"))]
     let window_sums: Vec<_> = {
         let mut scratch = WindowScratch::default();
