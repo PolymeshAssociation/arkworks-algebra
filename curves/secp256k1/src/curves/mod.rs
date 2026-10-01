@@ -1,9 +1,9 @@
 use ark_ec::{
     models::CurveConfig,
-    scalar_mul::glv::{try_glv_msm_small, GLVConfig},
+    scalar_mul::glv::{try_glv_msm_bigint_full_width, try_glv_msm_small, GLVConfig},
     short_weierstrass::{self as sw, SWCurveConfig},
 };
-use ark_ff::{AdditiveGroup, Field, MontFp, Zero};
+use ark_ff::{AdditiveGroup, Field, MontFp, PrimeField, Zero};
 
 use crate::{fq::Fq, fr::Fr};
 
@@ -62,6 +62,14 @@ impl SWCurveConfig for Config {
     #[inline]
     fn try_msm_small(bases: &[Affine], scalars: &[Self::ScalarField]) -> Option<Projective> {
         try_glv_msm_small::<Self>(bases, scalars)
+    }
+
+    #[inline]
+    fn try_msm_bigint_full_width(
+        bases: &[Affine],
+        bigints: &[<Self::ScalarField as PrimeField>::BigInt],
+    ) -> Option<Projective> {
+        try_glv_msm_bigint_full_width::<Self>(bases, bigints)
     }
 }
 

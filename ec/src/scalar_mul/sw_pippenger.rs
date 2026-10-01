@@ -21,14 +21,18 @@
 //! Their blog: <https://zakura.com/engineering/prepared-multiscalar-zero-checks/>.
 
 use crate::{
-    scalar_mul::variable_base::{
-        combine_window_sums, pippenger_setup, route_msm, PippengerSetup,
+    scalar_mul::{
+        glv::GLVConfig,
+        variable_base::{
+            combine_window_sums, pippenger_setup, pippenger_setup_given_window, route_msm,
+            PippengerSetup,
+        },
     },
     short_weierstrass::{Affine, Bucket, Projective, SWCurveConfig},
     AdditiveGroup, AffineRepr,
 };
-use ark_ff::{Field, PrimeField, Zero};
-use ark_std::vec::Vec;
+use ark_ff::{BigInteger, Field, PrimeField, Zero};
+use ark_std::{vec, vec::Vec};
 use itertools::Either;
 
 #[cfg(feature = "parallel")]
@@ -106,7 +110,8 @@ struct WindowScratch<F: Zero> {
 
 /// `sum(bases_i * scalars_i)` with affine buckets. Mirrors
 /// [`msm_unchecked`](crate::VariableBaseMSM::msm_unchecked): routes through [`route_msm`] (host
-/// MSM on guest builds, then the GLV ladder), else convert to bigints and call
+/// MSM on guest builds, then the GLV ladder), else convert to bigints and offer them to
+/// [`SWCurveConfig::try_msm_bigint_full_width`] (the GLV split on GLV curves) before
 /// [`msm_batch_affine_bigint`].
 pub fn msm_batch_affine<P: SWCurveConfig>(
     bases: &[Affine<P>],
@@ -114,7 +119,8 @@ pub fn msm_batch_affine<P: SWCurveConfig>(
 ) -> Projective<P> {
     match route_msm::<Projective<P>>(bases, scalars) {
         Either::Left(res) => res,
-        Either::Right(bigints) => msm_batch_affine_bigint::<P>(bases, &bigints),
+        Either::Right(bigints) => P::try_msm_bigint_full_width(bases, &bigints)
+            .unwrap_or_else(|| msm_batch_affine_bigint::<P>(bases, &bigints)),
     }
 }
 
@@ -127,15 +133,87 @@ pub fn msm_batch_affine_bigint<P: SWCurveConfig>(
     if size == 0 {
         return Projective::zero();
     }
-    let bases = &bases[..size];
+    sum_windows(
+        &bases[..size],
+        pippenger_setup::<P::ScalarField>(bigints, size),
+    )
+}
 
+/// [`msm_batch_affine_bigint`] over GLV halves. Each `k_i = k_{i,1} + \lambda k_{i,2} \pmod r`
+/// becomes the terms `[k_{i,1}] P_i` and `[k_{i,2}] \phi(P_i)`, with the halves' signs folded into
+/// the points, so twice the points meet half as many windows. Bucket insertions stay about
+/// `b n / c` for `b`-bit scalars, while the running sums, about `2^c` additions in each window,
+/// halve, which pays most at small `n`. `None` when some `k_i >= r`, which has no split. Ported
+/// from Zakura's GLV bucket multiexp, which splits every scalar before its windows:
+/// [`try_multiexp`](https://github.com/zakura-core/common/blob/b679027d/crates/pasta_curves/src/glv.rs#L2178-L2225)
+/// and [`multiexp`](https://github.com/zakura-core/common/blob/b679027d/crates/pasta_curves/src/glv.rs#L2134-L2153).
+pub fn msm_batch_affine_glv_bigint<P: GLVConfig>(
+    bases: &[Affine<P>],
+    bigints: &[<P::ScalarField as PrimeField>::BigInt],
+) -> Option<Projective<P>> {
+    let size = bases.len().min(bigints.len());
+    let (bases, bigints) = (&bases[..size], &bigints[..size]);
+    if bigints.iter().any(|k| *k >= P::ScalarField::MODULUS) {
+        return None;
+    }
+    let mut points = vec![Affine::<P>::zero(); 2 * size];
+    let mut halves = vec![<P::ScalarField as PrimeField>::BigInt::default(); 2 * size];
+    let split = |((p, h), (base, k)): (
+        (&mut [Affine<P>], &mut [<P::ScalarField as PrimeField>::BigInt]),
+        (&Affine<P>, &<P::ScalarField as PrimeField>::BigInt),
+    )| {
+        let ((s1, k1), (s2, k2)) = P::scalar_decomposition_bigint(k);
+        let phi = P::endomorphism_affine(base);
+        p[0] = if s1 { *base } else { -*base };
+        p[1] = if s2 { phi } else { -phi };
+        h[0] = k1;
+        h[1] = k2;
+    };
+    #[cfg(feature = "parallel")]
+    points
+        .par_chunks_mut(2)
+        .zip(halves.par_chunks_mut(2))
+        .zip(bases.par_iter().zip(bigints))
+        .with_min_len(GLV_SPLIT_MIN_TERMS_PER_TASK)
+        .for_each(split);
+    #[cfg(not(feature = "parallel"))]
+    points
+        .chunks_mut(2)
+        .zip(halves.chunks_mut(2))
+        .zip(bases.iter().zip(bigints))
+        .for_each(split);
+
+    let num_bits = halves.iter().map(|k| k.num_bits()).max().unwrap_or(0) as usize;
+    if num_bits == 0 {
+        return Some(Projective::zero());
+    }
+    let c = glv_window_size(points.len(), num_bits);
+    let setup = pippenger_setup_given_window::<P::ScalarField>(&halves, points.len(), num_bits, c);
+    Some(sum_windows(&points, setup))
+}
+
+/// Fewest terms one parallel task splits in [`msm_batch_affine_glv_bigint`], about ten
+/// microseconds of work.
+#[cfg(feature = "parallel")]
+const GLV_SPLIT_MIN_TERMS_PER_TASK: usize = 256;
+
+/// The `c` minimizing `\lceil b / c \rceil (m + 2^c)`, the window work of `m` points with `b`-bit
+/// scalars: `m` bucket insertions and about `2^c` additions in the running sum per window.
+fn glv_window_size(m: usize, num_bits: usize) -> usize {
+    (2..=20)
+        .min_by_key(|&c| num_bits.div_ceil(c) * (m + (1usize << c)))
+        .unwrap()
+}
+
+/// The window sums of `setup`'s digits over `bases`, combined by Horner's rule.
+fn sum_windows<P: SWCurveConfig>(bases: &[Affine<P>], setup: PippengerSetup) -> Projective<P> {
     let PippengerSetup {
         c,
         digits_count,
         scalar_digits,
         ms_window_num_buckets,
         num_buckets,
-    } = pippenger_setup::<P::ScalarField>(bigints, size);
+    } = setup;
 
     let window = |i: usize, scratch: &mut WindowScratch<P::BaseField>| {
         let n = if i == (digits_count - 1) {

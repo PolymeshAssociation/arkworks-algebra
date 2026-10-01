@@ -441,6 +441,7 @@ macro_rules! __test_group {
             $crate::glv::glv_projective::<Config>();
             $crate::glv::glv_affine::<Config>();
             $crate::glv::glv_scalar_decomposition::<Config>();
+            $crate::glv::glv_scalar_decomposition_bigint_matches_field::<Config>();
             $crate::glv::glv_endomorphism_eigenvalue::<Config>();
             $crate::glv::jsf_reconstructs_the_scalars::<Config>();
             $crate::glv::jsf_mul_matches_shamir_and_naive::<Config>();
@@ -459,6 +460,11 @@ macro_rules! __test_group {
             $crate::glv::eisenstein_orbit_points_match_native::<Config>();
             $crate::glv::eisenstein_matches_jsf::<Config>();
             $crate::glv::eisenstein_same_scalar_batch::<Config>();
+        }
+
+        #[test]
+        fn test_glv_msm() {
+            $crate::glv::glv_msm_batch_affine_matches_wnaf::<Config>();
         }
     }
 }

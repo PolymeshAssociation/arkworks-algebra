@@ -7,7 +7,7 @@ use ark_std::{
     io::{Read, Write},
 };
 
-use ark_ff::{fields::Field, AdditiveGroup};
+use ark_ff::{fields::Field, AdditiveGroup, PrimeField};
 
 use crate::{
     scalar_mul::{double_and_add, double_and_add_affine, variable_base::VariableBaseMSM},
@@ -132,6 +132,18 @@ pub trait SWCurveConfig: super::CurveConfig {
     fn try_msm_small(
         _bases: &[Affine<Self>],
         _scalars: &[Self::ScalarField],
+    ) -> Option<Projective<Self>> {
+        None
+    }
+
+    /// Offers the full-width part of a multi scalar multiplication, the scalars too wide for
+    /// the narrow-integer paths, tried by
+    /// [`VariableBaseMSM::msm_bigint_full_width`] before the bucket algorithm. `None` declines.
+    /// GLV curves split the scalars through
+    /// [`try_glv_msm_bigint_full_width`](crate::scalar_mul::glv::try_glv_msm_bigint_full_width).
+    fn try_msm_bigint_full_width(
+        _bases: &[Affine<Self>],
+        _bigints: &[<Self::ScalarField as PrimeField>::BigInt],
     ) -> Option<Projective<Self>> {
         None
     }

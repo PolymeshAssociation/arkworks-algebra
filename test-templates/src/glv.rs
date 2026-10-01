@@ -500,3 +500,99 @@ pub fn eisenstein_same_scalar_batch<P: GLVConfig>() {
         }
     }
 }
+
+/// [`msm_batch_affine_glv_bigint`](ark_ec::scalar_mul::sw_pippenger::msm_batch_affine_glv_bigint)
+/// and the routed [`VariableBaseMSM::msm_bigint`](ark_ec::VariableBaseMSM::msm_bigint) and
+/// [`msm_batch_affine`](ark_ec::scalar_mul::sw_pippenger::msm_batch_affine) against the
+/// projective wNAF, on the inputs that stress the split: identity bases, one base repeated,
+/// bases that are endomorphism images and negations of each other so that split terms land in
+/// the same buckets, zero scalars, `1`, `-1`, `\lambda` (a zero first half) and every size
+/// around the routing range. Scalars at least `r` decline and the routed sum stays exact.
+pub fn glv_msm_batch_affine_matches_wnaf<P: GLVConfig>() {
+    use ark_ec::{
+        scalar_mul::{
+            sw_pippenger::{msm_batch_affine, msm_batch_affine_glv_bigint},
+            variable_base::msm_bigint_wnaf,
+        },
+        VariableBaseMSM,
+    };
+    let rng = &mut test_rng();
+    let one = P::ScalarField::one();
+    let check = |bases: &[Affine<P>], scalars: &[P::ScalarField]| {
+        let bigints: Vec<_> = scalars.iter().map(|s| s.into_bigint()).collect();
+        let expected: Projective<P> = msm_bigint_wnaf(bases, &bigints);
+        let n = bases.len();
+        assert_eq!(msm_batch_affine_glv_bigint::<P>(bases, &bigints), Some(expected), "n = {n}");
+        assert_eq!(Projective::<P>::msm_bigint(bases, &bigints), expected, "n = {n}");
+        assert_eq!(msm_batch_affine::<P>(bases, scalars), expected, "n = {n}");
+    };
+
+    for n in [1usize, 2, 3, 64, 127, 128, 129, 255, 256, 257, 1000] {
+        let random: Vec<Affine<P>> = (0..n).map(|_| Projective::<P>::rand(rng).into_affine()).collect();
+        let base = random[0];
+        let phi = P::endomorphism_affine(&base);
+        let phi2 = P::endomorphism_affine(&phi);
+        let orbit: Vec<Affine<P>> = (0..n)
+            .map(|i| [base, phi, -phi2, -base][i % 4])
+            .collect();
+        let mut with_identity = random.clone();
+        for (i, b) in with_identity.iter_mut().enumerate() {
+            if i % 3 == 0 {
+                *b = Affine::<P>::zero();
+            }
+        }
+        for bases in [random, orbit, with_identity, vec![base; n]] {
+            for scalars in [
+                (0..n).map(|_| P::ScalarField::rand(rng)).collect::<Vec<_>>(),
+                vec![P::ScalarField::zero(); n],
+                vec![one; n],
+                vec![-one; n],
+                vec![P::LAMBDA; n],
+                (0..n).map(|i| P::ScalarField::from(i as u64)).collect(),
+            ] {
+                check(&bases, &scalars);
+            }
+        }
+    }
+    let n = 1 << 12;
+    let bases: Vec<Affine<P>> = (0..n).map(|_| Projective::<P>::rand(rng).into_affine()).collect();
+    let scalars: Vec<_> = (0..n).map(|_| P::ScalarField::rand(rng)).collect();
+    check(&bases, &scalars);
+
+    let mut above = P::ScalarField::MODULUS;
+    for k in [P::ScalarField::MODULUS, { above.add_with_carry(&1u64.into()); above }] {
+        for n in [4usize, 300] {
+            let bases: Vec<Affine<P>> = (0..n).map(|_| Projective::<P>::rand(rng).into_affine()).collect();
+            let mut bigints: Vec<_> = (0..n).map(|_| P::ScalarField::rand(rng).into_bigint()).collect();
+            bigints[n / 2] = k;
+            assert_eq!(msm_batch_affine_glv_bigint::<P>(&bases, &bigints), None);
+            let expected: Projective<P> = bases.iter().zip(&bigints).map(|(b, k)| b.mul_bigint(k)).sum();
+            assert_eq!(Projective::<P>::msm_bigint(&bases, &bigints), expected, "n = {n}");
+        }
+    }
+}
+
+/// [`GLVConfig::scalar_decomposition_bigint`] returns the halves of
+/// [`GLVConfig::scalar_decomposition`] as integers, on random scalars and on `0`, `1`, `-1`,
+/// `(r - 1) / 2`, `(r + 1) / 2`, `\lambda` and `-\lambda`.
+pub fn glv_scalar_decomposition_bigint_matches_field<P: GLVConfig>() {
+    let rng = &mut test_rng();
+    let half = P::ScalarField::from_bigint(P::ScalarField::MODULUS_MINUS_ONE_DIV_TWO).unwrap();
+    let edges = [
+        P::ScalarField::zero(),
+        P::ScalarField::one(),
+        -P::ScalarField::one(),
+        half,
+        half + P::ScalarField::one(),
+        P::LAMBDA,
+        -P::LAMBDA,
+    ];
+    for k in edges.into_iter().chain((0..1000).map(|_| P::ScalarField::rand(rng))) {
+        let ((s1, k1), (s2, k2)) = P::scalar_decomposition(k);
+        assert_eq!(
+            P::scalar_decomposition_bigint(&k.into_bigint()),
+            ((s1, k1.into_bigint()), (s2, k2.into_bigint())),
+            "k = {k}"
+        );
+    }
+}
