@@ -50,8 +50,8 @@ fn timing() {
         let s = <Bn254 as Pairing>::ScalarField::rand(&mut rng);
         let sb = s.into_bigint();
         let q = G2Projective::rand(&mut rng);
-        bench("g2_mul_glv", 3000, 12, || { black_box(black_box(q).mul_bigint(sb)); });
-        bench("g2_mul_double_add", 3000, 12, || { black_box(double_and_add(&black_box(q), sb)); });
+        bench("g2_mul_glv", 3000, 12, || { let _ = black_box(black_box(q).mul_bigint(sb)); });
+        bench("g2_mul_double_add", 3000, 12, || { let _ = black_box(double_and_add(&black_box(q), sb)); });
     }
     {
         let gt = Bn254::pairing(g1[0], g2[0]);
@@ -74,7 +74,7 @@ fn timing() {
     });
     bench("miller_1pair", 800, 12, || {
         i = (i + 1) % n;
-        black_box(Bn254::multi_miller_loop([g1_prep[i].clone()], [g2_prep[i].clone()]));
+        let _ = black_box(Bn254::multi_miller_loop([g1_prep[i].clone()], [g2_prep[i].clone()]));
     });
     bench("final_exp", 500, 12, || {
         i = (i + 1) % n;
@@ -82,7 +82,7 @@ fn timing() {
     });
     bench("pairing_1pair", 300, 12, || {
         i = (i + 1) % n;
-        black_box(Bn254::pairing(g1[i], g2[i]));
+        let _ = black_box(Bn254::pairing(g1[i], g2[i]));
     });
     {
         // Groth16 shape: the proof's `B` fresh, the verifying key's `gamma` and `delta`
@@ -107,7 +107,7 @@ fn timing() {
     for k in [1usize, 2, 4, 5, 8, 9] {
         bench(&format!("multipairing_{k}"), 150, 8, || {
             i = (i + 1) % (n - k);
-            black_box(Bn254::multi_pairing(g1[i..i + k].to_vec(), g2[i..i + k].to_vec()));
+            let _ = black_box(Bn254::multi_pairing(g1[i..i + k].to_vec(), g2[i..i + k].to_vec()));
         });
     }
 }

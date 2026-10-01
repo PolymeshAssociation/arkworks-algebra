@@ -256,7 +256,7 @@ impl<P: BnConfig> G2Prepared<P> {
 }
 
 /// The coefficient `ell` scales by `P.y`: index 2 for an M-twist, index 0 for a D-twist.
-pub(crate) fn py_coeff<P: BnConfig>(c: &EllCoeff<P>) -> &Fp2<P::Fp2Config> {
+pub(crate) const fn py_coeff<P: BnConfig>(c: &EllCoeff<P>) -> &Fp2<P::Fp2Config> {
     match P::TWIST_TYPE {
         TwistType::M => &c.2,
         TwistType::D => &c.0,
@@ -265,7 +265,7 @@ pub(crate) fn py_coeff<P: BnConfig>(c: &EllCoeff<P>) -> &Fp2<P::Fp2Config> {
 
 /// The two coefficients of a normalized line other than its unit `P.y` coefficient, in slot
 /// order.
-pub(crate) fn fixed_line<P: BnConfig>(c: &EllCoeff<P>) -> (Fp2<P::Fp2Config>, Fp2<P::Fp2Config>) {
+pub(crate) const fn fixed_line<P: BnConfig>(c: &EllCoeff<P>) -> (Fp2<P::Fp2Config>, Fp2<P::Fp2Config>) {
     match P::TWIST_TYPE {
         TwistType::M => (c.0, c.1),
         TwistType::D => (c.1, c.2),
@@ -286,7 +286,7 @@ fn mul_by_char<P: BnConfig>(r: G2Affine<P>) -> G2Affine<P> {
 
 /// Number of line coefficients a `G2Prepared` holds: one per doubling, one per
 /// nonzero ate-loop digit below the top, and two for the Frobenius steps.
-fn num_ell_coeffs<P: BnConfig>() -> usize {
+const fn num_ell_coeffs<P: BnConfig>() -> usize {
     let ate = P::ATE_LOOP_COUNT;
     let doublings = ate.len() - 1;
     let mut adds = 0usize;

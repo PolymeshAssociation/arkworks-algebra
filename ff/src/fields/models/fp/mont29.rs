@@ -159,7 +159,7 @@ fn products(l: &[u64; 9], r: &[u64; 9]) -> [u64; 17] {
 
 /// Column sums of `l^2`: 45 products, cross terms doubled.
 #[inline(always)]
-fn square_products(l: &[u64; 9]) -> [u64; 17] {
+const fn square_products(l: &[u64; 9]) -> [u64; 17] {
     [
         l[0] * l[0],
         (l[0] * l[1]) << 1,

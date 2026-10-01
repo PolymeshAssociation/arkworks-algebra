@@ -174,7 +174,7 @@ impl<P: Bls12Config> G2Prepared<P> {
 }
 
 /// The coefficient `ell` scales by `P.y`: index 2 for an M-twist, index 0 for a D-twist.
-pub(crate) fn py_coeff<P: Bls12Config>(c: &EllCoeff<P>) -> &Fp2<P::Fp2Config> {
+pub(crate) const fn py_coeff<P: Bls12Config>(c: &EllCoeff<P>) -> &Fp2<P::Fp2Config> {
     match P::TWIST_TYPE {
         TwistType::M => &c.2,
         TwistType::D => &c.0,
@@ -183,7 +183,7 @@ pub(crate) fn py_coeff<P: Bls12Config>(c: &EllCoeff<P>) -> &Fp2<P::Fp2Config> {
 
 /// The two coefficients of a normalized line other than its unit `P.y` coefficient, in the order
 /// [`G2PreparedFixed`] stores them.
-pub(crate) fn fixed_line<P: Bls12Config>(
+pub(crate) const fn fixed_line<P: Bls12Config>(
     c: &EllCoeff<P>,
 ) -> (Fp2<P::Fp2Config>, Fp2<P::Fp2Config>) {
     match P::TWIST_TYPE {
@@ -266,7 +266,7 @@ impl<P: Bls12Config> G2HomProjective<P> {
 
 /// Number of line coefficients a `G2Prepared` holds: one per doubling plus one
 /// per set bit of `X` after the most significant.
-fn num_ell_coeffs<P: Bls12Config>() -> usize {
+const fn num_ell_coeffs<P: Bls12Config>() -> usize {
     let x = P::X;
     let mut bits = 64 * x.len();
     let mut i = x.len();
@@ -308,9 +308,15 @@ fn num_ell_coeffs<P: Bls12Config>() -> usize {
 #[derive(Educe, CanonicalSerialize)]
 #[educe(Clone, Debug, PartialEq, Eq)]
 pub struct G2PreparedFixed<P: Bls12Config> {
-    pub lines: Vec<(Fp2<P::Fp2Config>, Fp2<P::Fp2Config>)>,
+    pub lines: Vec<FixedLine<P>>,
     pub infinity: bool,
 }
+
+/// A normalized line's two remaining `Fp2` coefficients.
+pub type FixedLine<P> = (
+    Fp2<<P as Bls12Config>::Fp2Config>,
+    Fp2<<P as Bls12Config>::Fp2Config>,
+);
 
 impl<P: Bls12Config> Valid for G2PreparedFixed<P> {
     /// The line count the Miller loop consumes, none at infinity.

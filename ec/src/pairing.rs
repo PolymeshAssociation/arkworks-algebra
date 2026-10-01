@@ -398,8 +398,8 @@ pub fn gt_multiexp<F: CyclotomicMultSubgroup>(
             acc.cyclotomic_square_in_place();
         }
         let mut mask = 0usize;
-        for i in 0..4 {
-            if (mags[i] >> bit) & 1 == 1 {
+        for (i, m) in mags.iter().enumerate() {
+            if (m >> bit) & 1 == 1 {
                 mask |= 1 << i;
             }
         }
