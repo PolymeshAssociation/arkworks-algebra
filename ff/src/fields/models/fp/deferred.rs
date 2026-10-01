@@ -199,7 +199,10 @@ mod tests {
     #[test]
     fn carry_folds_on_twelve_limbs() {
         type F = Fp<MontBackend<Twelve, 12>, 12>;
-        assert!(Twelve::CAN_DEFER);
+        #[allow(clippy::assertions_on_constants)]
+        {
+            assert!(Twelve::CAN_DEFER);
+        }
         let mut rng = test_rng();
         let mut max = Twelve::MODULUS;
         max.0[0] -= 1;

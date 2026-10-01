@@ -311,6 +311,7 @@ mod tests {
         // in [1,d] and random coefficient
         random_terms.push((Fr::rand(rng), SparseTerm::new(vec![])));
         for _ in 1..num_terms {
+            #[allow(clippy::filter_map_bool_then)]
             let term = (0..l)
                 .filter_map(|i| rng.gen_bool(0.5).then(|| (i, rng.gen_range(1..(d + 1)))))
                 .collect();
