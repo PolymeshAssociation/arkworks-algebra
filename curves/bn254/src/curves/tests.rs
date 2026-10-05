@@ -314,12 +314,8 @@ fn test_g2_subgroup_check() {
 
 #[test]
 fn test_scalar_mul_matches_double_and_add() {
-    use ark_ff::PrimeField;
-    subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8, 128);
-    subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(
-        8,
-        crate::Fr::MODULUS_BIT_SIZE,
-    );
+    subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8);
+    subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(8);
 }
 
 #[test]

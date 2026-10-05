@@ -54,6 +54,6 @@ fn test_prepared_g2_line_count_is_validated() {
 /// subgroup below `2^128`.
 #[test]
 fn test_scalar_mul_matches_double_and_add() {
-    subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8, 128);
-    subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(8, 128);
+    subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8);
+    subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(8);
 }

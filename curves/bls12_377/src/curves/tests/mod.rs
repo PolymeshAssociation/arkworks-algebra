@@ -77,8 +77,8 @@ fn test_g2_subgroup_check() {
 /// subgroup below `2^128`.
 #[test]
 fn test_scalar_mul_matches_double_and_add() {
-    ark_algebra_test_templates::subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8, 128);
-    ark_algebra_test_templates::subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(8, 128);
+    ark_algebra_test_templates::subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8);
+    ark_algebra_test_templates::subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(8);
 }
 
 #[test]

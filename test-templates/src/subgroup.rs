@@ -86,16 +86,15 @@ pub fn test_subgroup_check<P: SWCurveConfig>(cofactor_primes: &[u64], samples: u
 }
 
 /// Checks affine and projective `mul_bigint` against `double_and_add_affine`.
-/// - On random curve points, which need not lie in the order-`r` subgroup: `r`, the cofactor, and
-///   random integers below `2^exact_bits` and `2^exact_bits - 1`. `exact_bits` is how far the
-///   multiplication stays exact off the subgroup: 128 for two-dimensional GLV, which recodes
-///   `k < 2^128` as `(k, 0)`, and the scalar field's bit size for BN254 and BLS12-381 G2, whose
-///   four-dimensional GLS sits behind `*` only.
+/// - On random curve points, which need not lie in the order-`r` subgroup: `r`, `r - 1`, the
+///   cofactor, `2^b - 1` and random integers below `2^64`, `2^128` and `2^b`, for `b` the scalar
+///   field's bit size. `mul_bigint` takes an integer, which subgroup checks and cofactor clearing
+///   apply off the subgroup, so it must be exact at every width. Endomorphism methods belong
+///   behind `*`.
 /// - On subgroup points: random scalars of every bit width, the width boundaries `2^w - 1` and
 ///   `2^w`, `0`, `1`, `r - 1`, and the integers `r`, `r + 1`, `2r`, the cofactor and one wider
-///   than the scalar field, which take `double_and_add`. Also the identity, and `*` for random
-///   scalar field elements.
-pub fn test_scalar_mul_matches_double_and_add<P: SWCurveConfig>(samples: usize, exact_bits: u32) {
+///   than the scalar field. Also the identity, and `*` for random scalar field elements.
+pub fn test_scalar_mul_matches_double_and_add<P: SWCurveConfig>(samples: usize) {
     let mut rng = test_rng();
     let r = P::ScalarField::characteristic();
     let r_big = to_biguint(r);
@@ -134,16 +133,15 @@ pub fn test_scalar_mul_matches_double_and_add<P: SWCurveConfig>(samples: usize, 
         let p = random_curve_point::<P, _>(&mut rng);
         for k in [
             r_big.clone(),
+            &r_big - 1u64,
             to_biguint(P::COFACTOR),
-            (&one << exact_bits) - 1u64,
+            (&one << modulus_bits) - 1u64,
         ] {
             check(&p, &limbs(&k), "curve point");
         }
-        check(
-            &p,
-            &limbs(&random_below(&mut rng, exact_bits)),
-            "curve point",
-        );
+        for w in [64, 128, modulus_bits] {
+            check(&p, &limbs(&random_below(&mut rng, w)), "curve point");
+        }
 
         let s = (Affine::<P>::generator() * P::ScalarField::rand(&mut rng)).into_affine();
         for k in &fixed {

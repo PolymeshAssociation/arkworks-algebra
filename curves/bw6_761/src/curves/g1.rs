@@ -55,11 +55,14 @@ impl SWCurveConfig for Config {
         Self::BaseField::zero()
     }
 
-    /// GLV scalar multiplication through [`GLVConfig::glv_mul_projective_bigint`]: exact on the
-    /// order-`r` subgroup, and off it for `k < 2^128` and `k >= r`.
+    /// GLV ([`GLVConfig::glv_mul_projective`]) for `Mul<ScalarField>`, exact only on the order-`r`
+    /// subgroup. `mul_bigint` keeps the default `double_and_add`, exact on every curve point.
     #[inline]
-    fn mul_projective(p: &Projective<Self>, scalar: &[u64]) -> Projective<Self> {
-        <Self as GLVConfig>::glv_mul_projective_bigint(p, scalar)
+    fn mul_projective_scalar_field(
+        p: &Projective<Self>,
+        scalar: &Self::ScalarField,
+    ) -> Projective<Self> {
+        <Self as GLVConfig>::glv_mul_projective(*p, *scalar)
     }
 
     #[inline]

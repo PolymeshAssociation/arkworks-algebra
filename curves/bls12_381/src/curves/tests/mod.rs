@@ -180,12 +180,8 @@ fn test_g2_gls4_digits_and_mul() {
 
 #[test]
 fn test_scalar_mul_matches_double_and_add() {
-    use ark_ff::PrimeField;
-    subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8, 128);
-    subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(
-        8,
-        Fr::MODULUS_BIT_SIZE,
-    );
+    subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8);
+    subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(8);
 }
 
 // Test vectors and macro adapted from https://github.com/zkcrypto/bls12_381/blob/e224ad4ea1babfc582ccd751c2bf128611d10936/src/tests/mod.rs
