@@ -81,6 +81,12 @@ impl SWCurveConfig for Config {
         <Self as GLVConfig>::glv_mul_projective(*p, *scalar)
     }
 
+    /// [`Self::mul_projective_scalar_field`] for an affine base.
+    #[inline]
+    fn mul_affine_scalar_field(p: &Affine<Self>, scalar: &Self::ScalarField) -> Projective<Self> {
+        <Self as GLVConfig>::glv_mul_affine_projective(*p, *scalar)
+    }
+
     /// Scott, <https://eprint.iacr.org/2021/1130>, section 4: `psi(P) == [x]P`.
     fn is_in_correct_subgroup_assuming_on_curve(point: &G2Affine) -> bool {
         double_and_add_affine(point, crate::Config::X) == p_power_endomorphism(point)

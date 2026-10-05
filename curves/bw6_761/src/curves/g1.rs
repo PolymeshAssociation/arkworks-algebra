@@ -65,6 +65,12 @@ impl SWCurveConfig for Config {
         <Self as GLVConfig>::glv_mul_projective(*p, *scalar)
     }
 
+    /// [`Self::mul_projective_scalar_field`] for an affine base.
+    #[inline]
+    fn mul_affine_scalar_field(p: &Affine<Self>, scalar: &Self::ScalarField) -> Projective<Self> {
+        <Self as GLVConfig>::glv_mul_affine_projective(*p, *scalar)
+    }
+
     #[inline]
     fn is_in_correct_subgroup_assuming_on_curve(p: &G1Affine) -> bool {
         super::is_in_subgroup_glv_row(p)
