@@ -26,10 +26,10 @@ CURVES = {
             [9931322734385697763, -4965661367192848881, -4965661367192848882, -4965661367192848881],
         ],
         adj0=[
-            (True, [0x113C366715DEDAF5, 0xD7ADF45CF590C4C8, 0x1DF623EF8AF183E3, 0x0]),
-            (True, [0x620AAA6F726909F1, 0x46FB76A5E4491EC5, 0x1DF623EF8AF183E4, 0x0]),
-            (False, [0xD8378506DD96F60E, 0x46FB76A5E4491EC4, 0x1DF623EF8AF183E4, 0x0]),
-            (True, [0x934DF252932DEC1D, 0x46FB76A5E4491EC4, 0x1DF623EF8AF183E4, 0x0]),
+            (False, [0x113C366715DEDAF5, 0xD7ADF45CF590C4C8, 0x1DF623EF8AF183E3, 0x0]),
+            (False, [0x620AAA6F726909F1, 0x46FB76A5E4491EC5, 0x1DF623EF8AF183E4, 0x0]),
+            (True, [0xD8378506DD96F60E, 0x46FB76A5E4491EC4, 0x1DF623EF8AF183E4, 0x0]),
+            (False, [0x934DF252932DEC1D, 0x46FB76A5E4491EC4, 0x1DF623EF8AF183E4, 0x0]),
         ],
     ),
 }
@@ -74,7 +74,7 @@ for name, c in CURVES.items():
     assert d == r, f"{name}: det != r"
     inv = inverse(basis)
     adj0 = [inv[0][j] * d for j in range(4)]
-    stored = [(1 if s else -1) * from_limbs(l) for s, l in c["adj0"]]
+    stored = [(-1 if s else 1) * from_limbs(l) for s, l in c["adj0"]]
     assert all(a.denominator == 1 for a in adj0) and [int(a) for a in adj0] == stored, f"{name}: adj0"
     for i in range(4):
         bound = sum(abs(basis[j][i]) for j in range(4))

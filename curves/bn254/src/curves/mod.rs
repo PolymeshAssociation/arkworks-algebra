@@ -71,10 +71,10 @@ impl BnConfig for Config {
             [9931322734385697763, -4965661367192848881, -4965661367192848882, -4965661367192848881],
         ],
         adj0: [
-            (true, [0x113c366715dedaf5, 0xd7adf45cf590c4c8, 0x1df623ef8af183e3, 0x0]),
-            (true, [0x620aaa6f726909f1, 0x46fb76a5e4491ec5, 0x1df623ef8af183e4, 0x0]),
-            (false, [0xd8378506dd96f60e, 0x46fb76a5e4491ec4, 0x1df623ef8af183e4, 0x0]),
-            (true, [0x934df252932dec1d, 0x46fb76a5e4491ec4, 0x1df623ef8af183e4, 0x0]),
+            (false, [0x113c366715dedaf5, 0xd7adf45cf590c4c8, 0x1df623ef8af183e3, 0x0]),
+            (false, [0x620aaa6f726909f1, 0x46fb76a5e4491ec5, 0x1df623ef8af183e4, 0x0]),
+            (true, [0xd8378506dd96f60e, 0x46fb76a5e4491ec4, 0x1df623ef8af183e4, 0x0]),
+            (false, [0x934df252932dec1d, 0x46fb76a5e4491ec4, 0x1df623ef8af183e4, 0x0]),
         ],
         adj0_div_r: [
             [0x500bb9ebe34b87b6, 0x7d1fff2e5ce18e26, 0x46f4bda995d51bb1, 0x08e5da66fc7184ae, 0x9e80318ab0d92b93],

@@ -188,7 +188,6 @@ const P_POWER_ENDOMORPHISM_COEFF_1: Fq2 = Fq2::new(
     MontFp!("3505843767911556378687030309984248845540243509899259641013678093033130930403"),
 );
 
-// Integer representation of 6x^2 = t - 1
 /// `[x]P` by [`crate::curves::SEED_CHAIN`]. Plain additions and doublings, so it is
 /// valid for points outside the order-`r` subgroup.
 fn mul_by_seed(p1: Projective<Config>) -> Projective<Config> {

@@ -425,8 +425,9 @@ impl<P: BnConfig> Pairing for Bn<P> {
 /// `(-lambda^3, 0, 0, 1)` of determinant `r`. `basis` is an LLL reduction of these rows
 /// (Sage `matrix(ZZ, rows).LLL()`, in any row order) with `det(basis) = r` and
 /// entries about `x`, and `adj0` is the first row of `adj(basis)`, so
-/// `basis^-1 = adj(basis) / r`. Basis entries fit `i128`; adjugate magnitudes are
-/// little-endian `u64` limbs of a value below the scalar field modulus.
+/// `basis^-1 = adj(basis) / r`. Basis entries fit `i128`. Each `adj0[j]` is
+/// `(is_negative, magnitude)`, the sign convention of the digits of [`gls4_digits`], with the
+/// magnitude in little-endian `u64` limbs below the scalar field modulus.
 /// `adj0_div_r[j] = round(2^384 |adj0[j]| / r)` in five limbs, for a four-limb scalar field, so
 /// [`gls4_digits`] divides by `r` with a shift. `scripts/bn_gls_decomp.py` checks `basis` and
 /// `adj0` and prints `adj0_div_r`.
@@ -467,7 +468,7 @@ pub fn gls4_digits<P: BnConfig>(scalar: &[u64], params: &GtGlsParams) -> [(bool,
     for j in 0..4 {
         let beta = mul_shift_round_bigint::<ScalarField<P>>(k, &params.adj0_div_r[j], k.len() + 2);
         let mut beta = low_128(beta.as_ref());
-        if !params.adj0[j].0 {
+        if params.adj0[j].0 {
             beta = beta.wrapping_neg();
         }
         let beta = beta as i128;
@@ -476,7 +477,7 @@ pub fn gls4_digits<P: BnConfig>(scalar: &[u64], params: &GtGlsParams) -> [(bool,
         }
     }
     digits.map(|d| {
-        debug_assert!(d.unsigned_abs() < 1 << 64, "GLS digit wider than 64 bits");
+        assert!(d.unsigned_abs() < 1 << 64, "GLS digit wider than 64 bits");
         (d < 0, d.unsigned_abs() as u64)
     })
 }

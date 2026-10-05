@@ -50,7 +50,10 @@ pub trait Bls12Config: 'static + Sized {
         <Self::G2Config as SWCurveConfig>::COEFF_B * (c.double() + c)
     }
 
-    /// Returns `f^x`. Override with a fixed addition chain for `Self::X`.
+    /// Returns `f^x` for `f` in the cyclotomic subgroup of `Fp12`, which both the default's
+    /// `cyclotomic_exp` and inverse-by-conjugation and the overrides' cyclotomic squarings
+    /// require. Other inputs give a wrong result. Override with a fixed addition chain for
+    /// `Self::X`.
     fn exp_by_x(f: Fp12<Self::Fp12Config>) -> Fp12<Self::Fp12Config> {
         let mut res = f.cyclotomic_exp(Self::X);
         if Self::X_IS_NEGATIVE {
