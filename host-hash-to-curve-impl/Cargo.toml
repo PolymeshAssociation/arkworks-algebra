@@ -33,5 +33,5 @@ lazy_static = { version = "1.5.0", default-features = false, optional = true }
 [features]
 default = ["std"]
 std = ["ark-std/std", "ark-ec/std", "ark-serialize/std", "ark-host-hash-to-curve/std", "lazy_static"]
-parallel = ["std", "ark-std/parallel", "ark-ec/parallel", "ark-host-hash-to-curve/parallel"]
+parallel = ["std", "ark-std/parallel", "ark-host-hash-to-curve/parallel"]
 asm = ["ark-ff/asm", "ark-host-hash-to-curve/asm"]
