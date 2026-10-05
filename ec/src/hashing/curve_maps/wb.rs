@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
 use crate::{models::short_weierstrass::SWCurveConfig, CurveConfig};
-use ark_ff::{batch_inversion, Field, Zero};
+use ark_ff::{batch_inversion, Field, One, Zero};
 
 use crate::{
     hashing::{map_to_curve_hasher::MapToCurve, HashToCurveError},
@@ -68,43 +68,46 @@ where
     /// largest degree among the four polynomials, each polynomial `f` of degree `d` is evaluated
     /// as `F = \sum_i{c_i * X^i * Z^{2(k - i)}} = Z^{2k} * f(x)` for affine `x = X / Z^2`, so
     /// the image is `x' = F_xn / F_xd`, `y' = Y * F_yn / (Z^3 * F_yd)`, and it is returned as
-    /// `(F_xn * F_xd * F_yd^2 * Z^6, Y * F_yn * F_xd^3 * F_yd^2 * Z^6, F_xd * F_yd * Z^3)`.
+    /// `(F_xn * F_xd * F_yd^2 * Z^6, Y * F_yn * F_xd^3 * F_yd^2 * Z^6, F_xd * F_yd * Z^3)`. The
+    /// four polynomials run Horner's rule in one loop, where step `j` multiplies the coefficient
+    /// `j` below the top by the shared power `Z^{2j}`.
     fn apply_projective(&self, domain_point: Projective<Domain>) -> Projective<Codomain> {
         let Projective { x, y, z } = domain_point;
-        let k = [
-            self.x_map_numerator.len(),
-            self.x_map_denominator.len(),
-            self.y_map_numerator.len(),
-            self.y_map_denominator.len(),
-        ]
-        .into_iter()
-        .max()
-        .unwrap_or(1)
-        .saturating_sub(1);
+        let polys = [
+            self.x_map_numerator,
+            self.x_map_denominator,
+            self.y_map_numerator,
+            self.y_map_denominator,
+        ];
+        let degrees = polys.map(|coeffs| coeffs.len().saturating_sub(1));
+        let k = degrees.into_iter().max().unwrap_or(0);
 
         let z2 = z.square();
-        // `\sum_i{c_i X^i Z^{2(d - i)}}` for degree `d` by Horner's rule, times `Z^{2(k - d)}`.
-        let evaluate = |coeffs: &[BaseField<Domain>]| {
-            let mut iter = coeffs.iter().rev();
-            let Some(top) = iter.next() else {
-                return BaseField::<Domain>::zero();
-            };
-            let mut acc = *top;
-            let mut z2_power = z2;
-            for c in iter {
-                acc = acc * x + *c * z2_power;
-                z2_power *= z2;
+        // `accs[i] = \sum_j{c_j X^j Z^{2(d_i - j)}}` for degree `d_i`.
+        // `pads[i] = Z^{2(k - d_i)}`.
+        let mut accs = polys.map(|coeffs| coeffs.last().copied().unwrap_or_else(Zero::zero));
+        let mut pads = [BaseField::<Domain>::one(); 4];
+        let mut z2_power = BaseField::<Domain>::one();
+        for j in 1..=k {
+            z2_power *= z2;
+            for i in 0..4 {
+                if j <= degrees[i] {
+                    accs[i] = accs[i] * x + polys[i][degrees[i] - j] * z2_power;
+                }
+                if j == k - degrees[i] {
+                    pads[i] = z2_power;
+                }
             }
-            for _ in coeffs.len()..=k {
-                acc *= z2;
+        }
+        for i in 0..4 {
+            if degrees[i] < k {
+                accs[i] *= pads[i];
             }
-            acc
-        };
+        }
 
-        let x_num = evaluate(self.x_map_numerator);
-        let x_den = evaluate(self.x_map_denominator);
-        let y_num = evaluate(self.y_map_numerator) * y;
-        let y_den = evaluate(self.y_map_denominator) * z2 * z;
+        let [x_num, x_den, y_num, y_den] = accs;
+        let y_num = y_num * y;
+        let y_den = y_den * z2 * z;
 
         let z_out = x_den * y_den;
         let x_out = x_num * y_den * z_out;
