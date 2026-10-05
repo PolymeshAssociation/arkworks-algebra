@@ -89,7 +89,8 @@ pub fn test_subgroup_check<P: SWCurveConfig>(cofactor_primes: &[u64], samples: u
 /// - On random curve points, which need not lie in the order-`r` subgroup: `r`, the cofactor, and
 ///   random integers below `2^exact_bits` and `2^exact_bits - 1`. `exact_bits` is how far the
 ///   multiplication stays exact off the subgroup: 128 for two-dimensional GLV, which recodes
-///   `k < 2^128` as `(k, 0)`, 63 for the four-dimensional GLS of BN254 and BLS12-381 G2.
+///   `k < 2^128` as `(k, 0)`, and the scalar field's bit size for BN254 and BLS12-381 G2, whose
+///   four-dimensional GLS sits behind `*` only.
 /// - On subgroup points: random scalars of every bit width, the width boundaries `2^w - 1` and
 ///   `2^w`, `0`, `1`, `r - 1`, and the integers `r`, `r + 1`, `2r`, the cofactor and one wider
 ///   than the scalar field, which take `double_and_add`. Also the identity, and `*` for random

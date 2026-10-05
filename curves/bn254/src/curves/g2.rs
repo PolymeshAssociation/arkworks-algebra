@@ -98,20 +98,29 @@ impl SWCurveConfig for Config {
     /// Four-dimensional GLS ([`gls4_mul_bigint`]) over the lattice digits of the scalar
     /// ([`gls4_digits`], the same as GT exponentiation's), with `psi = [6x^2]` on G2, for about
     /// 64 doublings instead of the 128 of two-dimensional GLV. Faster than GLV at every scalar
-    /// width, 1.31x at 128 bits and at full width. `k >= r` takes `double_and_add`, and
-    /// `k < 2^63` is a single digit, both exact on every curve point. Scalars in `[2^63, r)` are
-    /// correct only on the order-`r` subgroup.
+    /// width, 1.31x at 128 bits and at full width. Correct only on the order-`r` subgroup.
+    /// `mul_bigint` keeps the default `double_and_add`, exact on every curve point.
     #[inline]
-    fn mul_projective(p: &Projective<Self>, scalar: &[u64]) -> Projective<Self> {
+    fn mul_projective_scalar_field(p: &Projective<Self>, scalar: &Fr) -> Projective<Self> {
         let digits = |k: &[u64]| crate::Config::GT_GLS.map(|g| gls4_digits::<crate::Config>(k, &g));
-        gls4_mul_bigint(p, scalar, digits, p_power_endomorphism)
+        gls4_mul_bigint(
+            p,
+            scalar.into_bigint().as_ref(),
+            digits,
+            p_power_endomorphism,
+        )
     }
 
-    /// [`Self::mul_projective`] for an affine base, with mixed additions for `k >= r`.
+    /// [`Self::mul_projective_scalar_field`] for an affine base.
     #[inline]
-    fn mul_affine(p: &G2Affine, scalar: &[u64]) -> Projective<Self> {
+    fn mul_affine_scalar_field(p: &G2Affine, scalar: &Fr) -> Projective<Self> {
         let digits = |k: &[u64]| crate::Config::GT_GLS.map(|g| gls4_digits::<crate::Config>(k, &g));
-        gls4_mul_affine_bigint(p, scalar, digits, p_power_endomorphism)
+        gls4_mul_affine_bigint(
+            p,
+            scalar.into_bigint().as_ref(),
+            digits,
+            p_power_endomorphism,
+        )
     }
 }
 
@@ -256,6 +265,26 @@ mod test {
             <g2::Config as CurveConfig>::ScalarField::characteristic(),
         )
         .is_zero()
+    }
+
+    #[test]
+    fn test_seed_mul_rejects_points_outside_subgroup() {
+        // `[6x^2]P == psi(P)` holds only on the order-`r` subgroup when `[6x^2]P` is computed
+        // without `psi`, as `mul_bigint` does.
+        let x = u128::from(<crate::Config as BnConfig>::X[0]);
+        let six_x_squared = 6 * x * x;
+        let six_x_squared = [six_x_squared as u64, (six_x_squared >> 64) as u64];
+        let mut rng = ark_std::test_rng();
+        for _ in 0..8 {
+            let p = sample_unchecked(&mut rng);
+            if p.is_in_correct_subgroup_assuming_on_curve() {
+                continue;
+            }
+            assert_ne!(
+                p.mul_bigint(six_x_squared).into_affine(),
+                p_power_endomorphism(&p)
+            );
+        }
     }
 
     #[test]

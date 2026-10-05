@@ -84,22 +84,27 @@ impl SWCurveConfig for Config {
     /// Four-dimensional GLS ([`gls4_mul_bigint`]) over the base-`|x|` digits of the scalar
     /// ([`gls4_digits`]), with `psi = [x]` on G2, for about 64 doublings instead of the 128 of
     /// two-dimensional GLV. Faster than GLV at every scalar width, 1.66x at 128 bits and 1.30x at
-    /// full width. `k >= r` takes `double_and_add`, and `k < 2^63` is a single digit, both exact
-    /// on every curve point. Scalars in `[2^63, r)` are correct only on the order-`r` subgroup.
+    /// full width. Correct only on the order-`r` subgroup. `mul_bigint` keeps the default
+    /// `double_and_add`, exact on every curve point.
     #[inline]
-    fn mul_projective(p: &Projective<Self>, scalar: &[u64]) -> Projective<Self> {
+    fn mul_projective_scalar_field(p: &Projective<Self>, scalar: &Fr) -> Projective<Self> {
         gls4_mul_bigint(
             p,
-            scalar,
+            scalar.into_bigint().as_ref(),
             gls4_digits::<crate::Config>,
             p_power_endomorphism,
         )
     }
 
-    /// [`Self::mul_projective`] for an affine base, with mixed additions for `k >= r`.
+    /// [`Self::mul_projective_scalar_field`] for an affine base.
     #[inline]
-    fn mul_affine(p: &G2Affine, scalar: &[u64]) -> Projective<Self> {
-        gls4_mul_affine_bigint(p, scalar, gls4_digits::<crate::Config>, p_power_endomorphism)
+    fn mul_affine_scalar_field(p: &G2Affine, scalar: &Fr) -> Projective<Self> {
+        gls4_mul_affine_bigint(
+            p,
+            scalar.into_bigint().as_ref(),
+            gls4_digits::<crate::Config>,
+            p_power_endomorphism,
+        )
     }
 
     fn is_in_correct_subgroup_assuming_on_curve(point: &G2Affine) -> bool {
@@ -358,6 +363,21 @@ mod test {
             if let Some(p) = Affine::get_point_from_x_unchecked(x, greatest) {
                 return p;
             }
+        }
+    }
+
+    #[test]
+    fn test_seed_mul_rejects_points_outside_subgroup() {
+        // `psi(P) == [x]P` holds only on the order-`r` subgroup when `[x]P` is computed without
+        // `psi`, as `mul_bigint` does.
+        let mut rng = ark_std::test_rng();
+        for _ in 0..8 {
+            let p = sample_unchecked(&mut rng);
+            if p.is_in_correct_subgroup_assuming_on_curve() {
+                continue;
+            }
+            let x_p = -p.mul_bigint(crate::Config::X);
+            assert_ne!(x_p.into_affine(), p_power_endomorphism(&p));
         }
     }
 

@@ -107,7 +107,7 @@ fn test_g2_gls4_digits_and_mul() {
     use ark_ec::{
         bn::{gls4_digits, BnConfig},
         scalar_mul::double_and_add,
-        AffineRepr, CurveGroup, PrimeGroup,
+        AffineRepr, CurveGroup,
     };
     use ark_ff::{BigInteger, PrimeField, UniformRand, Zero};
     use ark_std::{rand::Rng, test_rng, vec};
@@ -187,11 +187,13 @@ fn test_g2_gls4_digits_and_mul() {
         let p = G2Projective::rand(&mut rng);
         for k in &scalars {
             let expected = double_and_add(&p, k);
-            assert_eq!(p.mul_bigint(k), expected, "projective, k = {k:?}");
-            assert_eq!(p.into_affine().mul_bigint(k), expected, "affine, k = {k:?}");
+            let s = crate::Fr::from_bigint(ark_ff::BigInt(*k)).unwrap();
+            assert_eq!(p * s, expected, "projective, k = {k:?}");
+            assert_eq!(p.into_affine() * s, expected, "affine, k = {k:?}");
         }
     }
-    // Off the subgroup `psi` is not `[6x^2]`: `k < 2^63` stays exact and `2^100` does not.
+    // Off the subgroup `psi` is not `[6x^2]`. `mul_bigint` stays exact at every width, and the
+    // GLS behind `*` is exact only while `k < 2^63` is a single digit.
     let off = loop {
         let x = crate::Fq2::rand(&mut rng);
         if let Some(p) = crate::G2Affine::get_point_from_x_unchecked(x, rng.gen()) {
@@ -201,16 +203,26 @@ fn test_g2_gls4_digits_and_mul() {
         }
     };
     let exact = [u64::MAX >> 1];
-    assert_eq!(
-        off.mul_bigint(exact),
-        double_and_add(&off.into_group(), exact)
-    );
     let wide = [0, 1 << 36];
     assert!(gls4_digits::<crate::Config>(&wide, &params)[1..]
         .iter()
         .any(|&(_, d)| d != 0));
+    let x = u128::from(crate::Config::X[0]);
+    let six_x_squared = 6 * x * x;
+    let six_x_squared = [six_x_squared as u64, (six_x_squared >> 64) as u64];
+    for k in [&exact[..], &wide[..], &six_x_squared[..]] {
+        assert_eq!(
+            off.mul_bigint(k),
+            double_and_add(&off.into_group(), k),
+            "k = {k:?}"
+        );
+    }
+    assert_eq!(
+        off * crate::Fr::from(exact[0]),
+        double_and_add(&off.into_group(), exact)
+    );
     assert_ne!(
-        off.mul_bigint(wide),
+        off * crate::Fr::from_bigint(ark_ff::BigInt([wide[0], wide[1], 0, 0])).unwrap(),
         double_and_add(&off.into_group(), wide)
     );
 }
@@ -302,8 +314,12 @@ fn test_g2_subgroup_check() {
 
 #[test]
 fn test_scalar_mul_matches_double_and_add() {
+    use ark_ff::PrimeField;
     subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8, 128);
-    subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(8, 63);
+    subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(
+        8,
+        crate::Fr::MODULUS_BIT_SIZE,
+    );
 }
 
 #[test]
