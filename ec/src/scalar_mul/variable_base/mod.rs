@@ -570,7 +570,9 @@ pub(crate) fn pippenger_setup<F: PrimeField>(scalars: &[F::BigInt], size: usize)
     )
 }
 
-/// [`pippenger_setup`] over the low `num_bits` bits of each scalar in `c`-bit windows.
+/// [`pippenger_setup`] with `ceil(num_bits / c)` windows of `c` bits each. The most-significant
+/// window reads a full `c` bits, capped at the `BigInt` width, so it also picks up bits at and above
+/// `num_bits` up to `c * ceil(num_bits / c)`. Bits above that are ignored.
 pub(crate) fn pippenger_setup_given_window<F: PrimeField>(
     scalars: &[F::BigInt],
     size: usize,

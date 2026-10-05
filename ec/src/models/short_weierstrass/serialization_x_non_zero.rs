@@ -51,8 +51,9 @@ pub fn serialize_with_single_bit_flags<C: SWSerializationXNonZero, W: Write>(
 /// Deserializes an affine point using `SingleBitSWFlags`.
 /// 
 /// If `validate` is `Yes`, calls `check()` to make sure the element is valid. Infinity is accepted
-/// only in its canonical all-zero form: `x = 0` with the sign bit set, or with a nonzero `y`
-/// uncompressed, returns `SerializationError::InvalidData` whatever `validate` is.
+/// only in its canonical all-zero form, which has the sign bit unset. `x = 0` with the sign bit
+/// set, or with a nonzero `y` when uncompressed, returns `SerializationError::InvalidData` whatever
+/// `validate` is.
 pub fn deserialize_with_single_bit_flags<C: SWSerializationXNonZero, R: Read>(
     mut reader: R,
     compress: Compress,

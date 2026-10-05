@@ -314,6 +314,31 @@ fn test_hashmap() {
     assert!(HashMap::<u64, u64>::deserialize_compressed(&huge[..]).is_err());
 }
 
+#[test]
+fn test_compact_u64_write_error() {
+    use crate::impls::compact::CompactU64;
+
+    // Every length prefix fails on a writer too short for it.
+    let mut empty = [0u8; 0];
+    assert!(matches!(
+        CompactU64(1).serialize_compressed(&mut empty[..]),
+        Err(SerializationError::IoError(_))
+    ));
+    let mut short = [0u8; 2];
+    assert!(matches!(
+        CompactU64(1 << 60).serialize_compressed(&mut short[..]),
+        Err(SerializationError::IoError(_))
+    ));
+    assert!(matches!(
+        3usize.serialize_compressed(&mut empty[..]),
+        Err(SerializationError::IoError(_))
+    ));
+    assert!(matches!(
+        vec![1u8].serialize_compressed(&mut empty[..]),
+        Err(SerializationError::IoError(_))
+    ));
+}
+
 #[cfg(feature = "std")]
 #[test]
 fn test_hashset() {
