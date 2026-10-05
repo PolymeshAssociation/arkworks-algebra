@@ -73,35 +73,11 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
     fn endomorphism_affine(p: &Affine<Self>) -> Affine<Self>;
 
     fn glv_mul_projective(p: Projective<Self>, k: Self::ScalarField) -> Projective<Self> {
-        let mut b1 = p;
-        let mut b2 = Self::endomorphism(&p);
-
-        let ((sgn_k1, k1), (sgn_k2, k2)) = Self::scalar_decomposition(k);
-
-        if !sgn_k1 {
-            b1 = -b1;
-        }
-        if !sgn_k2 {
-            b2 = -b2;
-        }
-
-        binary_scalar_mul_jsf(b1, k1, b2, k2)
+        jsf_mul_projective::<Self>(p, k)
     }
 
     fn glv_mul_affine_projective(p: Affine<Self>, k: Self::ScalarField) -> Projective<Self> {
-        let mut b1 = p;
-        let mut b2 = Self::endomorphism_affine(&p);
-
-        let ((sgn_k1, k1), (sgn_k2, k2)) = Self::scalar_decomposition(k);
-
-        if !sgn_k1 {
-            b1 = -b1;
-        }
-        if !sgn_k2 {
-            b2 = -b2;
-        }
-
-        binary_scalar_mul_jsf_affine(b1, k1, b2, k2)
+        jsf_mul_affine_projective::<Self>(p, k)
     }
 
     fn glv_mul_affine(p: Affine<Self>, k: Self::ScalarField) -> Affine<Self> {
@@ -109,11 +85,53 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
     }
 }
 
+/// `k * p` by splitting `k` into GLV halves and folding their joint sparse form. The default
+/// [`GLVConfig::glv_mul_projective`].
+pub fn jsf_mul_projective<P: GLVConfig>(p: Projective<P>, k: P::ScalarField) -> Projective<P> {
+    let mut b1 = p;
+    let mut b2 = P::endomorphism(&p);
+
+    let ((sgn_k1, k1), (sgn_k2, k2)) = P::scalar_decomposition(k);
+
+    if !sgn_k1 {
+        b1 = -b1;
+    }
+    if !sgn_k2 {
+        b2 = -b2;
+    }
+
+    binary_scalar_mul_jsf(b1, k1, b2, k2)
+}
+
+/// [`jsf_mul_projective`] for an affine base, which lets the single-base digits use mixed
+/// additions.
+pub fn jsf_mul_affine_projective<P: GLVConfig>(p: Affine<P>, k: P::ScalarField) -> Projective<P> {
+    let mut b1 = p;
+    let mut b2 = P::endomorphism_affine(&p);
+
+    let ((sgn_k1, k1), (sgn_k2, k2)) = P::scalar_decomposition(k);
+
+    if !sgn_k1 {
+        b1 = -b1;
+    }
+    if !sgn_k2 {
+        b2 = -b2;
+    }
+
+    binary_scalar_mul_jsf_affine(b1, k1, b2, k2)
+}
+
 /// Computes `round((k * g) / 2^(64 * shift_limbs))`, rounding up, and returns
 /// it as a scalar field element. `k` is the little-endian canonical limbs of the scalar and
 /// `g` is a precomputed multiplier; both are read as unsigned integers. The
 /// result is small (below `2^128`)
 fn mul_shift_round<F: PrimeField>(k: &[u64], g: &[u64], shift_limbs: usize) -> F {
+    F::from_bigint(mul_shift_round_bigint::<F>(k, g, shift_limbs))
+        .expect("should be smaller than the modulus")
+}
+
+/// [`mul_shift_round`] before the conversion to a scalar field element, as little-endian limbs.
+fn mul_shift_round_bigint<F: PrimeField>(k: &[u64], g: &[u64], shift_limbs: usize) -> F::BigInt {
     // Accumulator wide enough for the product of `k` and `g` and one more limb
     // Even a 6 limb scalar is of 384 bits, sufficient for any scalar we have to ever deal
     // with (supports GLV)
@@ -140,7 +158,7 @@ fn mul_shift_round<F: PrimeField>(k: &[u64], g: &[u64], shift_limbs: usize) -> F
         carry = c as u64;
     }
     debug_assert_eq!(carry, 0);
-    F::from_bigint(res).expect("should be smaller than the modulus")
+    res
 }
 
 /// Splits the canonical representative of `x` into `(is_non_negative, magnitude)`.

@@ -331,7 +331,7 @@ where
         mut writer: W,
         compress: Compress,
     ) -> Result<(), SerializationError> {
-        let len = self.len() as u64;
+        let len = CompactU64(self.len() as u64);
         len.serialize_with_mode(&mut writer, compress)?;
         for (k, v) in self {
             k.serialize_with_mode(&mut writer, compress)?;
@@ -341,7 +341,8 @@ where
     }
 
     fn serialized_size(&self, compress: Compress) -> usize {
-        8 + self
+        CompactU64(self.len() as u64).serialized_size(compress)
+            + self
             .iter()
             .map(|(k, v)| k.serialized_size(compress) + v.serialized_size(compress))
             .sum::<usize>()
@@ -396,8 +397,8 @@ where
         compress: Compress,
         validate: Validate,
     ) -> Result<Self, SerializationError> {
-        let len = u64::deserialize_with_mode(&mut reader, compress, validate)?;
-        (0..len)
+        let len = CompactU64::deserialize_with_mode(&mut reader, compress, validate)?.0;
+        NoSizeHint(0..len)
             .map(|_| {
                 Ok((
                     K::deserialize_with_mode(&mut reader, compress, validate)?,

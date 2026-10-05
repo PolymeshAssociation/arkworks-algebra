@@ -25,12 +25,18 @@ impl From<u64> for CompactU64 {
     }
 }
 
-struct WriteOutput<T: Write>(T);
+struct WriteOutput<T: Write> {
+    writer: T,
+    /// Keeps the first write error in `result` and skips later writes. This is because [`Self::write`]
+    /// is infallible.
+    result: Result<(), ark_std::io::Error>,
+}
 
 impl<T: Write> Output for WriteOutput<T> {
     fn write(&mut self, bytes: &[u8]) {
-        let res = self.0.write_all(bytes);
-        debug_assert!(res.is_ok());
+        if self.result.is_ok() {
+            self.result = self.writer.write_all(bytes);
+        }
     }
 }
 
@@ -61,10 +67,13 @@ impl CanonicalSerialize for CompactU64 {
         writer: W,
         _compress: Compress,
     ) -> Result<(), SerializationError> {
-        let mut out = WriteOutput(writer);
+        let mut out = WriteOutput {
+            writer,
+            result: Ok(()),
+        };
 
         Compact(self.0).encode_to(&mut out);
-        Ok(())
+        Ok(out.result?)
     }
 
     #[inline]
