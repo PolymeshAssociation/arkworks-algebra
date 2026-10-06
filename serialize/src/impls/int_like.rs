@@ -108,6 +108,7 @@ impl_uint!(i16);
 impl_uint!(i32);
 impl_uint!(i64);
 
+#[cfg(feature = "serialize_usize")]
 impl CanonicalSerialize for usize {
     #[inline]
     fn serialize_with_mode<W: Write>(
@@ -124,6 +125,7 @@ impl CanonicalSerialize for usize {
     }
 }
 
+#[cfg(feature = "serialize_usize")]
 impl Valid for usize {
     const TRIVIAL_CHECK: bool = true;
 
@@ -141,6 +143,7 @@ impl Valid for usize {
     }
 }
 
+#[cfg(feature = "serialize_usize")]
 impl CanonicalDeserialize for usize {
     #[inline]
     fn deserialize_with_mode<R: Read>(
@@ -155,6 +158,7 @@ impl CanonicalDeserialize for usize {
     }
 }
 
+#[cfg(feature = "serialize_usize")]
 impl CanonicalSerialize for isize {
     #[inline]
     fn serialize_with_mode<W: Write>(
@@ -171,6 +175,7 @@ impl CanonicalSerialize for isize {
     }
 }
 
+#[cfg(feature = "serialize_usize")]
 impl Valid for isize {
     const TRIVIAL_CHECK: bool = true;
 
@@ -188,6 +193,7 @@ impl Valid for isize {
     }
 }
 
+#[cfg(feature = "serialize_usize")]
 impl CanonicalDeserialize for isize {
     #[inline]
     fn deserialize_with_mode<R: Read>(
