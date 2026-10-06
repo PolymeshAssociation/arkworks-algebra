@@ -2,7 +2,7 @@ use ark_ec::{models::CurveConfig, short_weierstrass::{self as sw, SWCurveConfig,
 use ark_ff::{AdditiveGroup, Field, MontFp};
 use ark_serialize::{Compress, SerializationError, Validate};
 use ark_std::io::{Read, Write};
-use ark_ec::hashing::curve_maps::swu::SWUConfig;
+use ark_ec::hashing::curve_maps::swu::{sqrt_ratio_3mod4, SWUConfig};
 use crate::{fq::Fq, fr::Fr};
 
 #[cfg(test)]
@@ -98,12 +98,7 @@ impl SWUConfig for SeleneConfig {
         const ZETA_POW: Fq = MontFp!(
             "36423136542801878583971952434299822049605830330823636749199379649448828414867"
         );
-        let candidate = gx1.pow(EXP);
-        if candidate.square() == gx1 {
-            (true, candidate)
-        } else {
-            (false, ZETA_POW * candidate)
-        }
+        sqrt_ratio_3mod4(gx1, &EXP, ZETA_POW)
     }
 }
 

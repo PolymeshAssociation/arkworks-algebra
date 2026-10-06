@@ -29,6 +29,12 @@ use ark_wei25519::Wei25519Config;
 /// batches are hashed in the guest.
 pub const MAX_HOST_GENS_PER_CALL: u32 = 1 << 16;
 
+/// Most domain separator bytes one host call hashes.
+pub const MAX_HOST_DST_LEN: usize = 256;
+
+/// Most message prefix bytes one host call hashes.
+pub const MAX_HOST_MSG_PREFIX_LEN: usize = 256;
+
 /// Hash-to-curve for a short Weierstrass curve using the curve's `FieldHasher` and `Map`.
 /// Pallas, Vesta, Helios, Selene and Wei25519 use `LegacyFieldHasher<Sha256, 128>`, which keeps
 /// the points equal to those hashed with ark-ff 0.5, so generators derived before the RFC 9380
@@ -54,8 +60,9 @@ pub trait HashToCurveConfig: SWCurveConfig {
 
     /// Hash `msg_prefix || j.to_le_bytes()` for each `j` in `gens_offset..gens_offset + gens_count`,
     /// using `dst` as the domain separation tag. Uses the host function in a no_std build with the
-    /// `host_hash_to_curve` feature when the host supports the curve and `gens_count` is at most
-    /// [`MAX_HOST_GENS_PER_CALL`]. Panics if `gens_offset + gens_count` overflows `u32`. Allocates
+    /// `host_hash_to_curve` feature when the host supports the curve, `gens_count` is at most
+    /// [`MAX_HOST_GENS_PER_CALL`], `dst` is at most [`MAX_HOST_DST_LEN`] bytes and `msg_prefix`
+    /// is at most [`MAX_HOST_MSG_PREFIX_LEN`] bytes. Panics if `gens_offset + gens_count` overflows `u32`. Allocates
     /// `gens_count` points, so the caller bounds it.
     fn batch_hash_to_curve(
         dst: &[u8],
@@ -204,7 +211,10 @@ mod guest {
         gens_offset: u32,
         gens_count: u32,
     ) -> Option<Vec<Affine<C>>> {
-        if gens_count > MAX_HOST_GENS_PER_CALL {
+        if gens_count > MAX_HOST_GENS_PER_CALL
+            || dst.len() > MAX_HOST_DST_LEN
+            || msg_prefix.len() > MAX_HOST_MSG_PREFIX_LEN
+        {
             return None;
         }
         let mut buffer = Vec::new();

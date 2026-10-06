@@ -5,7 +5,7 @@ use ark_bn254::{g1::Config as Bn254G1Config, g2::Config as Bn254G2Config};
 use ark_ec::short_weierstrass::Affine;
 pub use ark_host_hash_to_curve::{
     batch_serialized_size, curve_id, BatchHashToCurveRequest, HashToCurveConfig,
-    MAX_HOST_GENS_PER_CALL,
+    MAX_HOST_DST_LEN, MAX_HOST_GENS_PER_CALL, MAX_HOST_MSG_PREFIX_LEN,
 };
 pub use ark_host_msm::{pack_fat_pointer, unpack_fat_pointer, CurveMSMId, CURVE_ID_LEN};
 use ark_pallas::PallasConfig;
@@ -127,8 +127,9 @@ pub fn host_batch_hash_to_curve(buffer: &mut [u8], buf_len: u32) -> u32 {
 
 /// Decodes the `BatchHashToCurveRequest` in `buffer[CURVE_ID_LEN..buf_len]`, hashes, and writes the
 /// uncompressed points to the start of `buffer`. Returns the result length, or 0 when the request
-/// does not decode, asks for more than [`MAX_HOST_GENS_PER_CALL`] points, `gens_offset +
-/// gens_count` overflows, or the result does not fit in `buf_len`.
+/// does not decode, asks for more than [`MAX_HOST_GENS_PER_CALL`] points, holds more than
+/// [`MAX_HOST_DST_LEN`] `dst` bytes or [`MAX_HOST_MSG_PREFIX_LEN`] `msg_prefix` bytes,
+/// `gens_offset + gens_count` overflows, or the result does not fit in `buf_len`.
 fn batch_hash_to_curve_impl<C: HashToCurveConfig>(buffer: &mut [u8], buf_len: usize) -> u32 {
     let Ok(req) =
         BatchHashToCurveRequest::deserialize_uncompressed(&buffer[CURVE_ID_LEN..buf_len])
@@ -136,6 +137,8 @@ fn batch_hash_to_curve_impl<C: HashToCurveConfig>(buffer: &mut [u8], buf_len: us
         return 0;
     };
     if req.gens_count > MAX_HOST_GENS_PER_CALL
+        || req.dst.len() > MAX_HOST_DST_LEN
+        || req.msg_prefix.len() > MAX_HOST_MSG_PREFIX_LEN
         || req.gens_offset.checked_add(req.gens_count).is_none()
         || batch_serialized_size::<C>(req.gens_count) > buf_len
     {
@@ -254,6 +257,18 @@ mod tests {
         curve_id::<PallasConfig>().serialize_uncompressed(&mut buffer).unwrap();
         request(0, MAX_HOST_GENS_PER_CALL + 1).serialize_uncompressed(&mut buffer).unwrap();
         buffer.resize(batch_serialized_size::<PallasConfig>(MAX_HOST_GENS_PER_CALL + 1), 0);
+        let len = buffer.len() as u32;
+        assert_eq!(host_batch_hash_to_curve(&mut buffer, len), 0);
+
+        let mut req = request(0, 1);
+        req.dst = vec![0u8; MAX_HOST_DST_LEN + 1];
+        let mut buffer = request_buffer::<PallasConfig>(&req);
+        let len = buffer.len() as u32;
+        assert_eq!(host_batch_hash_to_curve(&mut buffer, len), 0);
+
+        let mut req = request(0, 1);
+        req.msg_prefix = vec![0u8; MAX_HOST_MSG_PREFIX_LEN + 1];
+        let mut buffer = request_buffer::<PallasConfig>(&req);
         let len = buffer.len() as u32;
         assert_eq!(host_batch_hash_to_curve(&mut buffer, len), 0);
     }

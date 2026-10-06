@@ -43,6 +43,17 @@ pub trait SWUConfig: SWCurveConfig {
     }
 }
 
+/// Helper function for `SWUConfig::sqrt_or_zeta_sqrt` when the base field is `p = 3 mod 4`.
+/// Takes `gx1`, `exp` = `(p + 1) / 4`, and `zeta_pow` = `ZETA^((p + 1) / 4)`.
+pub fn sqrt_ratio_3mod4<F: Field>(gx1: F, exp: &[u64], zeta_pow: F) -> (bool, F) {
+    let candidate = gx1.pow(exp);
+    if candidate.square() == gx1 {
+        (true, candidate)
+    } else {
+        (false, zeta_pow * candidate)
+    }
+}
+
 /// Represents the SWU hash-to-curve map defined by `P`.
 pub struct SWUMap<P: SWUConfig>(PhantomData<fn() -> P>);
 

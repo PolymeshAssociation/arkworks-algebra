@@ -6,7 +6,8 @@ use ark_ec::{
         CurveConfig,
     },
 };
-use ark_ff::{Field, MontFp};
+use ark_ec::hashing::curve_maps::swu::sqrt_ratio_3mod4;
+use ark_ff::MontFp;
 
 type G1Affine = Affine<SwuIsoConfig>;
 
@@ -79,12 +80,7 @@ impl SWUConfig for SwuIsoConfig {
         ];
         // ZETA^((p+1)/4).
         const ZETA_POW: Fq = MontFp!("3328401317247454955169066096158510917373398464830982355414973725925807849732239772068917122934374686992605919146728");
-        let candidate = gx1.pow(EXP);
-        if candidate.square() == gx1 {
-            (true, candidate)
-        } else {
-            (false, ZETA_POW * candidate)
-        }
+        sqrt_ratio_3mod4(gx1, &EXP, ZETA_POW)
     }
 }
 
