@@ -124,6 +124,25 @@ pub trait SWCurveConfig: super::CurveConfig {
         double_and_add_affine(base, scalar)
     }
 
+    /// `[k]P` for a scalar field element `k`, used by `Mul<Self::ScalarField>`. `k` is defined
+    /// modulo `r`, so an override may use an endomorphism that acts as `[\lambda]` only on the
+    /// order-`r` subgroup. [`Self::mul_projective`] takes an integer, which subgroup checks and
+    /// cofactor clearing apply to points outside the subgroup.
+    fn mul_projective_scalar_field(
+        base: &Projective<Self>,
+        scalar: &Self::ScalarField,
+    ) -> Projective<Self> {
+        Self::mul_projective(base, scalar.into_bigint().as_ref())
+    }
+
+    /// [`Self::mul_projective_scalar_field`] for an affine base.
+    fn mul_affine_scalar_field(
+        base: &Affine<Self>,
+        scalar: &Self::ScalarField,
+    ) -> Projective<Self> {
+        Self::mul_affine(base, scalar.into_bigint().as_ref())
+    }
+
     /// Offers a tiny multi scalar multiplication to a shared-doubling ladder, tried by
     /// [`VariableBaseMSM::msm_unchecked`] before the bucket algorithm. `None` declines and the
     /// caller carries on to the generic path. `bases` and `scalars` are the same length. GLV

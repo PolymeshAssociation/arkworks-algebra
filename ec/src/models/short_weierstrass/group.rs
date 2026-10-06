@@ -565,7 +565,7 @@ impl<'a, P: SWCurveConfig> SubAssign<&'a Self> for Projective<P> {
 
 impl<P: SWCurveConfig, T: Borrow<P::ScalarField>> MulAssign<T> for Projective<P> {
     fn mul_assign(&mut self, other: T) {
-        *self = self.mul_bigint(other.borrow().into_bigint())
+        *self = P::mul_projective_scalar_field(self, other.borrow())
     }
 }
 

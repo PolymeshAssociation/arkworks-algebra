@@ -192,8 +192,10 @@ pub fn glv_mul_handles_edge_scalars<P: ark_ec::short_weierstrass::SWCurveConfig 
 
 /// `mul_bigint` on projective and affine bases against [`double_and_add`] for integer scalars
 /// below, at, and above `r`, and wider than the scalar field. On a curve with cofactor, also
-/// on points outside the order-`r` subgroup for `k < 2^128` and `k >= r`, the ranges where GLV
-/// is exact there; for `2^128 <= k < r` the endomorphism is not `[\lambda]` off the subgroup.
+/// on points outside the order-`r` subgroup: `mul_bigint` for every scalar, and
+/// [`GLVConfig::glv_mul_projective_bigint`] / [`GLVConfig::glv_mul_affine_projective_bigint`] for
+/// `k < 2^128` and `k >= r`, the ranges where GLV is exact there. For `2^128 <= k < r` the
+/// endomorphism is not `[\lambda]` off the subgroup.
 pub fn glv_mul_bigint_matches_double_and_add<
     P: ark_ec::short_weierstrass::SWCurveConfig + GLVConfig,
 >() {
@@ -268,9 +270,21 @@ pub fn glv_mul_bigint_matches_double_and_add<
 
     for p in &points {
         let a = p.into_affine();
-        for k in scalars.iter().filter(|k| exact_off_subgroup(k)) {
+        for k in &scalars {
             assert_eq!(p.mul_bigint(k), double_and_add(p, k), "off-subgroup projective, k = {k:?}");
             assert_eq!(a.mul_bigint(k), double_and_add_affine(&a, k), "off-subgroup affine, k = {k:?}");
+        }
+        for k in scalars.iter().filter(|k| exact_off_subgroup(k)) {
+            assert_eq!(
+                P::glv_mul_projective_bigint(p, k),
+                double_and_add(p, k),
+                "off-subgroup GLV projective, k = {k:?}"
+            );
+            assert_eq!(
+                P::glv_mul_affine_projective_bigint(&a, k),
+                double_and_add_affine(&a, k),
+                "off-subgroup GLV affine, k = {k:?}"
+            );
         }
     }
 }

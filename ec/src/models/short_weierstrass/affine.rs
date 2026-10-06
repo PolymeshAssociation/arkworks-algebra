@@ -14,7 +14,7 @@ use ark_std::{
     One, Zero,
 };
 
-use ark_ff::{fields::Field, AdditiveGroup, PrimeField, ToConstraintField, UniformRand};
+use ark_ff::{fields::Field, AdditiveGroup, ToConstraintField, UniformRand};
 
 use educe::Educe;
 use zeroize::Zeroize;
@@ -376,7 +376,7 @@ impl<P: SWCurveConfig, T: Borrow<P::ScalarField>> Mul<T> for Affine<P> {
 
     #[inline]
     fn mul(self, other: T) -> Self::Output {
-        self.mul_bigint(other.borrow().into_bigint())
+        P::mul_affine_scalar_field(&self, other.borrow())
     }
 }
 
