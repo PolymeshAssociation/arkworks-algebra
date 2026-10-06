@@ -312,33 +312,16 @@ lazy_static::lazy_static! {
 }
 
 #[cfg(not(feature = "std"))]
-static SUPPORTED_CURVES: core::sync::atomic::AtomicPtr<RegisteredCurves> =
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+static mut SUPPORTED_CURVES: Option<RegisteredCurves> = None;
 
-/// The registry, built on first use. Racing first calls each build one and the loser frees its
-/// copy, so every caller sees the same `'static` registry.
 #[cfg(not(feature = "std"))]
+#[allow(static_mut_refs)]
 fn get_supported_curves() -> &'static RegisteredCurves {
-    use core::sync::atomic::Ordering;
-    let current = SUPPORTED_CURVES.load(Ordering::Acquire);
-    if !current.is_null() {
-        // SAFETY: a non-null pointer came from `Box::into_raw` below and is never freed.
-        return unsafe { &*current };
-    }
-    let fresh = Box::into_raw(Box::new(RegisteredCurves::new()));
-    match SUPPORTED_CURVES.compare_exchange(
-        core::ptr::null_mut(),
-        fresh,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    ) {
-        // SAFETY: `fresh` is now owned by the static and never freed.
-        Ok(_) => unsafe { &*fresh },
-        Err(winner) => {
-            // SAFETY: `fresh` was never shared; `winner` is owned by the static.
-            drop(unsafe { Box::from_raw(fresh) });
-            unsafe { &*winner }
-        },
+    unsafe {
+        if SUPPORTED_CURVES.is_none() {
+            SUPPORTED_CURVES = Some(RegisteredCurves::new());
+        }
+        SUPPORTED_CURVES.as_ref().unwrap()
     }
 }
 
