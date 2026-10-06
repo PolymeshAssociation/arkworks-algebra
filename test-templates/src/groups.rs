@@ -203,6 +203,11 @@ macro_rules! __test_group {
         }
 
         #[test]
+        fn test_var_base_msm_narrow_scalars() {
+            $crate::msm::test_var_base_msm_narrow_scalars::<$group>();
+        }
+
+        #[test]
         fn test_var_base_msm_wide_bigints() {
             $crate::msm::test_var_base_msm_wide_bigints::<$group>();
         }

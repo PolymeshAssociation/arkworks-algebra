@@ -27,10 +27,10 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     const INV: u64 = inv::<Self, N>();
 
     /// `2^{64(2N - 1)} mod Self::MODULUS`: the residue of the top limb of a `2N`-limb product,
-    /// used to fold a [`MontAccumulator`] back into Montgomery-reducible range.
+    /// used to fold a [`MontAccumulator`](super::MontAccumulator) back into Montgomery-reducible range.
     const B_HIGH: BigInt<N> = Self::MODULUS.montgomery_b_high();
 
-    /// Whether a [`MontAccumulator`] can be folded back below `R * MODULUS`, which is what
+    /// Whether a [`MontAccumulator`](super::MontAccumulator) can be folded back below `R * MODULUS`, which is what
     /// Montgomery reduction needs. The folded value is below `2^{64(2N-1)} + 2^65 * MODULUS`,
     /// so this asks for `N >= 2` and `MODULUS > 2^{64(N-1)+1}`.
     const CAN_DEFER: bool = N >= 2 && Self::MODULUS.const_num_bits() > 64 * (N as u32 - 1) + 2;

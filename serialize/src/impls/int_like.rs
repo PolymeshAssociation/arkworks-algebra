@@ -149,7 +149,9 @@ impl CanonicalDeserialize for usize {
         _validate: Validate,
     ) -> Result<Self, SerializationError> {
         let len = CompactU64::deserialize_with_mode(&mut reader, _compress, _validate)?.0;
-        Ok(len as Self)
+        /// Try to convert the `CompactU64` to platform's usize and fail if cannot
+        // (without truncation). This matters on targets whose `usize` is narrower than 64 bits.
+        Self::try_from(len).map_err(|_| SerializationError::InvalidData)
     }
 }
 
@@ -195,7 +197,7 @@ impl CanonicalDeserialize for isize {
     ) -> Result<Self, SerializationError> {
         let mut bytes = [0u8; core::mem::size_of::<i64>()];
         reader.read_exact(&mut bytes)?;
-        Ok(<i64>::from_le_bytes(bytes) as Self)
+        Self::try_from(<i64>::from_le_bytes(bytes)).map_err(|_| SerializationError::InvalidData)
     }
 }
 

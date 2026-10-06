@@ -205,7 +205,7 @@ pub const SMALL_MSM_MAX: usize = 48;
 const SMALL_MSM_MAX_PARALLEL_FLOOR: usize = 8;
 
 /// The largest `n` [`try_glv_msm_small`] routes to the serial ladder. [`SMALL_MSM_MAX`] divided by
-/// the thread count, floored at [`SMALL_MSM_MAX_PARALLEL_FLOOR`], when called from outside the
+/// the thread count, floored at `SMALL_MSM_MAX_PARALLEL_FLOOR`, when called from outside the
 /// rayon pool, whose threads the bucket path can use. [`SMALL_MSM_MAX`] from inside a pool task,
 /// where the pool is likely busy with sibling tasks.
 #[allow(clippy::missing_const_for_fn)]
@@ -323,7 +323,7 @@ fn sign_and_magnitude<F: PrimeField>(x: F) -> (bool, F) {
 /// Allocation-free GLV scalar decomposition using [`GLVFastDecomp`].
 ///
 /// The two roundings `c1 = round(k * a22 / r)` and `c2 = round(k * a12 / r)` are
-/// done with [`mul_shift_round`]; then `k2 = +/-(c2*a22 - c1*a12)` and
+/// done with `mul_shift_round`; then `k2 = +/-(c2*a22 - c1*a12)` and
 /// `k1 = k - lambda*k2` are evaluated in the scalar field. Defining `k1` this way
 /// makes `k1 + lambda*k2 == k` hold by construction, so a rounding error of at
 /// most one only affects how short `k1, k2` are, never the correctness of the

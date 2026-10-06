@@ -2,7 +2,7 @@ use super::{bucket::Bucket, Affine, SWCurveConfig};
 use crate::{
     scalar_mul::{
         sw_pippenger,
-        variable_base::{msm_bigint_wnaf, VariableBaseMSM},
+        variable_base::{msm_bigint_wnaf, msm_bigint_wnaf_given_bits, VariableBaseMSM},
         ScalarMul,
     },
     AffineRepr, CurveGroup, PrimeGroup,
@@ -684,6 +684,17 @@ impl<P: SWCurveConfig> VariableBaseMSM for Projective<P> {
             return sw_pippenger::msm_batch_affine_bigint::<P>(bases, bigints);
         }
         msm_bigint_wnaf(bases, bigints)
+    }
+
+    fn msm_bigint_narrow(
+        bases: &[Self::MulBase],
+        bigints: &[<Self::ScalarField as PrimeField>::BigInt],
+        num_bits: usize,
+    ) -> Self {
+        if bases.len().min(bigints.len()) >= sw_pippenger::BATCH_AFFINE_MIN_POINTS {
+            return sw_pippenger::msm_batch_affine_bigint_given_bits::<P>(bases, bigints, num_bits);
+        }
+        msm_bigint_wnaf_given_bits(bases, bigints, num_bits)
     }
 }
 

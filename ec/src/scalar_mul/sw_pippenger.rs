@@ -25,7 +25,7 @@ use crate::{
         glv::GLVConfig,
         variable_base::{
             combine_window_sums, pippenger_setup, pippenger_setup_given_window, route_msm,
-            PippengerSetup,
+            window_size, PippengerSetup,
         },
     },
     short_weierstrass::{Affine, Bucket, Projective, SWCurveConfig},
@@ -116,8 +116,8 @@ struct WindowScratch<F: Zero> {
 }
 
 /// `sum(bases_i * scalars_i)` with affine buckets. Mirrors
-/// [`msm_unchecked`](crate::VariableBaseMSM::msm_unchecked): routes through [`route_msm`] (host
-/// MSM on guest builds, then the GLV ladder), else convert to bigints and offer them to
+/// [`msm_unchecked`](crate::VariableBaseMSM::msm_unchecked): routes through the host
+/// MSM on guest builds, then the GLV ladder, else convert to bigints and offer them to
 /// [`SWCurveConfig::try_msm_bigint_full_width`] (the GLV split on GLV curves) before
 /// [`msm_batch_affine_bigint`].
 pub fn msm_batch_affine<P: SWCurveConfig>(
@@ -143,6 +143,23 @@ pub fn msm_batch_affine_bigint<P: SWCurveConfig>(
     sum_windows(
         &bases[..size],
         pippenger_setup::<P::ScalarField>(bigints, size),
+    )
+}
+
+/// [`msm_batch_affine_bigint`] over the low `num_bits` bits, for scalars below `2^num_bits`.
+pub fn msm_batch_affine_bigint_given_bits<P: SWCurveConfig>(
+    bases: &[Affine<P>],
+    bigints: &[<P::ScalarField as PrimeField>::BigInt],
+    num_bits: usize,
+) -> Projective<P> {
+    let size = bases.len().min(bigints.len());
+    if size == 0 {
+        return Projective::zero();
+    }
+    let c = window_size(size);
+    sum_windows(
+        &bases[..size],
+        pippenger_setup_given_window::<P::ScalarField>(bigints, size, num_bits, c),
     )
 }
 

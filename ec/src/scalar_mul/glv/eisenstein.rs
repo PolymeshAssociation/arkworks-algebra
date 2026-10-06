@@ -616,8 +616,8 @@ impl<P: GLVConfig> Table<P> {
     }
 
     /// One `k * P` per table, sharing the whole column schedule across the batch. Equal, table by
-    /// table, to [`Self::mul_decomposed`]. With at least [`AFFINE_LADDER_MIN_POINTS`] tables
-    /// free of identity entries and an [`affine_ladder_safe`] schedule, those tables run the
+    /// table, to [`Self::mul_decomposed`]. With at least `AFFINE_LADDER_MIN_POINTS` tables free
+    /// of identity entries and a schedule that `affine_ladder_safe` accepts, those tables run the
     /// ladder on affine accumulators with one batch inversion per column; the rest, and every
     /// lane the ladder reports as exceptional, take their own per-point ladder.
     pub fn mul_decomposed_batch(tables: &[Self], k: &Decomposed<P>) -> Vec<Projective<P>> {

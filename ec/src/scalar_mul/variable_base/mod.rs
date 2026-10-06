@@ -122,6 +122,16 @@ pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
         }
     }
 
+    /// The partitions of `msm_signed` whose scalars are below `2^num_bits`, for `num_bits` at
+    /// most 64. Signed windows over the low `num_bits` bits.
+    fn msm_bigint_narrow(
+        bases: &[Self::MulBase],
+        bigints: &[<Self::ScalarField as PrimeField>::BigInt],
+        num_bits: usize,
+    ) -> Self {
+        msm_bigint_wnaf_given_bits(bases, bigints, num_bits)
+    }
+
     /// Performs multi-scalar multiplication when the scalars are known to be boolean.
     /// The default implementation is faster than [`Self::msm_bigint`].
     fn msm_u1(bases: &[Self::MulBase], scalars: &[bool]) -> Self {
@@ -476,18 +486,44 @@ fn msm_signed<V: VariableBaseMSM>(
     add_result += msm_u16::<V>(&ub, &us);
     sub_result += msm_u16::<V>(&ib, &is);
 
-    // 32 and 64 bit negative scalars are not stored in PackedIndex so calculate them again
-    // Handle positive and negative u32 scalars.
-    let (ub, us) = large_value_unzip(u32s, |i| (bases[i], scalars[i].as_ref()[0] as u32));
-    let (ib, is) = large_value_unzip(i32s, |i| (bases[i], sub(&m, &scalars[i]) as u32));
-    add_result += msm_u32::<V>(&ub, &us);
-    sub_result += msm_u32::<V>(&ib, &is);
+    if V::NEGATION_IS_CHEAP {
+        // The 17 to 64 bit scalars and negations as one signed-window MSM over 32 or 64 bits,
+        // a negative scalar's base negated.
+        let narrow = |i: usize, negative: bool| {
+            if negative {
+                let mut magnitude = m;
+                magnitude.sub_with_borrow(&scalars[i]);
+                (-bases[i], magnitude)
+            } else {
+                (bases[i], scalars[i])
+            }
+        };
+        let (mut nb, mut ns) = large_value_unzip(u32s, |i| narrow(i, false));
+        for (group, negative) in [(i32s, true), (u64s, false), (i64s, true)] {
+            let (b, s) = large_value_unzip(group, |i| narrow(i, negative));
+            nb.extend(b);
+            ns.extend(s);
+        }
+        let num_bits = if u64s.is_empty() && i64s.is_empty() {
+            32
+        } else {
+            64
+        };
+        add_result += V::msm_bigint_narrow(&nb, &ns, num_bits);
+    } else {
+        // 32 and 64 bit negative scalars are not stored in PackedIndex so calculate them again
+        // Handle positive and negative u32 scalars.
+        let (ub, us) = large_value_unzip(u32s, |i| (bases[i], scalars[i].as_ref()[0] as u32));
+        let (ib, is) = large_value_unzip(i32s, |i| (bases[i], sub(&m, &scalars[i]) as u32));
+        add_result += msm_u32::<V>(&ub, &us);
+        sub_result += msm_u32::<V>(&ib, &is);
 
-    // Handle positive and negative u64 scalars.
-    let (ub, us) = large_value_unzip(u64s, |i| (bases[i], scalars[i].as_ref()[0]));
-    let (ib, is) = large_value_unzip(i64s, |i| (bases[i], sub(&m, &scalars[i])));
-    add_result += msm_u64::<V>(&ub, &us);
-    sub_result += msm_u64::<V>(&ib, &is);
+        // Handle positive and negative u64 scalars.
+        let (ub, us) = large_value_unzip(u64s, |i| (bases[i], scalars[i].as_ref()[0]));
+        let (ib, is) = large_value_unzip(i64s, |i| (bases[i], sub(&m, &scalars[i])));
+        add_result += msm_u64::<V>(&ub, &us);
+        sub_result += msm_u64::<V>(&ib, &is);
+    }
 
     // Handle the rest of the scalars.
     let (bf, sf) = large_value_unzip(bigints, |i| (bases[i], scalars[i]));
@@ -766,15 +802,34 @@ pub fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
     bigints: &[<V::ScalarField as PrimeField>::BigInt],
 ) -> V {
     let size = bases.len().min(bigints.len());
-    let bases = &bases[..size];
+    wnaf_sum(&bases[..size], pippenger_setup::<V::ScalarField>(bigints, size))
+}
 
+/// [`msm_bigint_wnaf`] over the low `num_bits` bits, for scalars below `2^num_bits`.
+pub fn msm_bigint_wnaf_given_bits<V: VariableBaseMSM>(
+    bases: &[V::MulBase],
+    bigints: &[<V::ScalarField as PrimeField>::BigInt],
+    num_bits: usize,
+) -> V {
+    let size = bases.len().min(bigints.len());
+    if size == 0 {
+        return V::zero();
+    }
+    let setup =
+        pippenger_setup_given_window::<V::ScalarField>(bigints, size, num_bits, window_size(size));
+    wnaf_sum(&bases[..size], setup)
+}
+
+/// The window sums of `setup`'s signed digits over `bases` in `xyzz` buckets, combined by
+/// Horner's rule.
+fn wnaf_sum<V: VariableBaseMSM>(bases: &[V::MulBase], setup: PippengerSetup) -> V {
     let PippengerSetup {
         c,
         digits_count,
         scalar_digits,
         ms_window_num_buckets,
         num_buckets,
-    } = pippenger_setup::<V::ScalarField>(bigints, size);
+    } = setup;
 
     let window_sums: Vec<_> = cfg_into_iter!(0..digits_count)
         .map(|i| {

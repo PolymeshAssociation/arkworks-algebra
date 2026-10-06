@@ -1,7 +1,7 @@
 //! Pippenger's affine wNAF vs projective wNAF MSM
 //!
 //! Run with:
-//! `cargo test --release --manifest-path curves/pallas/Cargo.toml --test batch_affine_vs_projective -- --ignored --nocapture`
+//! `cargo test --release --manifest-path curves/pallas/Cargo.toml --test batch_affine_bench -- --ignored --nocapture`
 //! and with `--features ark-ec/parallel` for the parallel numbers.
 
 use ark_ec::{

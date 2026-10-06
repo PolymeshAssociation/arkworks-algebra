@@ -102,6 +102,59 @@ pub fn test_var_base_msm_mixed_scalars<G: VariableBaseMSM>() {
     assert_eq!(naive, fast);
 }
 
+/// Scalars of 17 to 64 bits and their negations, alone, together and mixed with full-width
+/// ones, at sizes on both sides of the batch-affine threshold, including the widths' edges.
+pub fn test_var_base_msm_narrow_scalars<G: VariableBaseMSM>() {
+    let mut rng = ark_std::test_rng();
+    let edges32 = [1u64 << 16, (1 << 31) + 1, u32::MAX as u64];
+    let edges64 = [(1u64 << 32) + 1, 1 << 63, u64::MAX];
+    // A `bits`-wide value, an edge every seventh index, negated at odd indices.
+    let pick = |i: usize, bits: u32, rng: &mut _| {
+        let v = if i % 7 == 0 {
+            if bits == 32 {
+                edges32[i % 3]
+            } else {
+                edges64[i % 3]
+            }
+        } else {
+            (u64::rand(rng) >> (64 - bits)) | (1 << (bits - 1))
+        };
+        let s = F::<G>::from(v);
+        if i % 2 == 0 {
+            s
+        } else {
+            -s
+        }
+    };
+    for n in [1usize, 2, 31, 32, 255, 256, 300] {
+        let g = (0..n).map(|_| G::rand(&mut rng)).collect::<Vec<_>>();
+        let g = G::batch_convert_to_mul_base(&g);
+        let sets: [Vec<F<G>>; 4] = [
+            (0..n).map(|i| pick(i, 32, &mut rng)).collect(),
+            (0..n).map(|i| pick(i, 64, &mut rng)).collect(),
+            (0..n)
+                .map(|i| pick(i, if i % 3 == 0 { 32 } else { 64 }, &mut rng))
+                .collect(),
+            (0..n)
+                .map(|i| {
+                    if i % 2 == 0 {
+                        pick(i, 64, &mut rng)
+                    } else {
+                        F::<G>::rand(&mut rng)
+                    }
+                })
+                .collect(),
+        ];
+        for v in sets {
+            assert_eq!(
+                G::msm(&g, &v).unwrap(),
+                naive_var_base_msm::<G>(&g, &v),
+                "n = {n}"
+            );
+        }
+    }
+}
+
 pub fn test_var_base_msm_specialized<G: VariableBaseMSM>() {
     const SAMPLES: usize = (1 << 10) * 5;
 
