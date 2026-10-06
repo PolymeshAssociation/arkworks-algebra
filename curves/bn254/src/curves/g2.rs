@@ -49,6 +49,11 @@ impl SWCurveConfig for Config {
     /// Therefore, we can safely use (0, 0) as a flag for the zero point.
     type ZeroFlag = ();
 
+    /// Host MSM name, distinct from the other group of the curve.
+    fn curve_name() -> Option<&'static str> {
+        Some("bn254_g2")
+    }
+
     /// AFFINE_GENERATOR_COEFFS = (G2_GENERATOR_X, G2_GENERATOR_Y)
     const GENERATOR: G2Affine = G2Affine::new_unchecked(G2_GENERATOR_X, G2_GENERATOR_Y);
 
@@ -85,13 +90,13 @@ impl GLVConfig for Config {
     ];
 
     fn endomorphism(p: &Projective<Self>) -> Projective<Self> {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
 
     fn endomorphism_affine(p: &Affine<Self>) -> Affine<Self> {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }

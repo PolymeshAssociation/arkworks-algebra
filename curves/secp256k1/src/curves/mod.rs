@@ -1,9 +1,9 @@
 use ark_ec::{
     models::CurveConfig,
-    scalar_mul::glv::GLVConfig,
+    scalar_mul::glv::{try_glv_msm_bigint_full_width, try_glv_msm_small, GLVConfig},
     short_weierstrass::{self as sw, SWCurveConfig},
 };
-use ark_ff::{AdditiveGroup, Field, MontFp, Zero};
+use ark_ff::{AdditiveGroup, Field, MontFp, PrimeField, Zero};
 
 use crate::{fq::Fq, fr::Fr};
 
@@ -51,14 +51,25 @@ impl SWCurveConfig for Config {
 
     #[inline]
     fn mul_projective(base: &Projective, scalar: &[u64]) -> Projective {
-        let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
-        GLVConfig::glv_mul_projective(*base, s)
+        <Self as GLVConfig>::glv_mul_projective_bigint(base, scalar)
     }
 
     #[inline]
     fn mul_affine(base: &Affine, scalar: &[u64]) -> Projective {
-        let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
-        <Self as GLVConfig>::glv_mul_affine_projective(*base, s)
+        <Self as GLVConfig>::glv_mul_affine_projective_bigint(base, scalar)
+    }
+
+    #[inline]
+    fn try_msm_small(bases: &[Affine], scalars: &[Self::ScalarField]) -> Option<Projective> {
+        try_glv_msm_small::<Self>(bases, scalars)
+    }
+
+    #[inline]
+    fn try_msm_bigint_full_width(
+        bases: &[Affine],
+        bigints: &[<Self::ScalarField as PrimeField>::BigInt],
+    ) -> Option<Projective> {
+        try_glv_msm_bigint_full_width::<Self>(bases, bigints)
     }
 }
 
@@ -98,13 +109,13 @@ impl GLVConfig for Config {
     });
 
     fn endomorphism(p: &Projective) -> Projective {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
 
     fn endomorphism_affine(p: &Affine) -> Affine {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }

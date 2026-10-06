@@ -43,9 +43,17 @@ impl short_weierstrass::SWCurveConfig for Config {
         Self::BaseField::zero()
     }
 
-    fn mul_projective(p: &G1Projective, scalar: &[u64]) -> G1Projective {
-        let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
-        GLVConfig::glv_mul_projective(*p, s)
+    /// GLV ([`GLVConfig::glv_mul_projective`]) for `Mul<ScalarField>`, exact only on the order-`r`
+    /// subgroup. `mul_bigint` keeps the default `double_and_add`, exact on every curve point.
+    #[inline]
+    fn mul_projective_scalar_field(p: &G1Projective, scalar: &Self::ScalarField) -> G1Projective {
+        <Self as GLVConfig>::glv_mul_projective(*p, *scalar)
+    }
+
+    /// [`Self::mul_projective_scalar_field`] for an affine base.
+    #[inline]
+    fn mul_affine_scalar_field(p: &G1Affine, scalar: &Self::ScalarField) -> G1Projective {
+        <Self as GLVConfig>::glv_mul_affine_projective(*p, *scalar)
     }
 
     #[inline]

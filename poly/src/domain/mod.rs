@@ -121,10 +121,10 @@ pub trait EvaluationDomain<F: FftField>:
     fn distribute_powers_and_mul_by_const<T: DomainCoeff<F>>(coeffs: &mut [T], g: F, c: F) {
         // invariant: pow = c*g^i at the ith iteration of the loop
         let mut pow = c;
-        coeffs.iter_mut().for_each(|coeff| {
+        for coeff in coeffs.iter_mut() {
             *coeff *= pow;
             pow *= &g
-        })
+        }
     }
 
     /// Multiply the `i`-th element of `coeffs` with `c*g^i`.
@@ -140,10 +140,10 @@ pub trait EvaluationDomain<F: FftField>:
             .for_each(|(i, chunk)| {
                 let offset = c * g.pow([(i * num_elem_per_thread) as u64]);
                 let mut pow = offset;
-                chunk.iter_mut().for_each(|coeff| {
+                for coeff in chunk.iter_mut() {
                     *coeff *= pow;
                     pow *= &g
-                })
+                }
             });
     }
 

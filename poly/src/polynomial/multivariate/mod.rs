@@ -82,7 +82,7 @@ impl Term for SparseTerm {
         // If there are more than one variables, make sure they are
         // in order and combine any duplicates
         if term.len() > 1 {
-            term.sort_by(|(v1, _), (v2, _)| v1.cmp(v2));
+            term.sort_by_key(|(v1, _)| *v1);
             term = Self::combine(&term);
         }
         Self(term)
@@ -138,11 +138,16 @@ impl Deref for SparseTerm {
 }
 
 impl PartialOrd for SparseTerm {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SparseTerm {
     /// Sort by total degree. If total degree is equal then ordering
     /// is given by exponent weight in lower-numbered variables
     /// ie. `x_1 > x_2`, `x_1^2 > x_1 * x_2`, etc.
-    #[allow(clippy::non_canonical_partial_ord_impl)]
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn cmp(&self, other: &Self) -> Ordering {
         if self.degree() == other.degree() {
             // Iterate through all variables and return the corresponding ordering
             // if they differ in variable numbering or power
@@ -151,22 +156,16 @@ impl PartialOrd for SparseTerm {
             {
                 if other_variable == cur_variable {
                     if cur_power != other_power {
-                        return Some(cur_power.cmp(other_power));
+                        return cur_power.cmp(other_power);
                     }
                 } else {
-                    return Some(other_variable.cmp(cur_variable));
+                    return other_variable.cmp(cur_variable);
                 }
             }
-            Some(Ordering::Equal)
+            Ordering::Equal
         } else {
-            Some(self.degree().cmp(&other.degree()))
+            self.degree().cmp(&other.degree())
         }
-    }
-}
-
-impl Ord for SparseTerm {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap()
     }
 }
 

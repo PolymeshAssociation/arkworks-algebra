@@ -159,16 +159,14 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
                     return Some(F::zero());
                 }
 
-                let result;
-
                 // We have different solutions, if `a ^ (2k + 1)` is `1` or `-1`.
                 let check_value = elem.pow(modulus_minus_one_div_four.as_ref());
-                if check_value.is_one() {
+                let result = if check_value.is_one() {
                     // In this case, we can use the same technique as in `p = 4k + 3` case.
                     // After multiplying both sides by `a` we get
                     // `a ^ (2k + 2) = a = x ^ 2 (mod p)`
                     // so that `x = +- a ^ (k + 1) (mod p)`.
-                    result = elem.pow(modulus_plus_three_div_eight.as_ref());
+                    elem.pow(modulus_plus_three_div_eight.as_ref())
                 } else if check_value.neg().is_one() {
                     // In this case we can not use the same technique, but recalling
                     // Tonneli-Shanks trick of multiplying each side by some non-residue
@@ -188,12 +186,12 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
                     //      `a ^ (2k + 2) 2 ^ (4k + 2) = a = x ^ 2 (mod p)`
                     // so that `x = +- a ^ (k+1) 2 ^ (2k + 1) (mod p)`.
                     let two: F = 2.into();
-                    result = elem
+                    elem
                         .pow(modulus_plus_three_div_eight.as_ref())
                         .mul(two.pow(modulus_minus_one_div_four.as_ref()))
                 } else {
                     return None;
-                }
+                };
 
                 (result.square() == *elem).then_some(result)
             },

@@ -91,21 +91,20 @@ pub trait Valid: Sync {
         Self: 'a,
     {
         if Self::TRIVIAL_CHECK {
-            Ok(())
-        } else {
-            #[cfg(feature = "parallel")]
-            {
-                use rayon::{iter::ParallelBridge, prelude::ParallelIterator};
-                batch.par_bridge().try_for_each(|e| e.check())?;
-            }
-            #[cfg(not(feature = "parallel"))]
-            {
-                for item in batch {
-                    item.check()?;
-                }
-            }
-            Ok(())
+            return Ok(());
         }
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::{iter::ParallelBridge, prelude::ParallelIterator};
+            batch.par_bridge().try_for_each(|e| e.check())?;
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            for item in batch {
+                item.check()?;
+            }
+        }
+        Ok(())
     }
 }
 

@@ -1,4 +1,4 @@
-use ark_ec::{models::CurveConfig, scalar_mul::glv::{GLVConfig, GLVFastDecomp}, short_weierstrass::{self as sw, SWCurveConfig, SWSerializationXNonZero}};
+use ark_ec::{models::CurveConfig, scalar_mul::glv::{try_glv_msm_bigint_full_width, try_glv_msm_small, GLVConfig, GLVFastDecomp}, short_weierstrass::{self as sw, SWCurveConfig, SWSerializationXNonZero}};
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
 use ark_serialize::{Compress, SerializationError, Validate};
 use ark_std::io::{Write, Read};
@@ -34,6 +34,11 @@ impl SWCurveConfig for PallasConfig {
     /// AFFINE_GENERATOR_COEFFS = (G1_GENERATOR_X, G1_GENERATOR_Y)
     const GENERATOR: Affine = Affine::new_unchecked(G_GENERATOR_X, G_GENERATOR_Y);
 
+    /// Host MSM name, fixed so the ID does not depend on `core::any::type_name`.
+    fn curve_name() -> Option<&'static str> {
+        Some("pallas")
+    }
+
     /// Correctness:
     /// The curve equation is y^2 = x^3 + b
     /// Substituting (0, 0) gives 0^2 = 0^3 + b which simplifies to 0 = b.
@@ -48,14 +53,25 @@ impl SWCurveConfig for PallasConfig {
 
     #[inline]
     fn mul_projective(base: &Projective, scalar: &[u64]) -> Projective {
-        let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
-        GLVConfig::glv_mul_projective(*base, s)
+        <Self as GLVConfig>::glv_mul_projective_bigint(base, scalar)
     }
 
     #[inline]
     fn mul_affine(base: &Affine, scalar: &[u64]) -> Projective {
-        let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
-        <Self as GLVConfig>::glv_mul_affine_projective(*base, s)
+        <Self as GLVConfig>::glv_mul_affine_projective_bigint(base, scalar)
+    }
+
+    #[inline]
+    fn try_msm_small(bases: &[Affine], scalars: &[Self::ScalarField]) -> Option<Projective> {
+        try_glv_msm_small::<Self>(bases, scalars)
+    }
+
+    #[inline]
+    fn try_msm_bigint_full_width(
+        bases: &[Affine],
+        bigints: &[<Self::ScalarField as PrimeField>::BigInt],
+    ) -> Option<Projective> {
+        try_glv_msm_bigint_full_width::<Self>(bases, bigints)
     }
 
     #[inline]
@@ -126,7 +142,7 @@ impl GLVConfig for PallasConfig {
         // Endomorphism of the points on the curve.
         // endomorphism_p(x,y) = (BETA * x, y)
         // where BETA is a non-trivial cubic root of unity in Fq.
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
@@ -135,7 +151,7 @@ impl GLVConfig for PallasConfig {
         // Endomorphism of the points on the curve.
         // endomorphism_p(x,y) = (BETA * x, y)
         // where BETA is a non-trivial cubic root of unity in Fq.
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }

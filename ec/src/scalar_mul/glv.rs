@@ -1,4 +1,5 @@
 use crate::{
+    scalar_mul::{double_and_add, double_and_add_affine, sw_pippenger},
     short_weierstrass::{Affine, Projective, SWCurveConfig},
     AdditiveGroup, CurveGroup,
 };
@@ -11,6 +12,8 @@ use num_bigint::{BigInt, BigUint, Sign};
 use num_integer::Integer;
 use num_traits::{One, Signed};
 
+pub mod eisenstein;
+
 /// Precomputed constants that let a curve decompose a scalar without any `num_bigint` (heap)
 /// arithmetic.
 /// With `N = ScalarField::BigInt::NUM_LIMBS` and `M = 64 * (N + 2)`, the
@@ -20,7 +23,7 @@ use num_traits::{One, Signed};
 /// - `g1 = round(2^M * |n22| / r)` and `g2 = round(2^M * |n12| / r)`, each as
 ///   `N + 1` little-endian limbs (the `n_ij` are the [`GLVConfig::SCALAR_DECOMP_COEFFS`]).
 /// - `a12 = |n12|` and `a22 = |n22|` as scalar field elements. These are duplicated from
-///    [`GLVConfig::SCALAR_DECOMP_COEFFS`] to avoid multiplication during conversion
+///   [`GLVConfig::SCALAR_DECOMP_COEFFS`] to avoid multiplication during conversion
 /// - `negate_k2` is `true` when `sign(n12) * sign(n22) == -1`.
 ///
 /// These can be generated from `SCALAR_DECOMP_COEFFS` by `scripts/glv_fast_decomp.py`.
@@ -32,6 +35,12 @@ pub struct GLVFastDecomp<F: PrimeField> {
     pub a22: F,
     pub negate_k2: bool,
 }
+
+/// The GLV halves of a scalar as `(is_non_negative, magnitude)` pairs.
+pub type SignedHalves<F> = (
+    (bool, <F as PrimeField>::BigInt),
+    (bool, <F as PrimeField>::BigInt),
+);
 
 /// The GLV parameters for computing the endomorphism and scalar decomposition.
 pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
@@ -68,25 +77,82 @@ pub trait GLVConfig: Send + Sync + 'static + SWCurveConfig {
         }
     }
 
+    /// [`Self::scalar_decomposition`] on the integer `k`, returning the halves as integers.
+    /// Dispatches to [`fast_scalar_decomposition_bigint`] when [`Self::FAST_DECOMP`] is set,
+    /// which needs no scalar field arithmetic. Requires `k < r`; a larger `k` panics in debug
+    /// builds and, without [`Self::FAST_DECOMP`], in release builds too.
+    fn scalar_decomposition_bigint(
+        k: &<Self::ScalarField as PrimeField>::BigInt,
+    ) -> SignedHalves<Self::ScalarField> {
+        debug_assert!(*k < Self::ScalarField::MODULUS);
+        match Self::FAST_DECOMP {
+            Some(fd) => fast_scalar_decomposition_bigint::<Self>(k, &fd),
+            None => {
+                let k = Self::ScalarField::from_bigint(*k).expect("k < r");
+                let ((s1, k1), (s2, k2)) = Self::scalar_decomposition(k);
+                ((s1, k1.into_bigint()), (s2, k2.into_bigint()))
+            },
+        }
+    }
+
     fn endomorphism(p: &Projective<Self>) -> Projective<Self>;
 
     fn endomorphism_affine(p: &Affine<Self>) -> Affine<Self>;
 
+    /// `k * p` through the Eisenstein joint recoding of [`eisenstein`], with
+    /// [`jsf_mul_projective`] as the fallback and the test oracle.
     fn glv_mul_projective(p: Projective<Self>, k: Self::ScalarField) -> Projective<Self> {
-        jsf_mul_projective::<Self>(p, k)
+        eisenstein::eisenstein_mul_projective::<Self>(p, k)
     }
 
+    /// `k * p` through the Eisenstein joint recoding of [`eisenstein`], with
+    /// [`jsf_mul_affine_projective`] as the fallback and the test oracle.
     fn glv_mul_affine_projective(p: Affine<Self>, k: Self::ScalarField) -> Projective<Self> {
-        jsf_mul_affine_projective::<Self>(p, k)
+        eisenstein::eisenstein_mul_affine::<Self>(p, k)
     }
 
     fn glv_mul_affine(p: Affine<Self>, k: Self::ScalarField) -> Affine<Self> {
         Self::glv_mul_affine_projective(p, k).into_affine()
     }
+
+    /// `[k]p` for an integer `k` in little-endian limbs, the form
+    /// [`SWCurveConfig::mul_projective`] takes. [`Self::glv_mul_projective`] when `k < r`, exact on
+    /// the order-`r` subgroup and, for `k < 2^128`, on every curve point, since the Eisenstein
+    /// ladder recodes such `k` as `k + 0\omega`. [`double_and_add`] when `k >= r`, where reducing
+    /// `k` mod `r` would make `[r]p` zero off the subgroup and `k` wider than the scalar field
+    /// would not convert.
+    fn glv_mul_projective_bigint(p: &Projective<Self>, k: &[u64]) -> Projective<Self> {
+        match scalar_below_modulus::<Self::ScalarField>(k) {
+            Some(s) => Self::glv_mul_projective(*p, s),
+            None => double_and_add(p, k),
+        }
+    }
+
+    /// [`Self::glv_mul_projective_bigint`] for an affine base, the form
+    /// [`SWCurveConfig::mul_affine`] takes.
+    fn glv_mul_affine_projective_bigint(p: &Affine<Self>, k: &[u64]) -> Projective<Self> {
+        match scalar_below_modulus::<Self::ScalarField>(k) {
+            Some(s) => Self::glv_mul_affine_projective(*p, s),
+            None => double_and_add_affine(p, k),
+        }
+    }
 }
 
-/// `k * p` by splitting `k` into GLV halves and folding their joint sparse form. The default
-/// [`GLVConfig::glv_mul_projective`].
+/// The integer `k`, in little-endian limbs, as a scalar field element when `k < r`.
+fn scalar_below_modulus<F: PrimeField>(k: &[u64]) -> Option<F> {
+    let mut repr = F::BigInt::default();
+    let limbs = repr.as_mut();
+    if k.iter().skip(limbs.len()).any(|&l| l != 0) {
+        return None;
+    }
+    let n = k.len().min(limbs.len());
+    limbs[..n].copy_from_slice(&k[..n]);
+    F::from_bigint(repr)
+}
+
+/// `k * p` by splitting `k` into GLV halves and folding their joint sparse form. The path
+/// [`GLVConfig::glv_mul_projective`] took before the Eisenstein recoding, kept as its fallback
+/// and its test oracle.
 pub fn jsf_mul_projective<P: GLVConfig>(p: Projective<P>, k: P::ScalarField) -> Projective<P> {
     let mut b1 = p;
     let mut b2 = P::endomorphism(&p);
@@ -121,6 +187,84 @@ pub fn jsf_mul_affine_projective<P: GLVConfig>(p: Affine<P>, k: P::ScalarField) 
     binary_scalar_mul_jsf_affine(b1, k1, b2, k2)
 }
 
+/// Largest multi scalar multiplication routed to [`eisenstein::eisenstein_msm`] on one thread.
+/// The bucket algorithm pays 255 projective doublings and 85 window reductions whatever `n` is,
+/// which the Straus ladder replaces by about 126 doublings shared across the sum, so it wins while
+/// `n` is small and falls behind as the per-point work grows. On Pallas and secp256k1 (Apple M3
+/// Max) the serial ladder wins 1.03x at `n = 48` and loses 1.03x at 56 against the bucket path with
+/// its GLV split.
+///
+/// Zakura routes the same way from `try_multiexp` into `strauss_multiexp`,
+/// <https://github.com/zakura-core/common/blob/98846ee/crates/pasta_curves/src/glv.rs#L1199-L1236>;
+/// their crossover data is in [PR #143](https://github.com/zakura-core/common/pull/143).
+pub const SMALL_MSM_MAX: usize = 48;
+
+/// Floor of [`small_msm_max`] on a multi-threaded pool. On Pallas the parallel bucket path
+/// overtakes the ladder near 24 terms on 2 threads, 12 on 4 and 8 on 16.
+#[cfg(feature = "parallel")]
+const SMALL_MSM_MAX_PARALLEL_FLOOR: usize = 8;
+
+/// The largest `n` [`try_glv_msm_small`] routes to the serial ladder. [`SMALL_MSM_MAX`] divided by
+/// the thread count, floored at `SMALL_MSM_MAX_PARALLEL_FLOOR`, when called from outside the
+/// rayon pool, whose threads the bucket path can use. [`SMALL_MSM_MAX`] from inside a pool task,
+/// where the pool is likely busy with sibling tasks.
+#[allow(clippy::missing_const_for_fn)]
+pub fn small_msm_max() -> usize {
+    #[cfg(feature = "parallel")]
+    if rayon::current_thread_index().is_none() {
+        return (SMALL_MSM_MAX / rayon::current_num_threads().max(1))
+            .max(SMALL_MSM_MAX_PARALLEL_FLOOR);
+    }
+    SMALL_MSM_MAX
+}
+
+/// `sum(bases_i * scalars_i)` for the sizes where a shared-doubling ladder beats the bucket
+/// algorithm: one GLV multiplication at `n = 1`, [`eisenstein::eisenstein_msm`] up to
+/// [`small_msm_max`]. Declines with `None` above that, and when a decomposition misses the
+/// Eisenstein recoding's bound, which sends the caller back to
+/// [`VariableBaseMSM::msm_bigint`](crate::VariableBaseMSM). Both are cases where this ladder has
+/// nothing to offer rather than cases where the sum is undefined.
+pub fn try_glv_msm_small<P: GLVConfig>(
+    bases: &[Affine<P>],
+    scalars: &[P::ScalarField],
+) -> Option<Projective<P>> {
+    match bases.len().min(scalars.len()) {
+        0 => Some(Projective::zero()),
+        1 => Some(P::glv_mul_affine_projective(bases[0], scalars[0])),
+        n if n <= small_msm_max() => eisenstein::eisenstein_msm::<P>(bases, scalars),
+        _ => None,
+    }
+}
+
+/// Whether [`try_glv_msm_bigint_full_width`] splits `n` terms on a pool of `threads`. On Pallas
+/// (Apple M3 Max, 12 performance and 4 efficiency cores, `glv_batch_affine_bench`) the split is
+/// 1.06x to 1.44x faster than full-width windows from 128 to `2^16` terms on one thread, 1.03x
+/// to 1.31x on four and mostly faster on eight. On 12 and 16 threads it is 1.1x to 1.4x faster
+/// up to 192 terms and level to 1.27x faster from 4096, but 5% to 12% slower in between, where
+/// its 13 to 19 windows run one per thread with no slack for stealing and are too small for
+/// their reduction trees to run in parallel. No window width recovers that band. Above `2^16`
+/// the doubled buffers are not measured.
+pub fn glv_split_pays(n: usize, threads: usize) -> bool {
+    (32..=1 << 16).contains(&n) && (threads <= 8 || n <= 192 || n >= 4096)
+}
+
+/// The full-width part of a multi scalar multiplication through
+/// [`sw_pippenger::msm_batch_affine_glv_bigint`] when [`glv_split_pays`] for the caller's rayon
+/// pool. Declines with `None` otherwise and when some scalar is at least `r`.
+pub fn try_glv_msm_bigint_full_width<P: GLVConfig>(
+    bases: &[Affine<P>],
+    bigints: &[<P::ScalarField as PrimeField>::BigInt],
+) -> Option<Projective<P>> {
+    #[cfg(feature = "parallel")]
+    let threads = rayon::current_num_threads();
+    #[cfg(not(feature = "parallel"))]
+    let threads = 1;
+    if !glv_split_pays(bases.len().min(bigints.len()), threads) {
+        return None;
+    }
+    sw_pippenger::msm_batch_affine_glv_bigint::<P>(bases, bigints)
+}
+
 /// Computes `round((k * g) / 2^(64 * shift_limbs))`, rounding up, and returns
 /// it as a scalar field element. `k` is the little-endian canonical limbs of the scalar and
 /// `g` is a precomputed multiplier; both are read as unsigned integers. The
@@ -138,7 +282,10 @@ fn mul_shift_round_bigint<F: PrimeField>(k: &[u64], g: &[u64], shift_limbs: usiz
     const PRODUCT_BUFFER_LIMBS: usize = 16;
     const {
         // Number of limbs in `g` is always 1 more than in `k`
-        assert!(<F::BigInt as BigInteger>::NUM_LIMBS + <F::BigInt as BigInteger>::NUM_LIMBS + 1 < PRODUCT_BUFFER_LIMBS);
+        assert!(
+            <F::BigInt as BigInteger>::NUM_LIMBS + <F::BigInt as BigInteger>::NUM_LIMBS + 1
+                < PRODUCT_BUFFER_LIMBS
+        );
     }
     let mut prod = [0u64; PRODUCT_BUFFER_LIMBS];
     for (i, &ki) in k.iter().enumerate() {
@@ -176,7 +323,7 @@ fn sign_and_magnitude<F: PrimeField>(x: F) -> (bool, F) {
 /// Allocation-free GLV scalar decomposition using [`GLVFastDecomp`].
 ///
 /// The two roundings `c1 = round(k * a22 / r)` and `c2 = round(k * a12 / r)` are
-/// done with [`mul_shift_round`]; then `k2 = +/-(c2*a22 - c1*a12)` and
+/// done with `mul_shift_round`; then `k2 = +/-(c2*a22 - c1*a12)` and
 /// `k1 = k - lambda*k2` are evaluated in the scalar field. Defining `k1` this way
 /// makes `k1 + lambda*k2 == k` hold by construction, so a rounding error of at
 /// most one only affects how short `k1, k2` are, never the correctness of the
@@ -210,6 +357,65 @@ pub fn fast_scalar_decomposition<P: GLVConfig>(
     let k1 = k - P::LAMBDA * k2;
 
     (sign_and_magnitude(k1), sign_and_magnitude(k2))
+}
+
+/// [`fast_scalar_decomposition`] in wrapping `64 N`-bit integer arithmetic on the limbs of
+/// `k < r`; the bounds below do not hold for larger `k`. With `n_{ij} = s_{ij} a_{ij}` the
+/// entries of [`GLVConfig::SCALAR_DECOMP_COEFFS`], `s_{ij} = \pm 1`, the same roundings
+/// `c_1 = round(k a_{22} / r)` and `c_2 = round(k a_{12} / r)` give the lattice point
+/// `\beta_1 (n_{11}, n_{12}) + \beta_2 (n_{21}, n_{22})` with `\beta_1 = s_{22} c_1` and
+/// `\beta_2 = -s_{12} c_2`, and
+/// `k_1 = k - s_{11} s_{22} c_1 a_{11} + s_{12} s_{21} c_2 a_{21}`,
+/// `k_2 = s_{12} s_{22} (c_2 a_{22} - c_1 a_{12})`. Both are below `2^{64 N - 1}` in absolute
+/// value, so their residues mod `2^{64 N}` determine them, and they equal the halves
+/// [`fast_scalar_decomposition`] returns. Ported from Zakura
+/// [`decompose_limbs`](https://github.com/zakura-core/common/blob/4b44b466/crates/pasta_curves/src/glv.rs#L399-L407)
+/// (zakura-core/common PR #292).
+pub fn fast_scalar_decomposition_bigint<P: GLVConfig>(
+    k: &<P::ScalarField as PrimeField>::BigInt,
+    precomp: &GLVFastDecomp<P::ScalarField>,
+) -> SignedHalves<P::ScalarField> {
+    let shift = <<P::ScalarField as PrimeField>::BigInt as BigInteger>::NUM_LIMBS + 2;
+    let c1 = mul_shift_round_bigint::<P::ScalarField>(k.as_ref(), precomp.g1, shift);
+    let c2 = mul_shift_round_bigint::<P::ScalarField>(k.as_ref(), precomp.g2, shift);
+    let [(s11, a11), (s12, a12), (s21, a21), (s22, a22)] = P::SCALAR_DECOMP_COEFFS;
+
+    let mut k1 = *k;
+    let c1_a11 = c1.mul_low(&a11);
+    if s11 == s22 {
+        k1.sub_with_borrow(&c1_a11);
+    } else {
+        k1.add_with_carry(&c1_a11);
+    }
+    let c2_a21 = c2.mul_low(&a21);
+    if s12 == s21 {
+        k1.add_with_carry(&c2_a21);
+    } else {
+        k1.sub_with_borrow(&c2_a21);
+    }
+
+    let mut k2 = c2.mul_low(&a22);
+    k2.sub_with_borrow(&c1.mul_low(&a12));
+    if s12 != s22 {
+        k2 = wrapping_neg(&k2);
+    }
+    (signed_bigint(k1), signed_bigint(k2))
+}
+
+/// `2^{64 N} - x`.
+fn wrapping_neg<B: BigInteger>(x: &B) -> B {
+    let mut neg = B::from(0u64);
+    neg.sub_with_borrow(x);
+    neg
+}
+
+/// `(is_non_negative, magnitude)` of the two's-complement integer `x`.
+fn signed_bigint<B: BigInteger>(x: B) -> (bool, B) {
+    if x.get_bit(64 * B::NUM_LIMBS - 1) {
+        (false, wrapping_neg(&x))
+    } else {
+        (true, x)
+    }
 }
 
 /// Generic GLV scalar decomposition
@@ -431,7 +637,7 @@ pub fn binary_scalar_mul_shamir<G: SWCurveConfig>(
     // nonzero column, avoiding a doubling-and-add into the identity.
     let mut res = loop {
         match bits.next() {
-            Some((false, false)) => continue,
+            Some((false, false)) => {},
             Some((true, false)) => break b1,
             Some((false, true)) => break b2,
             Some((true, true)) => break b1b2,

@@ -14,7 +14,7 @@ use ark_std::{
     One, Zero,
 };
 
-use ark_ff::{fields::Field, AdditiveGroup, PrimeField, ToConstraintField, UniformRand};
+use ark_ff::{fields::Field, AdditiveGroup, ToConstraintField, UniformRand};
 
 use educe::Educe;
 use zeroize::Zeroize;
@@ -255,7 +255,7 @@ impl<P: SWCurveConfig> AffineRepr for Affine<P> {
     const ZERO: Self = Self::identity();
 
     fn xy(&self) -> Option<(Self::BaseField, Self::BaseField)> {
-        (!self.is_zero()).then(|| (self.x, self.y))
+        (!self.is_zero()).then_some((self.x, self.y))
     }
 
     #[inline]
@@ -376,7 +376,7 @@ impl<P: SWCurveConfig, T: Borrow<P::ScalarField>> Mul<T> for Affine<P> {
 
     #[inline]
     fn mul(self, other: T) -> Self::Output {
-        self.mul_bigint(other.borrow().into_bigint())
+        P::mul_affine_scalar_field(&self, other.borrow())
     }
 }
 
@@ -428,6 +428,33 @@ impl<P: SWCurveConfig> Valid for Affine<P> {
             Ok(())
         } else {
             Err(SerializationError::InvalidData)
+        }
+    }
+
+    fn batch_check<'a>(
+        batch: impl Iterator<Item = &'a Self> + Send,
+    ) -> Result<(), SerializationError>
+    where
+        Self: 'a,
+    {
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            use crate::models::short_weierstrass::group::MIN_PARALLEL_POINTS;
+            // Reuse normalize_batch's floor
+            let pts = batch.collect::<Vec<_>>();
+            if pts.len() < MIN_PARALLEL_POINTS {
+                pts.iter().try_for_each(|e| e.check())
+            } else {
+                pts.into_par_iter().try_for_each(|e| e.check())
+            }
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            for e in batch {
+                e.check()?;
+            }
+            Ok(())
         }
     }
 }

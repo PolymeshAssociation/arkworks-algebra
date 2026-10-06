@@ -246,7 +246,7 @@ impl<F: Field> SparsePolynomial<F> {
             coeffs.pop();
         }
         // Ensure that coeffs are in ascending order.
-        coeffs.sort_by(|(c1, _), (c2, _)| c1.cmp(c2));
+        coeffs.sort_by_key(|(c1, _)| *c1);
         // Check that either the coefficients vec is empty or that the last coeff is
         // non-zero.
         assert!(coeffs.last().map_or(true, |(_, c)| !c.is_zero()));

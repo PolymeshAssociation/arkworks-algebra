@@ -7,7 +7,7 @@ use ark_std::{
     io::{Read, Write},
 };
 
-use ark_ff::{fields::Field, AdditiveGroup};
+use ark_ff::{fields::Field, AdditiveGroup, PrimeField};
 
 use crate::{
     scalar_mul::{double_and_add, double_and_add_affine, variable_base::VariableBaseMSM},
@@ -44,6 +44,16 @@ pub trait SWCurveConfig: super::CurveConfig {
 
     /// A type that is stored in `Affine<Self>` to indicate whether the point is at infinity.
     type ZeroFlag: ZeroFlag<Self>;
+
+    /// Name identifying the curve to the host MSM, whose ID is the name up to its first `::`.
+    /// `None` skips the host MSM. Defaults to the first 20 bytes of the config's type name without
+    /// the `ark_` prefix, whose first segment is the crate name. G1 and G2 configs of one crate
+    /// share that segment, so they override it.
+    fn curve_name() -> Option<&'static str> {
+        let name = core::any::type_name::<Self>().trim_start_matches("ark_");
+        let name_len = name.len().min(20);
+        Some(&name[..name_len])
+    }
 
     /// Helper method for computing `elem * Self::COEFF_A`.
     ///
@@ -96,6 +106,9 @@ pub trait SWCurveConfig: super::CurveConfig {
     /// The default method is simply to multiply by the cofactor.
     /// Some curves can implement a more efficient algorithm.
     fn clear_cofactor(item: &Affine<Self>) -> Affine<Self> {
+        if Self::cofactor_is_one() {
+            return *item;
+        }
         item.mul_by_cofactor()
     }
 
@@ -109,6 +122,49 @@ pub trait SWCurveConfig: super::CurveConfig {
     /// coordinates.
     fn mul_affine(base: &Affine<Self>, scalar: &[u64]) -> Projective<Self> {
         double_and_add_affine(base, scalar)
+    }
+
+    /// `[k]P` for a scalar field element `k`, used by `Mul<Self::ScalarField>`. `k` is defined
+    /// modulo `r`, so an override may use an endomorphism that acts as `[\lambda]` only on the
+    /// order-`r` subgroup. [`Self::mul_projective`] takes an integer, which subgroup checks and
+    /// cofactor clearing apply to points outside the subgroup.
+    fn mul_projective_scalar_field(
+        base: &Projective<Self>,
+        scalar: &Self::ScalarField,
+    ) -> Projective<Self> {
+        Self::mul_projective(base, scalar.into_bigint().as_ref())
+    }
+
+    /// [`Self::mul_projective_scalar_field`] for an affine base.
+    fn mul_affine_scalar_field(
+        base: &Affine<Self>,
+        scalar: &Self::ScalarField,
+    ) -> Projective<Self> {
+        Self::mul_affine(base, scalar.into_bigint().as_ref())
+    }
+
+    /// Offers a tiny multi scalar multiplication to a shared-doubling ladder, tried by
+    /// [`VariableBaseMSM::msm_unchecked`] before the bucket algorithm. `None` declines and the
+    /// caller carries on to the generic path. `bases` and `scalars` are the same length. GLV
+    /// curves supply a ladder through
+    /// [`try_glv_msm_small`](crate::scalar_mul::glv::try_glv_msm_small).
+    fn try_msm_small(
+        _bases: &[Affine<Self>],
+        _scalars: &[Self::ScalarField],
+    ) -> Option<Projective<Self>> {
+        None
+    }
+
+    /// Offers the full-width part of a multi scalar multiplication, the scalars too wide for
+    /// the narrow-integer paths, tried by
+    /// [`VariableBaseMSM::msm_bigint_full_width`] before the bucket algorithm. `None` declines.
+    /// GLV curves split the scalars through
+    /// [`try_glv_msm_bigint_full_width`](crate::scalar_mul::glv::try_glv_msm_bigint_full_width).
+    fn try_msm_bigint_full_width(
+        _bases: &[Affine<Self>],
+        _bigints: &[<Self::ScalarField as PrimeField>::BigInt],
+    ) -> Option<Projective<Self>> {
+        None
     }
 
     /// Default implementation for multi scalar multiplication
@@ -219,7 +275,7 @@ pub trait ZeroFlag<C: SWCurveConfig>:
     }
 }
 
-impl<C: SWCurveConfig<ZeroFlag = bool>> ZeroFlag<C> for bool {
+impl<C: SWCurveConfig<ZeroFlag = Self>> ZeroFlag<C> for bool {
     const IS_ZERO: Self = true;
     const IS_NOT_ZERO: Self = false;
     fn is_zero(point: &Affine<C>) -> bool {

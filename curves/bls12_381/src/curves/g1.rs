@@ -54,15 +54,27 @@ impl SWCurveConfig for Config {
     /// Therefore, we can safely use (0, 0) as a flag for the zero point.
     type ZeroFlag = ();
 
+    /// Host MSM name, distinct from the other group of the curve.
+    fn curve_name() -> Option<&'static str> {
+        Some("bls12_381_g1")
+    }
+
     #[inline(always)]
     fn mul_by_a(_: Self::BaseField) -> Self::BaseField {
         Self::BaseField::zero()
     }
 
+    /// GLV ([`GLVConfig::glv_mul_projective`]) for `Mul<ScalarField>`, exact only on the order-`r`
+    /// subgroup. `mul_bigint` keeps the default `double_and_add`, exact on every curve point.
     #[inline]
-    fn mul_projective(p: &G1Projective, scalar: &[u64]) -> G1Projective {
-        let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
-        GLVConfig::glv_mul_projective(*p, s)
+    fn mul_projective_scalar_field(p: &G1Projective, scalar: &Self::ScalarField) -> G1Projective {
+        <Self as GLVConfig>::glv_mul_projective(*p, *scalar)
+    }
+
+    /// [`Self::mul_projective_scalar_field`] for an affine base.
+    #[inline]
+    fn mul_affine_scalar_field(p: &G1Affine, scalar: &Self::ScalarField) -> G1Projective {
+        <Self as GLVConfig>::glv_mul_affine_projective(*p, *scalar)
     }
 
     #[inline]
@@ -91,7 +103,7 @@ impl SWCurveConfig for Config {
         //
         // It is enough to multiply by (1 - x), instead of (x - 1)^2 / 3
         let h_eff = one_minus_x().into_bigint();
-        Config::mul_affine(&p, h_eff.as_ref()).into()
+        Config::mul_affine(p, h_eff.as_ref()).into()
     }
 
     fn deserialize_with_mode<R: ark_serialize::Read>(
@@ -105,7 +117,10 @@ impl SWCurveConfig for Config {
             read_g1_uncompressed(&mut reader)?
         };
 
-        if validate == ark_serialize::Validate::Yes && !p.is_in_correct_subgroup_assuming_on_curve()
+        // The fast subgroup check does not depend on the curve coefficient `b`, so points read
+        // from the uncompressed encoding must also be checked to lie on the curve.
+        if validate == ark_serialize::Validate::Yes
+            && !(p.is_on_curve() && p.is_in_correct_subgroup_assuming_on_curve())
         {
             return Err(SerializationError::InvalidData);
         }
@@ -171,13 +186,13 @@ impl GLVConfig for Config {
     ];
 
     fn endomorphism(p: &G1Projective) -> G1Projective {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
 
     fn endomorphism_affine(p: &Affine<Self>) -> Affine<Self> {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
@@ -211,7 +226,7 @@ pub fn endomorphism(p: &Affine<Config>) -> Affine<Config> {
     // Endomorphism of the points on the curve.
     // endomorphism_p(x,y) = (BETA * x, y)
     // where BETA is a non-trivial cubic root of unity in Fq.
-    let mut res = (*p).clone();
+    let mut res = *p;
     res.x *= BETA;
     res
 }

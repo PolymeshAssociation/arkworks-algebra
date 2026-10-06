@@ -8,22 +8,19 @@ use ark_ff::Zero;
 use crate::AffineRepr;
 use super::{Affine, SWCurveConfig, SingleBitSWFlags};
 
-/// Marker trait for Short Weierstrass curves where x=0 is not on the curve.
-/// Only curves that implement SWSerializationXNonZero can use this serialization
-/// 
-/// This enables more efficient serialization using `SingleBitSWFlags` instead of the
-/// default `SWFlags`. When a curve satisfies the property that (0, 0) is not on the curve,
-/// we can use (0, 0) as an encoding for the point at infinity, requiring only 1 bit
-/// instead of 2 bits for the flags.
-///
-/// Ensure that x=0 is not a valid x-coordinate for any point on the curve.
+/// Marker trait for short Weierstrass curves whose prime-order subgroup has no point with
+/// `x = 0`. Such curves serialize with `SingleBitSWFlags` instead of `SWFlags`, encoding the
+/// point at infinity as `x = 0`, so the flags need 1 bit instead of 2. A curve may still have
+/// points with `x = 0` outside the subgroup when `b` is a square (Wei25519); those fail to
+/// serialize rather than encode as infinity.
 pub trait SWSerializationXNonZero: SWCurveConfig {}
 
 /// Serializes an affine point using `SingleBitSWFlags`.
 /// 
 /// If uncompressed, serializes both x and y coordinates as well as a bit for whether it is
 /// infinity. If compressed, serializes x coordinate with 1 bit to encode whether y is
-/// positive or negative. x=0 means infinity as x=0 is not a valid point.
+/// positive or negative. `x = 0` encodes infinity; a finite point with `x = 0` returns
+/// `SerializationError::InvalidData`.
 #[inline]
 pub fn serialize_with_single_bit_flags<C: SWSerializationXNonZero, W: Write>(
     item: &Affine<C>,
@@ -36,6 +33,7 @@ pub fn serialize_with_single_bit_flags<C: SWSerializationXNonZero, W: Write>(
             C::BaseField::zero(),
             SingleBitSWFlags::infinity(),
         ),
+        false if item.x.is_zero() => return Err(SerializationError::InvalidData),
         false => (item.x, item.y, item.to_single_bit_flags()),
     };
 

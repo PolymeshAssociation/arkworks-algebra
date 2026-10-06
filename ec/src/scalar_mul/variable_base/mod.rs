@@ -1,7 +1,7 @@
 use ark_ff::prelude::*;
 use ark_std::{
     borrow::Borrow,
-    cfg_chunks, cfg_into_iter, cfg_iter,
+    cfg_chunks, cfg_into_iter,
     iterable::Iterable,
     ops::{AddAssign, SubAssign},
     vec,
@@ -10,6 +10,8 @@ use ark_std::{
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
+
+use itertools::Either;
 
 pub mod stream_pippenger;
 pub use stream_pippenger::*;
@@ -33,6 +35,11 @@ type DefaultHasher = ahash::AHasher;
     target_has_atomic = "ptr"
 )))]
 type DefaultHasher = fnv::FnvHasher;
+
+/// Fewest scalars worth converting to `BigInt` across threads in [`VariableBaseMSM::msm_unchecked`].
+/// Set from `into_bigint_conversion`, above its measured crossover.
+#[cfg(feature = "parallel")]
+const MIN_PARALLEL_SCALARS: usize = 65536;
 
 pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
     type Bucket: Default
@@ -65,18 +72,21 @@ pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
     ///
     /// Reference: [`VariableBaseMSM::msm`]
     fn msm_unchecked(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Self {
-        #[cfg(all(feature = "host_msm", not(feature = "std")))]
-        if let Some(curve_name) = Self::curve_name() {
-            if let Some(res) = ark_host_msm::use_host_msm_unchecked(curve_name, bases, scalars) {
-                return res;
-            }
-            // fallback to non-host implementation if the host doesn't support this curve or if an error occurs during host MSM.
-        }
+        msm_unchecked_inner::<Self>(bases, scalars, Self::msm_bigint)
+    }
 
-        let bigints = cfg_into_iter!(scalars)
-            .map(|s| s.into_bigint())
-            .collect::<Vec<_>>();
-        Self::msm_bigint(bases, bigints.as_slice())
+    /// Like [`Self::msm_unchecked`] for scalars known to all be full width. Drives
+    /// [`Self::msm_bigint_full_width`] directly, skipping the size-partitioning of `msm_signed`.
+    /// Correct for any scalar; small scalars just miss their optimized path.
+    fn msm_unchecked_full_width(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Self {
+        msm_unchecked_inner::<Self>(bases, scalars, Self::msm_bigint_full_width)
+    }
+
+    /// Offers this multi scalar multiplication to a shared-doubling ladder, for the sizes where
+    /// the bucket algorithm's fixed cost dominates. `None` declines and the caller carries on
+    /// to the generic path.
+    fn try_msm_small(_bases: &[Self::MulBase], _scalars: &[Self::ScalarField]) -> Option<Self> {
+        None
     }
 
     /// Performs multi-scalar multiplication.
@@ -98,6 +108,28 @@ pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
         bigints: &[<Self::ScalarField as PrimeField>::BigInt],
     ) -> Self {
         msm_signed(bases, bigints)
+    }
+
+    /// The full-width partition of `msm_signed`. When sure every scalar won't fit a narrow integer.
+    fn msm_bigint_full_width(
+        bases: &[Self::MulBase],
+        bigints: &[<Self::ScalarField as PrimeField>::BigInt],
+    ) -> Self {
+        if Self::NEGATION_IS_CHEAP {
+            msm_bigint_wnaf(bases, bigints)
+        } else {
+            msm_bigint(bases, bigints)
+        }
+    }
+
+    /// The partitions of `msm_signed` whose scalars are below `2^num_bits`, for `num_bits` at
+    /// most 64. Signed windows over the low `num_bits` bits.
+    fn msm_bigint_narrow(
+        bases: &[Self::MulBase],
+        bigints: &[<Self::ScalarField as PrimeField>::BigInt],
+        num_bits: usize,
+    ) -> Self {
+        msm_bigint_wnaf_given_bits(bases, bigints, num_bits)
     }
 
     /// Performs multi-scalar multiplication when the scalars are known to be boolean.
@@ -166,14 +198,67 @@ pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
     }
 }
 
+fn msm_unchecked_inner<V: VariableBaseMSM>(
+    bases: &[V::MulBase],
+    scalars: &[V::ScalarField],
+    msm: impl Fn(&[V::MulBase], &[<V::ScalarField as PrimeField>::BigInt]) -> V,
+) -> V {
+    match route_msm::<V>(bases, scalars) {
+        Either::Left(res) => res,
+        Either::Right(bigints) => msm(bases, bigints.as_slice()),
+    }
+}
+
+/// Routes a multi-scalar multiplication to its best available path. On a hit `Left` carries its
+/// result. Else `Right` holds every scalar converted to its `BigInt` for the subsequent algorithm.
+pub(crate) fn route_msm<V: VariableBaseMSM>(
+    bases: &[V::MulBase],
+    scalars: &[V::ScalarField],
+) -> Either<V, Vec<<V::ScalarField as PrimeField>::BigInt>> {
+    let size = bases.len().min(scalars.len());
+    if size == 0 {
+        return Either::Left(V::zero());
+    }
+
+    #[cfg(all(feature = "host_msm", not(feature = "std")))]
+    if let Some(curve_name) = V::curve_name() {
+        if let Some(res) =
+            ark_host_msm::use_host_msm_unchecked(curve_name, &bases[..size], &scalars[..size])
+        {
+            return Either::Left(res);
+        }
+        // Fall through to the in-guest path if the host doesn't support this curve or errors.
+    }
+
+    if let Some(res) = V::try_msm_small(&bases[..size], &scalars[..size]) {
+        return Either::Left(res);
+    }
+
+    // `into_bigint_conversion` measures the crossover.
+    #[cfg(feature = "parallel")]
+    let bigints = if scalars.len() >= MIN_PARALLEL_SCALARS {
+        cfg_into_iter!(scalars)
+            .map(|s| s.into_bigint())
+            .collect::<Vec<_>>()
+    } else {
+        scalars.iter().map(|s| s.into_bigint()).collect::<Vec<_>>()
+    };
+    #[cfg(not(feature = "parallel"))]
+    let bigints = scalars.iter().map(|s| s.into_bigint()).collect::<Vec<_>>();
+
+    Either::Right(bigints)
+}
+
 #[inline]
 fn large_value_unzip<A: Send + Sync, B: Send + Sync>(
     grouped: &[PackedIndex],
     f: impl Fn(usize) -> (A, B) + Send + Sync,
 ) -> (Vec<A>, Vec<B>) {
-    cfg_iter!(grouped)
-        .map(|&i| f(i.index()))
-        .unzip::<_, _, Vec<_>, Vec<_>>()
+    #[cfg(feature = "parallel")]
+    if grouped.len() >= MIN_PARALLEL_SCALARS {
+        return grouped.par_iter().map(|&i| f(i.index())).unzip();
+    }
+    grouped.iter().map(|&i| f(i.index())).unzip()
 }
 
 #[inline]
@@ -181,9 +266,23 @@ fn small_value_unzip<A: Send + Sync, B: Send + Sync>(
     grouped: &[PackedIndex],
     f: impl Fn(usize, u16) -> (A, B) + Send + Sync,
 ) -> (Vec<A>, Vec<B>) {
-    cfg_iter!(grouped)
-        .map(|&i| f(i.index(), i.value()))
-        .unzip::<_, _, Vec<_>, Vec<_>>()
+    #[cfg(feature = "parallel")]
+    if grouped.len() >= MIN_PARALLEL_SCALARS {
+        return grouped.par_iter().map(|&i| f(i.index(), i.value())).unzip();
+    }
+    grouped.iter().map(|&i| f(i.index(), i.value())).unzip()
+}
+
+/// Whether `msm_signed` puts `scalar` in the full-width group: more than 64 bits, and so is its
+/// negation mod `MODULUS`.
+#[inline]
+fn is_full_width<F: PrimeField>(scalar: &F::BigInt) -> bool {
+    if scalar.num_bits() <= 64 {
+        return false;
+    }
+    let mut negated = F::MODULUS;
+    negated.sub_with_borrow(scalar);
+    negated.num_bits() > 64
 }
 
 #[inline(always)]
@@ -233,29 +332,29 @@ pub struct PackedIndex(pub u64);
 
 impl PackedIndex {
     #[inline(always)]
-    fn new(index: usize, group: ScalarSize, value: u16) -> Self {
+    const fn new(index: usize, group: ScalarSize, value: u16) -> Self {
         // Pack the index, group, and value into a single u64 as [<4 bits for group> || <16 bits for value> || <44 bits for index>]
         // where group bits are the most significant.
         let index_bits = ((index as u64) << 20) >> 20;
         let group_bits = (group as u64) << 60;
         let value_bits = (value as u64) << 44;
 
-        PackedIndex(index_bits | value_bits | group_bits)
+        Self(index_bits | value_bits | group_bits)
     }
     /// Extracts the index from the packed value.
     #[inline(always)]
-    fn index(self) -> usize {
+    const fn index(self) -> usize {
         ((self.0 << 20) >> 20) as usize
     }
 
     /// Extracts the group from the packed value.
     #[inline(always)]
-    fn group(self) -> u8 {
+    const fn group(self) -> u8 {
         (self.0 >> 60) as u8
     }
 
     #[inline(always)]
-    fn value(self) -> u16 {
+    const fn value(self) -> u16 {
         ((self.0 & VALUE_MASK) >> 44) as u16
     }
 }
@@ -273,49 +372,78 @@ fn msm_signed<V: VariableBaseMSM>(
     let bases = &bases[..size];
     let scalars = &scalars[..size];
 
+    // Random scalars are all full width, which needs no partition. Below the floor the scan and
+    // the partition run serially; their per-scalar work is lighter than `into_bigint`'s.
+    let full_width = |s: &<V::ScalarField as PrimeField>::BigInt| {
+        s.is_zero() || is_full_width::<V::ScalarField>(s)
+    };
+    #[cfg(feature = "parallel")]
+    let parallel = size >= MIN_PARALLEL_SCALARS;
+    #[cfg(feature = "parallel")]
+    let all_full_width = if parallel {
+        scalars.par_iter().all(full_width)
+    } else {
+        scalars.iter().all(full_width)
+    };
+    #[cfg(not(feature = "parallel"))]
+    let all_full_width = scalars.iter().all(full_width);
+    if all_full_width {
+        return V::msm_bigint_full_width(bases, scalars);
+    }
+
     // Partition scalars according to their size. For scalars (or -scalar) that fit in 16 bits,
     // store the value, rest wont fit in 64-bit PackedIndex.
-    let mut grouped = cfg_iter!(scalars)
-        .enumerate()
-        .filter(|(_, scalar)| !scalar.is_zero())
-        .map(|(i, scalar)| {
-            use ScalarSize::*;
-            let mut value = 0;
-            let group = match scalar.num_bits() {
-                0..=1 => U1,
-                2..=8 => U8,
-                9..=16 => U16,
-                17..=32 => U32,
-                33..=64 => U64,
-                _ => {
-                    // take bit size of -scalar
-                    let mut p_minus_scalar = V::ScalarField::MODULUS;
-                    p_minus_scalar.sub_with_borrow(scalar);
-                    let group = match p_minus_scalar.num_bits() {
-                        0..=1 => NegU1,
-                        2..=8 => NegU8,
-                        9..=16 => NegU16,
-                        17..=32 => NegU32,
-                        33..=64 => NegU64,
-                        _ => ScalarSize::BigInt,
-                    };
-                    if matches!(group, NegU1 | NegU8 | NegU16) {
-                        value = p_minus_scalar.as_ref()[0] as u16
-                    }
-                    group
-                },
-            };
-            if matches!(group, U1 | U8 | U16) {
-                value = (scalar.as_ref()[0]) as u16;
-            };
-            PackedIndex::new(i, group, value)
-        })
-        .collect::<Vec<_>>();
+    let classify = |(i, scalar): (usize, &<V::ScalarField as PrimeField>::BigInt)| {
+        use ScalarSize::{U1, U8, U16, U32, U64, NegU1, NegU8, NegU16, NegU32, NegU64};
+        let mut value = 0;
+        let group = match scalar.num_bits() {
+            0..=1 => U1,
+            2..=8 => U8,
+            9..=16 => U16,
+            17..=32 => U32,
+            33..=64 => U64,
+            _ => {
+                // take bit size of -scalar
+                let mut p_minus_scalar = V::ScalarField::MODULUS;
+                p_minus_scalar.sub_with_borrow(scalar);
+                let group = match p_minus_scalar.num_bits() {
+                    0..=1 => NegU1,
+                    2..=8 => NegU8,
+                    9..=16 => NegU16,
+                    17..=32 => NegU32,
+                    33..=64 => NegU64,
+                    _ => ScalarSize::BigInt,
+                };
+                if matches!(group, NegU1 | NegU8 | NegU16) {
+                    value = p_minus_scalar.as_ref()[0] as u16
+                }
+                group
+            },
+        };
+        if matches!(group, U1 | U8 | U16) {
+            value = (scalar.as_ref()[0]) as u16;
+        };
+        PackedIndex::new(i, group, value)
+    };
+    let nonzero = |(_, scalar): &(usize, &<V::ScalarField as PrimeField>::BigInt)| !scalar.is_zero();
 
     #[cfg(feature = "parallel")]
-    grouped.par_sort_unstable_by_key(|i| i.group());
+    let grouped = if parallel {
+        let mut grouped: Vec<_> =
+            scalars.par_iter().enumerate().filter(nonzero).map(classify).collect();
+        grouped.par_sort_unstable_by_key(|i| i.group());
+        grouped
+    } else {
+        let mut grouped: Vec<_> = scalars.iter().enumerate().filter(nonzero).map(classify).collect();
+        grouped.sort_unstable_by_key(|i| i.group());
+        grouped
+    };
     #[cfg(not(feature = "parallel"))]
-    grouped.sort_unstable_by_key(|i| i.group());
+    let grouped = {
+        let mut grouped: Vec<_> = scalars.iter().enumerate().filter(nonzero).map(classify).collect();
+        grouped.sort_unstable_by_key(|i| i.group());
+        grouped
+    };
 
     // Split scalars based on their bit sizes
     // u1s are scalars of 1-bit
@@ -341,8 +469,8 @@ fn msm_signed<V: VariableBaseMSM>(
     let mut sub_result: V;
 
     // Handle the scalars in the range {-1, 0, 1}.
-    let (ub, us) = small_value_unzip(&u1s, |i, v| (bases[i], v == 1));
-    let (ib, is) = small_value_unzip(&i1s, |i, v| (bases[i], v == 1));
+    let (ub, us) = small_value_unzip(u1s, |i, v| (bases[i], v == 1));
+    let (ib, is) = small_value_unzip(i1s, |i, v| (bases[i], v == 1));
     add_result = msm_binary::<V>(&ub, &us);
     sub_result = msm_binary::<V>(&ib, &is);
 
@@ -353,33 +481,55 @@ fn msm_signed<V: VariableBaseMSM>(
     sub_result += msm_u8::<V>(&ib, &is);
 
     // Handle positive and negative u16 scalars.
-    let (ub, us) = small_value_unzip(u16s, |i, v| (bases[i], v as u16));
-    let (ib, is) = small_value_unzip(i16s, |i, v| (bases[i], v as u16));
+    let (ub, us) = small_value_unzip(u16s, |i, v| (bases[i], v));
+    let (ib, is) = small_value_unzip(i16s, |i, v| (bases[i], v));
     add_result += msm_u16::<V>(&ub, &us);
     sub_result += msm_u16::<V>(&ib, &is);
 
-    // 32 and 64 bit negative scalars are not stored in PackedIndex so calculate them again
-    // Handle positive and negative u32 scalars.
-    let (ub, us) = large_value_unzip(u32s, |i| (bases[i], scalars[i].as_ref()[0] as u32));
-    let (ib, is) = large_value_unzip(i32s, |i| (bases[i], sub(&m, &scalars[i]) as u32));
-    add_result += msm_u32::<V>(&ub, &us);
-    sub_result += msm_u32::<V>(&ib, &is);
-
-    // Handle positive and negative u64 scalars.
-    let (ub, us) = large_value_unzip(u64s, |i| (bases[i], scalars[i].as_ref()[0]));
-    let (ib, is) = large_value_unzip(i64s, |i| (bases[i], sub(&m, &scalars[i])));
-    add_result += msm_u64::<V>(&ub, &us);
-    sub_result += msm_u64::<V>(&ib, &is);
-
-    // Handle the rest of the scalars.
-    let (bf, sf) = large_value_unzip(&bigints, |i| (bases[i], scalars[i]));
     if V::NEGATION_IS_CHEAP {
-        add_result += msm_bigint_wnaf::<V>(&bf, &sf);
+        // The 17 to 64 bit scalars and negations as one signed-window MSM over 32 or 64 bits,
+        // a negative scalar's base negated.
+        let narrow = |i: usize, negative: bool| {
+            if negative {
+                let mut magnitude = m;
+                magnitude.sub_with_borrow(&scalars[i]);
+                (-bases[i], magnitude)
+            } else {
+                (bases[i], scalars[i])
+            }
+        };
+        let (mut nb, mut ns) = large_value_unzip(u32s, |i| narrow(i, false));
+        for (group, negative) in [(i32s, true), (u64s, false), (i64s, true)] {
+            let (b, s) = large_value_unzip(group, |i| narrow(i, negative));
+            nb.extend(b);
+            ns.extend(s);
+        }
+        let num_bits = if u64s.is_empty() && i64s.is_empty() {
+            32
+        } else {
+            64
+        };
+        add_result += V::msm_bigint_narrow(&nb, &ns, num_bits);
     } else {
-        add_result += msm_bigint::<V>(&bf, &sf);
+        // 32 and 64 bit negative scalars are not stored in PackedIndex so calculate them again
+        // Handle positive and negative u32 scalars.
+        let (ub, us) = large_value_unzip(u32s, |i| (bases[i], scalars[i].as_ref()[0] as u32));
+        let (ib, is) = large_value_unzip(i32s, |i| (bases[i], sub(&m, &scalars[i]) as u32));
+        add_result += msm_u32::<V>(&ub, &us);
+        sub_result += msm_u32::<V>(&ib, &is);
+
+        // Handle positive and negative u64 scalars.
+        let (ub, us) = large_value_unzip(u64s, |i| (bases[i], scalars[i].as_ref()[0]));
+        let (ib, is) = large_value_unzip(i64s, |i| (bases[i], sub(&m, &scalars[i])));
+        add_result += msm_u64::<V>(&ub, &us);
+        sub_result += msm_u64::<V>(&ib, &is);
     }
 
-    (add_result - sub_result).into()
+    // Handle the rest of the scalars.
+    let (bf, sf) = large_value_unzip(bigints, |i| (bases[i], scalars[i]));
+    add_result += V::msm_bigint_full_width(&bf, &sf);
+
+    add_result - sub_result
 }
 
 fn preamble<A, B>(bases: &mut &[A], scalars: &mut &[B]) -> Option<usize> {
@@ -565,10 +715,26 @@ pub(crate) fn pippenger_setup<F: PrimeField>(scalars: &[F::BigInt], size: usize)
     pippenger_setup_given_window::<F>(
         scalars,
         size,
-        F::MODULUS_BIT_SIZE as usize,
+        scalar_bit_width::<F>(&scalars[..size]),
         window_size(size),
     )
 }
+
+/// Bits a recoding must cover: `MODULUS_BIT_SIZE`, or the whole `BigInt` when some scalar is at
+/// least `2^MODULUS_BIT_SIZE`, whose top bits a `MODULUS_BIT_SIZE`-bit cover would drop.
+pub(crate) fn scalar_bit_width<F: PrimeField>(scalars: &[F::BigInt]) -> usize {
+    let bits = F::MODULUS_BIT_SIZE as usize;
+    if scalars.iter().any(|s| s.num_bits() as usize > bits) {
+        64 * <F::BigInt as BigInteger>::NUM_LIMBS
+    } else {
+        bits
+    }
+}
+
+/// Fewest scalars one parallel task recodes in [`pippenger_setup_given_window`], a few tens of
+/// microseconds of work.
+#[cfg(feature = "parallel")]
+const DIGITS_MIN_SCALARS_PER_TASK: usize = 256;
 
 /// [`pippenger_setup`] with `ceil(num_bits / c)` windows of `c` bits each. The most-significant
 /// window reads a full `c` bits, capped at the `BigInt` width, so it also picks up bits at and above
@@ -582,16 +748,23 @@ pub(crate) fn pippenger_setup_given_window<F: PrimeField>(
     let scalars = &scalars[..size];
 
     let digits_count = num_bits.div_ceil(c);
+    let mut scalar_digits = vec![0i64; size * digits_count];
+    let fill = |(row, s): (&mut [i64], &F::BigInt)| {
+        row.iter_mut()
+            .zip(make_digits(s, c, num_bits))
+            .for_each(|(d, v)| *d = v)
+    };
     #[cfg(feature = "parallel")]
-    let scalar_digits = scalars
-        .into_par_iter()
-        .flat_map_iter(|s| make_digits(s, c, num_bits))
-        .collect::<Vec<_>>();
+    scalar_digits
+        .par_chunks_mut(digits_count)
+        .zip(scalars)
+        .with_min_len(DIGITS_MIN_SCALARS_PER_TASK)
+        .for_each(fill);
     #[cfg(not(feature = "parallel"))]
-    let scalar_digits = scalars
-        .iter()
-        .flat_map(|s| make_digits(s, c, num_bits))
-        .collect::<Vec<_>>();
+    scalar_digits
+        .chunks_mut(digits_count)
+        .zip(scalars)
+        .for_each(fill);
 
     // Bucket-array sizing. `make_digits` is a signed windowed encoding: every digit but the
     // most-significant lies in `[-2^(c-1), 2^(c-1)-1]`, so indexing buckets by `|digit| - 1`
@@ -629,15 +802,34 @@ pub fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
     bigints: &[<V::ScalarField as PrimeField>::BigInt],
 ) -> V {
     let size = bases.len().min(bigints.len());
-    let bases = &bases[..size];
+    wnaf_sum(&bases[..size], pippenger_setup::<V::ScalarField>(bigints, size))
+}
 
+/// [`msm_bigint_wnaf`] over the low `num_bits` bits, for scalars below `2^num_bits`.
+pub fn msm_bigint_wnaf_given_bits<V: VariableBaseMSM>(
+    bases: &[V::MulBase],
+    bigints: &[<V::ScalarField as PrimeField>::BigInt],
+    num_bits: usize,
+) -> V {
+    let size = bases.len().min(bigints.len());
+    if size == 0 {
+        return V::zero();
+    }
+    let setup =
+        pippenger_setup_given_window::<V::ScalarField>(bigints, size, num_bits, window_size(size));
+    wnaf_sum(&bases[..size], setup)
+}
+
+/// The window sums of `setup`'s signed digits over `bases` in `xyzz` buckets, combined by
+/// Horner's rule.
+fn wnaf_sum<V: VariableBaseMSM>(bases: &[V::MulBase], setup: PippengerSetup) -> V {
     let PippengerSetup {
         c,
         digits_count,
         scalar_digits,
         ms_window_num_buckets,
         num_buckets,
-    } = pippenger_setup::<V::ScalarField>(bigints, size);
+    } = setup;
 
     let window_sums: Vec<_> = cfg_into_iter!(0..digits_count)
         .map(|i| {
@@ -662,61 +854,16 @@ pub fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
     combine_window_sums::<V>(&window_sums, c)
 }
 
-#[cfg(feature = "parallel")]
-const THREADS_PER_CHUNK: usize = 2;
-
-/// Computes an MSM using the windowed non-adjacent form (WNAF) algorithm.
-/// To improve parallelism, when number of threads is at least 2, this
-/// function will split the input into enough chunks so that each chunk
-/// can be processed with 2 threads.
-/// Multi-scalar multiplication via windowed non-adjacent form, over the full
-/// scalar width.
+/// Multi-scalar multiplication via windowed non-adjacent form, over the full scalar width. Under
+/// `parallel` the windows run as tasks on the caller's rayon pool.
 pub fn msm_bigint_wnaf<V: VariableBaseMSM>(
-    mut bases: &[V::MulBase],
-    mut scalars: &[<V::ScalarField as PrimeField>::BigInt],
+    bases: &[V::MulBase],
+    scalars: &[<V::ScalarField as PrimeField>::BigInt],
 ) -> V {
-    let size = bases.len().min(scalars.len());
-    if size == 0 {
+    if bases.len().min(scalars.len()) == 0 {
         return V::zero();
     }
-
-    #[cfg(feature = "parallel")]
-    let chunk_size = {
-        let cur_num_threads = rayon::current_num_threads();
-        let num_chunks = if cur_num_threads < THREADS_PER_CHUNK {
-            1
-        } else {
-            cur_num_threads / THREADS_PER_CHUNK
-        };
-        let chunk_size = size / num_chunks;
-        if chunk_size == 0 {
-            size
-        } else {
-            chunk_size
-        }
-    };
-    #[cfg(not(feature = "parallel"))]
-    let chunk_size = size;
-
-    bases = &bases[..size];
-    scalars = &scalars[..size];
-
-    cfg_chunks!(bases, chunk_size)
-        .zip(cfg_chunks!(scalars, chunk_size))
-        .map(|(bases, scalars)| {
-            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
-            let result = rayon::ThreadPoolBuilder::new()
-                .num_threads(THREADS_PER_CHUNK.min(rayon::current_num_threads()))
-                .build()
-                .unwrap()
-                .install(|| msm_bigint_wnaf_parallel::<V>(bases, scalars));
-
-            #[cfg(any(not(feature = "parallel"), target_arch = "wasm32"))]
-            let result = msm_bigint_wnaf_parallel::<V>(bases, scalars);
-
-            result
-        })
-        .sum()
+    msm_bigint_wnaf_parallel(bases, scalars)
 }
 
 /// Optimized implementation of multi-scalar multiplication.
@@ -728,7 +875,7 @@ pub fn msm_bigint<V: VariableBaseMSM>(
         return V::zero();
     }
     let size = scalars.len();
-    let num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
+    let num_bits = scalar_bit_width::<V::ScalarField>(scalars);
     let c = window_size(size);
 
     // Split each scalar into `c`-bit windows and accumulate each window's
@@ -839,7 +986,7 @@ pub(crate) fn make_digits(
     })
 }
 
-const fn window_size(num_scalars: usize) -> usize {
+pub(crate) const fn window_size(num_scalars: usize) -> usize {
     if num_scalars < 32 {
         3
     } else {

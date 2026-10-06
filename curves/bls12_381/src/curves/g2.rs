@@ -67,6 +67,11 @@ impl SWCurveConfig for Config {
     /// Therefore, we can safely use (0, 0) as a flag for the zero point.
     type ZeroFlag = ();
 
+    /// Host MSM name, distinct from the other group of the curve.
+    fn curve_name() -> Option<&'static str> {
+        Some("bls12_381_g2")
+    }
+
     #[inline(always)]
     fn mul_by_a(_: Self::BaseField) -> Self::BaseField {
         Self::BaseField::zero()
@@ -100,14 +105,14 @@ impl SWCurveConfig for Config {
         let p_projective = p.into_group();
 
         // [x]P
-        let x_p = Config::mul_affine(p, &x).neg();
+        let x_p = Config::mul_affine(p, x).neg();
         // ψ(P)
-        let psi_p = p_power_endomorphism(&p);
+        let psi_p = p_power_endomorphism(p);
         // (ψ^2)(2P)
         let mut psi2_p2 = double_p_power_endomorphism(&p_projective.double());
 
         // tmp = [x]P + ψ(P)
-        let mut tmp = x_p.clone();
+        let mut tmp = x_p;
         tmp += &psi_p;
 
         // tmp2 = [x^2]P + [x]ψ(P)
@@ -132,7 +137,10 @@ impl SWCurveConfig for Config {
             read_g2_uncompressed(&mut reader)?
         };
 
-        if validate == ark_serialize::Validate::Yes && !p.is_in_correct_subgroup_assuming_on_curve()
+        // The fast subgroup check does not depend on the curve coefficient `b`, so points read
+        // from the uncompressed encoding must also be checked to lie on the curve.
+        if validate == ark_serialize::Validate::Yes
+            && !(p.is_on_curve() && p.is_in_correct_subgroup_assuming_on_curve())
         {
             return Err(SerializationError::InvalidData);
         }
@@ -209,13 +217,13 @@ impl GLVConfig for Config {
     ];
 
     fn endomorphism(p: &Projective<Self>) -> Projective<Self> {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
 
     fn endomorphism_affine(p: &Affine<Self>) -> Affine<Self> {
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
@@ -282,9 +290,9 @@ fn p_power_endomorphism(p: &Affine<Config>) -> Affine<Config> {
     res.x.frobenius_map_in_place(1);
     res.y.frobenius_map_in_place(1);
 
-    let tmp_x = res.x.clone();
-    res.x.c0 = -P_POWER_ENDOMORPHISM_COEFF_0.c1 * &tmp_x.c1;
-    res.x.c1 = P_POWER_ENDOMORPHISM_COEFF_0.c1 * &tmp_x.c0;
+    let tmp_x = res.x;
+    res.x.c0 = -P_POWER_ENDOMORPHISM_COEFF_0.c1 * tmp_x.c1;
+    res.x.c1 = P_POWER_ENDOMORPHISM_COEFF_0.c1 * tmp_x.c0;
     res.y *= P_POWER_ENDOMORPHISM_COEFF_1;
 
     res

@@ -574,7 +574,7 @@ impl<'a, F: Field> SubAssign<&'a SparsePolynomial<F>> for DensePolynomial<F> {
     #[inline]
     fn sub_assign(&mut self, other: &'a SparsePolynomial<F>) {
         if self.is_zero() {
-            self.coeffs.truncate(0);
+            self.coeffs.clear();
             self.coeffs.resize(other.degree() + 1, F::zero());
 
             for (i, coeff) in other.iter() {

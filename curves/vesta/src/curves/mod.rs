@@ -1,5 +1,5 @@
 use crate::{fq::Fq, fr::Fr};
-use ark_ec::{models::CurveConfig, scalar_mul::glv::{GLVConfig, GLVFastDecomp}, short_weierstrass::{self as sw, SWCurveConfig, SWSerializationXNonZero}};
+use ark_ec::{models::CurveConfig, scalar_mul::glv::{try_glv_msm_bigint_full_width, try_glv_msm_small, GLVConfig, GLVFastDecomp}, short_weierstrass::{self as sw, SWCurveConfig, SWSerializationXNonZero}};
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
 use ark_serialize::{Compress, SerializationError, Validate};
 use ark_std::io::{Read, Write};
@@ -34,6 +34,11 @@ impl SWCurveConfig for VestaConfig {
     /// AFFINE_GENERATOR_COEFFS = (G1_GENERATOR_X, G1_GENERATOR_Y)
     const GENERATOR: Affine = Affine::new_unchecked(G_GENERATOR_X, G_GENERATOR_Y);
 
+    /// Host MSM name, fixed so the ID does not depend on `core::any::type_name`.
+    fn curve_name() -> Option<&'static str> {
+        Some("vesta")
+    }
+
     /// Correctness:
     /// Substituting (0, 0) into the curve equation gives 0^2 = b.
     /// Since b is not zero, the point (0, 0) is not on the curve.
@@ -47,14 +52,25 @@ impl SWCurveConfig for VestaConfig {
 
     #[inline]
     fn mul_projective(base: &sw::Projective<Self>, scalar: &[u64]) -> sw::Projective<Self> {
-        let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
-        GLVConfig::glv_mul_projective(*base, s)
+        <Self as GLVConfig>::glv_mul_projective_bigint(base, scalar)
     }
 
     #[inline]
     fn mul_affine(base: &sw::Affine<Self>, scalar: &[u64]) -> sw::Projective<Self> {
-        let s = Self::ScalarField::from_sign_and_limbs(true, scalar);
-        <Self as GLVConfig>::glv_mul_affine_projective(*base, s)
+        <Self as GLVConfig>::glv_mul_affine_projective_bigint(base, scalar)
+    }
+
+    #[inline]
+    fn try_msm_small(bases: &[sw::Affine<Self>], scalars: &[Self::ScalarField]) -> Option<sw::Projective<Self>> {
+        try_glv_msm_small::<Self>(bases, scalars)
+    }
+
+    #[inline]
+    fn try_msm_bigint_full_width(
+        bases: &[sw::Affine<Self>],
+        bigints: &[<Self::ScalarField as PrimeField>::BigInt],
+    ) -> Option<sw::Projective<Self>> {
+        try_glv_msm_bigint_full_width::<Self>(bases, bigints)
     }
     
     #[inline]
@@ -125,7 +141,7 @@ impl GLVConfig for VestaConfig {
         // Endomorphism of the points on the curve.
         // endomorphism_p(x,y) = (BETA * x, y)
         // where BETA is a non-trivial cubic root of unity in Fq.
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }
@@ -134,7 +150,7 @@ impl GLVConfig for VestaConfig {
         // Endomorphism of the points on the curve.
         // endomorphism_p(x,y) = (BETA * x, y)
         // where BETA is a non-trivial cubic root of unity in Fq.
-        let mut res = (*p).clone();
+        let mut res = *p;
         res.x *= Self::ENDO_COEFFS[0];
         res
     }

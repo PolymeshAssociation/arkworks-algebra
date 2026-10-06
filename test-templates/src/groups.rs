@@ -188,6 +188,11 @@ macro_rules! __test_group {
     };
     ($group:ty; msm) => {
         #[test]
+        fn test_var_base_msm_small() {
+            $crate::msm::test_var_base_msm_small::<$group>();
+        }
+
+        #[test]
         fn test_var_base_msm() {
             $crate::msm::test_var_base_msm::<$group>();
         }
@@ -195,6 +200,16 @@ macro_rules! __test_group {
         #[test]
         fn test_var_base_msm_mixed_scalars() {
             $crate::msm::test_var_base_msm_mixed_scalars::<$group>();
+        }
+
+        #[test]
+        fn test_var_base_msm_narrow_scalars() {
+            $crate::msm::test_var_base_msm_narrow_scalars::<$group>();
+        }
+
+        #[test]
+        fn test_var_base_msm_wide_bigints() {
+            $crate::msm::test_var_base_msm_wide_bigints::<$group>();
         }
 
         #[test]
@@ -285,6 +300,11 @@ macro_rules! __test_group {
     };
     ($group:ty; sw) => {
         $crate::__test_group!($group; curve);
+
+        #[test]
+        fn test_batch_affine_msm() {
+            $crate::msm::test_batch_affine_msm::<<$group as CurveGroup>::Config>();
+        }
 
         #[test]
         fn test_sw_properties() {
@@ -431,6 +451,7 @@ macro_rules! __test_group {
             $crate::glv::glv_projective::<Config>();
             $crate::glv::glv_affine::<Config>();
             $crate::glv::glv_scalar_decomposition::<Config>();
+            $crate::glv::glv_scalar_decomposition_bigint_matches_field::<Config>();
             $crate::glv::glv_endomorphism_eigenvalue::<Config>();
             $crate::glv::jsf_reconstructs_the_scalars::<Config>();
             $crate::glv::jsf_mul_matches_shamir_and_naive::<Config>();
@@ -438,9 +459,23 @@ macro_rules! __test_group {
             $crate::glv::jsf_mul_handles_edge_scalars::<Config>();
             $crate::glv::glv_mul_identity_point::<Config>();
             $crate::glv::glv_mul_handles_edge_scalars::<Config>();
+            $crate::glv::glv_mul_bigint_matches_double_and_add::<Config>();
             $crate::glv::jsf_affine_vs_projective::<Config>();
             $crate::glv::jsf_vs_shamir::<Config>();
             $crate::glv::fast_decomposition_throughput::<Config>();
+        }
+
+        #[test]
+        fn test_eisenstein_ladder() {
+            $crate::glv::eisenstein_orbit_points_match_native::<Config>();
+            $crate::glv::eisenstein_matches_jsf::<Config>();
+            $crate::glv::eisenstein_same_scalar_batch::<Config>();
+            $crate::glv::eisenstein_torsion_bases::<Config>();
+        }
+
+        #[test]
+        fn test_glv_msm() {
+            $crate::glv::glv_msm_batch_affine_matches_wnaf::<Config>();
         }
     }
 }

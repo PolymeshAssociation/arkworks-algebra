@@ -42,14 +42,14 @@ impl CurveMSMId {
 }
 
 /// Pack a fat pointer (ptr and length) into a u64.
-pub fn pack_fat_pointer(ptr: u32, len: u32) -> u64 {
+pub const fn pack_fat_pointer(ptr: u32, len: u32) -> u64 {
     let ptr_val = ptr as u64;
     let len_val = len as u64;
     (len_val << 32) | ptr_val
 }
 
 /// Unpack a fat pointer (ptr and length) from a u64.
-pub fn unpack_fat_pointer(fat_ptr: u64) -> (u32, u32) {
+pub const fn unpack_fat_pointer(fat_ptr: u64) -> (u32, u32) {
     let ptr = (fat_ptr & 0xFFFFFFFF) as u32;
     let len = (fat_ptr >> 32) as u32;
     (ptr, len)
@@ -94,10 +94,10 @@ pub fn use_host_msm_unchecked<
     scalars.serialize_uncompressed(&mut buffer).ok()?;
     let fat_ptr = pack_fat_pointer(buffer.as_ptr() as u32, buffer.len() as u32);
     let res_len = unsafe { host_msm_unchecked(fat_ptr) as usize };
-    if res_len > 0 {
+    if res_len > 0 && res_len <= buffer.len() {
         R::deserialize_uncompressed_unchecked(&buffer[..res_len]).ok()
     } else {
-        // An error occurred during MSM.
+        // An error occurred during MSM, or the host reported a length past the buffer.
         None
     }
 }
