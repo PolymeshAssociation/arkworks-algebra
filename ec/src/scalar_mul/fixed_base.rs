@@ -169,9 +169,9 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
     }
 
     /// [`Self::msm`] taking scalars as `BigInt`s. The table covers `MODULUS_BIT_SIZE` bits, so
-    /// terms with a scalar at least `r` go through the variable-base MSM on their bases, which is
-    /// exact on every point. The batch-affine reduction cannot fail over a prime field of
-    /// characteristic > 2, so there is no other fallback path.
+    /// terms with a scalar at least `r` go through the full-width variable-base MSM on their bases,
+    /// which does not reduce mod `r` and so is exact on every point. The batch-affine reduction
+    /// cannot fail over a prime field of characteristic > 2, so there is no other fallback path.
     pub fn msm_bigint(&self, scalars: &[<P::ScalarField as PrimeField>::BigInt]) -> Projective<P> {
         let n = scalars.len().min(self.n);
         if n == 0 {
@@ -189,7 +189,7 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
                 }
             }
             return self.msm_bigint(&canonical)
-                + Projective::<P>::msm_bigint(&wide_bases, &wide_scalars);
+                + Projective::<P>::msm_bigint_full_width(&wide_bases, &wide_scalars);
         }
         #[cfg(feature = "parallel")]
         if n * self.num_windows >= MIN_PARALLEL_ENTRIES && rayon::current_num_threads() > 1 {

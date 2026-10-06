@@ -53,7 +53,8 @@ fn x_zero_point_does_not_serialize_as_infinity() {
 
 /// The Curve25519 2-torsion point `(A/3, 0)` has `2^{cj} T = O` for every window `j > 0`, so the
 /// fixed-base table holds identity multiples. They must contribute nothing, alone, negated and
-/// added to subgroup points, serial and segmented.
+/// added to subgroup points, serial and segmented. Scalars `r` and `r + 1` on `T` and `-T` check
+/// that the fallback for scalars at least `r` is exact, giving `[r]T = T`.
 #[test]
 fn fixed_base_msm_with_two_torsion_base() {
     use crate::{Fq, Fr};
@@ -61,7 +62,7 @@ fn fixed_base_msm_with_two_torsion_base() {
         scalar_mul::{double_and_add_affine, fixed_base::FixedBaseMSM},
         AffineRepr, CurveGroup,
     };
-    use ark_ff::{Field, PrimeField, UniformRand, Zero};
+    use ark_ff::{BigInteger, Field, PrimeField, UniformRand, Zero};
     use ark_std::test_rng;
 
     let rng = &mut test_rng();
@@ -78,17 +79,31 @@ fn fixed_base_msm_with_two_torsion_base() {
         bases[0] = t;
         bases[1] = -t;
         bases[2] = (bases[2] + t).into_affine();
-        let scalars: ark_std::vec::Vec<_> = (0..n)
-            .map(|i| if i < 2 { Fr::from(17u64) } else { Fr::rand(rng) }.into_bigint())
-            .collect();
-        let expected: Projective = bases
-            .iter()
-            .zip(&scalars)
-            .map(|(b, s)| double_and_add_affine(b, s))
-            .sum();
-        for c in [2usize, 4, 8, 13] {
-            let pc = FixedBaseMSM::<Wei25519Config>::new_given_window_size(&bases, c);
-            assert_eq!(pc.msm_bigint(&scalars), expected, "n={n} c={c}");
+        let mut r_plus_one = Fr::MODULUS;
+        r_plus_one.add_with_carry(&1u64.into());
+        for torsion_scalars in [[Fr::from(17u64).into_bigint(); 2], [Fr::MODULUS, r_plus_one]] {
+            let scalars: ark_std::vec::Vec<_> = (0..n)
+                .map(|i| {
+                    if i < 2 {
+                        torsion_scalars[i]
+                    } else {
+                        Fr::rand(rng).into_bigint()
+                    }
+                })
+                .collect();
+            let expected: Projective = bases
+                .iter()
+                .zip(&scalars)
+                .map(|(b, s)| double_and_add_affine(b, s))
+                .sum();
+            for c in [2usize, 4, 8, 13] {
+                let pc = FixedBaseMSM::<Wei25519Config>::new_given_window_size(&bases, c);
+                assert_eq!(
+                    pc.msm_bigint(&scalars),
+                    expected,
+                    "n={n} c={c} torsion_scalars={torsion_scalars:?}"
+                );
+            }
         }
     }
 }

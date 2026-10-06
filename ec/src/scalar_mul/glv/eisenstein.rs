@@ -295,7 +295,11 @@ impl<P: GLVConfig> Decomposed<P> {
 
     /// The digit code at `position`, zero past [`Self::len`].
     pub const fn digit(&self, position: usize) -> u8 {
-        self.digits[position]
+        if position < self.len {
+            self.digits[position]
+        } else {
+            0
+        }
     }
 }
 
