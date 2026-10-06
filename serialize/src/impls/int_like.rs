@@ -6,7 +6,6 @@ use ark_std::{
     vec::*,
 };
 use num_bigint::BigUint;
-use crate::impls::compact::CompactU64;
 
 impl Valid for bool {
     const TRIVIAL_CHECK: Self = true;
@@ -108,7 +107,10 @@ impl_uint!(i16);
 impl_uint!(i32);
 impl_uint!(i64);
 
-#[cfg(feature = "serialize_usize")]
+// NOTE: usize and isize behave exactly as u32 and i32 respectively, regardless of the platform.
+// In future, might add a flag to turn on default behavior but currently avoiding to accidentally
+// use this in proofs
+
 impl CanonicalSerialize for usize {
     #[inline]
     fn serialize_with_mode<W: Write>(
@@ -116,16 +118,17 @@ impl CanonicalSerialize for usize {
         writer: W,
         compress: Compress,
     ) -> Result<(), SerializationError> {
-        CompactU64(*self as u64).serialize_with_mode(writer, compress)
+        u32::try_from(*self)
+            .map_err(|_| SerializationError::InvalidData)?
+            .serialize_with_mode(writer, compress)
     }
 
     #[inline]
-    fn serialized_size(&self, _compress: Compress) -> usize {
-        CompactU64(*self as u64).serialized_size(_compress)
+    fn serialized_size(&self, compress: Compress) -> usize {
+        0u32.serialized_size(compress)
     }
 }
 
-#[cfg(feature = "serialize_usize")]
 impl Valid for usize {
     const TRIVIAL_CHECK: bool = true;
 
@@ -143,39 +146,36 @@ impl Valid for usize {
     }
 }
 
-#[cfg(feature = "serialize_usize")]
 impl CanonicalDeserialize for usize {
     #[inline]
     fn deserialize_with_mode<R: Read>(
-        mut reader: R,
-        _compress: Compress,
-        _validate: Validate,
+        reader: R,
+        compress: Compress,
+        validate: Validate,
     ) -> Result<Self, SerializationError> {
-        let len = CompactU64::deserialize_with_mode(&mut reader, _compress, _validate)?.0;
-        /// Try to convert the `CompactU64` to platform's usize and fail if cannot
-        // (without truncation). This matters on targets whose `usize` is narrower than 64 bits.
-        Self::try_from(len).map_err(|_| SerializationError::InvalidData)
+        let v = u32::deserialize_with_mode(reader, compress, validate)?;
+        Self::try_from(v).map_err(|_| SerializationError::InvalidData)
     }
 }
 
-#[cfg(feature = "serialize_usize")]
 impl CanonicalSerialize for isize {
     #[inline]
     fn serialize_with_mode<W: Write>(
         &self,
-        mut writer: W,
-        _compress: Compress,
+        writer: W,
+        compress: Compress,
     ) -> Result<(), SerializationError> {
-        Ok(writer.write_all(&(*self as i64).to_le_bytes())?)
+        i32::try_from(*self)
+            .map_err(|_| SerializationError::InvalidData)?
+            .serialize_with_mode(writer, compress)
     }
 
     #[inline]
-    fn serialized_size(&self, _compress: Compress) -> usize {
-        core::mem::size_of::<i64>()
+    fn serialized_size(&self, compress: Compress) -> usize {
+        0i32.serialized_size(compress)
     }
 }
 
-#[cfg(feature = "serialize_usize")]
 impl Valid for isize {
     const TRIVIAL_CHECK: bool = true;
 
@@ -193,17 +193,15 @@ impl Valid for isize {
     }
 }
 
-#[cfg(feature = "serialize_usize")]
 impl CanonicalDeserialize for isize {
     #[inline]
     fn deserialize_with_mode<R: Read>(
-        mut reader: R,
-        _compress: Compress,
-        _validate: Validate,
+        reader: R,
+        compress: Compress,
+        validate: Validate,
     ) -> Result<Self, SerializationError> {
-        let mut bytes = [0u8; core::mem::size_of::<i64>()];
-        reader.read_exact(&mut bytes)?;
-        Self::try_from(<i64>::from_le_bytes(bytes)).map_err(|_| SerializationError::InvalidData)
+        let v = i32::deserialize_with_mode(reader, compress, validate)?;
+        Self::try_from(v).map_err(|_| SerializationError::InvalidData)
     }
 }
 

@@ -382,12 +382,11 @@ fn test_biguint() {
     let biguint = BigUint::from(123456u64);
     test_serialize(biguint.clone());
 
-    // Little-endian bytes behind the same length prefix a slice carries. Serializing the length
-    // rather than spelling the prefix out keeps this asserting the composition: upstream writes a
-    // fixed `u64` there, this fork writes a `CompactU64`.
+    // Little-endian bytes behind the same length prefix a slice carries. Upstream writes a fixed
+    // `u64` there, this fork writes a `CompactU64`.
     let le = biguint.to_bytes_le();
     let mut expected = Vec::new();
-    le.len()
+    crate::impls::compact::CompactU64(le.len() as u64)
         .serialize_with_mode(&mut expected, Compress::Yes)
         .unwrap();
     expected.extend_from_slice(&le);
