@@ -37,7 +37,9 @@ pub(crate) fn sum_of_fp2_products<C: Fp2Config>(
         ),
         C::Fp::sum_of_products(
             &xs,
-            &[y[0].0.c1, y[0].0.c0, y[1].0.c1, y[1].0.c0, y[2].0.c1, y[2].0.c0],
+            &[
+                y[0].0.c1, y[0].0.c0, y[1].0.c1, y[1].0.c0, y[2].0.c1, y[2].0.c0,
+            ],
         ),
     )
 }

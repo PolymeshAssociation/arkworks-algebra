@@ -33,8 +33,12 @@ fn bench<F: FnMut()>(name: &str, iters: usize, rounds: usize, mut f: F) {
 fn timing() {
     let mut rng = test_rng();
     let n = 64usize;
-    let g1: Vec<_> = (0..n).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
-    let g2: Vec<_> = (0..n).map(|_| G2Projective::rand(&mut rng).into_affine()).collect();
+    let g1: Vec<_> = (0..n)
+        .map(|_| G1Projective::rand(&mut rng).into_affine())
+        .collect();
+    let g2: Vec<_> = (0..n)
+        .map(|_| G2Projective::rand(&mut rng).into_affine())
+        .collect();
     let g2_prep: Vec<G2Prep> = g2.iter().map(|q| (*q).into()).collect();
     let g1_prep: Vec<G1Prep> = g1.iter().map(|p| (*p).into()).collect();
     let ml: Vec<_> = g1_prep
@@ -45,18 +49,26 @@ fn timing() {
 
     println!("\n=== Bn254 pairing timing (best of rounds) ===");
     {
-        use ark_ec::{scalar_mul::double_and_add, PrimeGroup};
+        use ark_ec::scalar_mul::double_and_add;
         use ark_ff::PrimeField;
         let s = <Bn254 as Pairing>::ScalarField::rand(&mut rng);
         let sb = s.into_bigint();
         let q = G2Projective::rand(&mut rng);
-        bench("g2_mul_glv", 3000, 12, || { let _ = black_box(black_box(q).mul_bigint(sb)); });
-        bench("g2_mul_double_add", 3000, 12, || { let _ = black_box(double_and_add(&black_box(q), sb)); });
+        bench("g2_mul_gls", 3000, 12, || {
+            let _ = black_box(black_box(q) * black_box(s));
+        });
+        bench("g2_mul_double_add", 3000, 12, || {
+            let _ = black_box(double_and_add(&black_box(q), sb));
+        });
     }
     {
         let gt = Bn254::pairing(g1[0], g2[0]);
-        bench("gt_in_group_fast", 3000, 12, || { let _ = black_box(black_box(gt).is_in_group()); });
-        bench("gt_in_group_naive", 800, 12, || { let _ = black_box(black_box(gt).is_in_group_naive()); });
+        bench("gt_in_group_fast", 3000, 12, || {
+            let _ = black_box(black_box(gt).is_in_group());
+        });
+        bench("gt_in_group_naive", 800, 12, || {
+            let _ = black_box(black_box(gt).is_in_group_naive());
+        });
     }
     {
         use ark_ec::pairing::Pairing;
@@ -64,8 +76,12 @@ fn timing() {
         let gt0 = Bn254::pairing(g1[0], g2[0]).0;
         let s = ark_bn254::Fr::rand(&mut rng).into_bigint();
         let sr: &[u64] = s.as_ref();
-        bench("gt_scalar_mul_gls", 2000, 12, || { let _ = black_box(<Bn254 as Pairing>::gt_exp(black_box(&gt0), sr)); });
-        bench("gt_scalar_mul_wnaf", 2000, 12, || { let _ = black_box(black_box(gt0).cyclotomic_exp(sr)); });
+        bench("gt_scalar_mul_gls", 2000, 12, || {
+            let _ = black_box(<Bn254 as Pairing>::gt_exp(black_box(&gt0), sr));
+        });
+        bench("gt_scalar_mul_wnaf", 2000, 12, || {
+            let _ = black_box(black_box(gt0).cyclotomic_exp(sr));
+        });
     }
     let mut i = 0usize;
     bench("g2_prep", 2000, 12, || {
@@ -74,7 +90,10 @@ fn timing() {
     });
     bench("miller_1pair", 800, 12, || {
         i = (i + 1) % n;
-        let _ = black_box(Bn254::multi_miller_loop([g1_prep[i].clone()], [g2_prep[i].clone()]));
+        let _ = black_box(Bn254::multi_miller_loop(
+            [g1_prep[i].clone()],
+            [g2_prep[i].clone()],
+        ));
     });
     bench("final_exp", 500, 12, || {
         i = (i + 1) % n;
@@ -107,7 +126,10 @@ fn timing() {
     for k in [1usize, 2, 4, 5, 8, 9] {
         bench(&format!("multipairing_{k}"), 150, 8, || {
             i = (i + 1) % (n - k);
-            let _ = black_box(Bn254::multi_pairing(g1[i..i + k].to_vec(), g2[i..i + k].to_vec()));
+            let _ = black_box(Bn254::multi_pairing(
+                g1[i..i + k].to_vec(),
+                g2[i..i + k].to_vec(),
+            ));
         });
     }
 }

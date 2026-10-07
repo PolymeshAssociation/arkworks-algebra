@@ -310,7 +310,8 @@ mod test {
     fn test_clear_cofactor_matches_h_eff() {
         let mut rng = ark_std::test_rng();
         let x = Fr::from(crate::Config::X[0]);
-        let k = Fr::from(18u64) * x * x * x + Fr::from(12u64) * x * x + Fr::from(3u64) * x + Fr::ONE;
+        let k =
+            Fr::from(18u64) * x * x * x + Fr::from(12u64) * x * x + Fr::from(3u64) * x + Fr::ONE;
         for _ in 0..20 {
             let p = sample_unchecked(&mut rng);
             assert!(!p.is_in_correct_subgroup_assuming_on_curve());

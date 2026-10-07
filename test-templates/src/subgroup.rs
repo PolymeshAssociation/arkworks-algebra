@@ -44,7 +44,10 @@ pub fn test_subgroup_check<P: SWCurveConfig>(cofactor_primes: &[u64], samples: u
         let t = double_and_add_affine(&p, r).into_affine();
         if !t.is_zero() {
             assert!(!fast(&t), "cofactor-group point accepted");
-            assert!(!fast(&(s + t).into_affine()), "subgroup + cofactor point accepted");
+            assert!(
+                !fast(&(s + t).into_affine()),
+                "subgroup + cofactor point accepted"
+            );
         }
     }
 
@@ -65,7 +68,8 @@ pub fn test_subgroup_check<P: SWCurveConfig>(cofactor_primes: &[u64], samples: u
             if found == samples {
                 break;
             }
-            let mut t = double_and_add_affine(&random_curve_point::<P, _>(&mut rng), &m).into_affine();
+            let mut t =
+                double_and_add_affine(&random_curve_point::<P, _>(&mut rng), &m).into_affine();
             if t.is_zero() {
                 continue;
             }
@@ -73,7 +77,10 @@ pub fn test_subgroup_check<P: SWCurveConfig>(cofactor_primes: &[u64], samples: u
             let s = (Affine::<P>::generator() * P::ScalarField::rand(&mut rng)).into_affine();
             loop {
                 assert!(!fast(&t), "point of order a power of {l} accepted");
-                assert!(!fast(&(s + t).into_affine()), "subgroup + {l}-power point accepted");
+                assert!(
+                    !fast(&(s + t).into_affine()),
+                    "subgroup + {l}-power point accepted"
+                );
                 let next = double_and_add_affine(&t, [l]).into_affine();
                 if next.is_zero() {
                     break;

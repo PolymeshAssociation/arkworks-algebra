@@ -49,10 +49,17 @@ impl<P: BW6Config> CanonicalDeserialize for G2Prepared<P> {
         compress: Compress,
         validate: Validate,
     ) -> Result<Self, SerializationError> {
-        let ell_coeffs_1 = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
-        let ell_coeffs_2 = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
-        let infinity = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
-        let prepared = Self { ell_coeffs_1, ell_coeffs_2, infinity };
+        let ell_coeffs_1 =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let ell_coeffs_2 =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let infinity =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let prepared = Self {
+            ell_coeffs_1,
+            ell_coeffs_2,
+            infinity,
+        };
         if validate == Validate::Yes {
             prepared.check()?;
         }

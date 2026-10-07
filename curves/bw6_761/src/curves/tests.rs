@@ -34,7 +34,9 @@ fn test_prepared_g2_line_count_is_validated() {
         p.serialize_with_mode(&mut bytes, Compress::No).unwrap();
         bytes
     };
-    let decode = |bytes: &[u8]| G2Prepared::<crate::Config>::deserialize_with_mode(bytes, Compress::No, Validate::Yes);
+    let decode = |bytes: &[u8]| {
+        G2Prepared::<crate::Config>::deserialize_with_mode(bytes, Compress::No, Validate::Yes)
+    };
     assert_eq!(decode(&encode(&prepared)).unwrap(), prepared);
     for which in 0..2 {
         let mut short = prepared.clone();

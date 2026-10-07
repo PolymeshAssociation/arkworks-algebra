@@ -35,10 +35,12 @@ fn test_normalized_lines_mixed_miller_loop() {
     let mut rng = test_rng();
     // Up to 9 pairs, so parallel builds split the loop into several chunks.
     for n in [1usize, 2, 3, 5, 9] {
-        let ps: Vec<crate::G1Affine> =
-            (0..n).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
-        let qs: Vec<crate::G2Affine> =
-            (0..n).map(|_| G2Projective::rand(&mut rng).into_affine()).collect();
+        let ps: Vec<crate::G1Affine> = (0..n)
+            .map(|_| G1Projective::rand(&mut rng).into_affine())
+            .collect();
+        let qs: Vec<crate::G2Affine> = (0..n)
+            .map(|_| G2Projective::rand(&mut rng).into_affine())
+            .collect();
         let expected = Bn254::multi_pairing(ps.iter().copied(), qs.iter().copied());
         for mask in [0usize, 1, 0b01010, 0b10101, usize::MAX] {
             let preps: Vec<Prep> = qs
@@ -269,8 +271,12 @@ fn test_multi_pairing_various_n() {
     use ark_std::{test_rng, vec::Vec, UniformRand, Zero};
     let mut rng = test_rng();
     for n in 1..=6usize {
-        let ps: Vec<_> = (0..n).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
-        let qs: Vec<_> = (0..n).map(|_| G2Projective::rand(&mut rng).into_affine()).collect();
+        let ps: Vec<_> = (0..n)
+            .map(|_| G1Projective::rand(&mut rng).into_affine())
+            .collect();
+        let qs: Vec<_> = (0..n)
+            .map(|_| G2Projective::rand(&mut rng).into_affine())
+            .collect();
         let multi = Bn254::multi_pairing(ps.iter().copied(), qs.iter().copied());
         let prod = ps
             .iter()
@@ -299,11 +305,47 @@ fn test_gt_exp_matches_generic() {
         let via_generic = gt.cyclotomic_exp(s.into_bigint().as_ref());
         assert_eq!(via_gls, via_generic);
     }
-    for s in [crate::Fr::from(0u64), crate::Fr::from(1u64), crate::Fr::from(2u64), -crate::Fr::from(1u64)] {
+    for s in [
+        crate::Fr::from(0u64),
+        crate::Fr::from(1u64),
+        crate::Fr::from(2u64),
+        -crate::Fr::from(1u64),
+    ] {
         let via_gls = <Bn254 as Pairing>::gt_exp(&gt, s.into_bigint().as_ref());
         let via_generic = gt.cyclotomic_exp(s.into_bigint().as_ref());
         assert_eq!(via_gls, via_generic, "s = {s}");
     }
+}
+
+/// `mul_bigint` is exact on a cyclotomic element outside GT, so `f^r == 1` and `f^p == f^{6x^2}`
+/// reject it.
+#[test]
+fn test_gt_mul_bigint_exact_outside_gt() {
+    use ark_ec::{
+        bn::BnConfig,
+        pairing::{Pairing, PairingOutput},
+        PrimeGroup,
+    };
+    use ark_ff::{PrimeField, UniformRand};
+    use ark_std::{test_rng, One};
+    let mut rng = test_rng();
+    let f = loop {
+        let f = crate::Fq12::rand(&mut rng);
+        let g = f.frobenius_map(6) * f.inverse().unwrap();
+        let f = g.frobenius_map(2) * g;
+        if !Bn254::is_in_gt(&f) {
+            break f;
+        }
+    };
+    let r = crate::Fr::MODULUS;
+    let out = PairingOutput::<Bn254>(f).mul_bigint(r);
+    assert_eq!(out.0, f.pow(r));
+    assert!(!out.0.is_one());
+    let x = crate::Fr::from(<crate::Config as BnConfig>::X[0]);
+    let p_mod_r = (crate::Fr::from(6u64) * x * x).into_bigint();
+    let out = PairingOutput::<Bn254>(f).mul_bigint(p_mod_r);
+    assert_eq!(out.0, f.pow(p_mod_r));
+    assert_ne!(out.0, f.frobenius_map(1));
 }
 
 #[test]
@@ -338,7 +380,10 @@ fn test_exp_by_x_chain_matches_generic() {
         cyc_p2.frobenius_map_in_place(2);
         cyc *= cyc_p2;
         for h in [g, cyc] {
-            assert_eq!(crate::Config::exp_by_x(h), h.cyclotomic_exp(crate::Config::X));
+            assert_eq!(
+                crate::Config::exp_by_x(h),
+                h.cyclotomic_exp(crate::Config::X)
+            );
         }
     }
 }
@@ -356,7 +401,9 @@ fn test_prepared_g2_line_count_is_validated() {
         p.serialize_with_mode(&mut bytes, Compress::No).unwrap();
         bytes
     };
-    let decode = |bytes: &[u8]| G2Prepared::<crate::Config>::deserialize_with_mode(bytes, Compress::No, Validate::Yes);
+    let decode = |bytes: &[u8]| {
+        G2Prepared::<crate::Config>::deserialize_with_mode(bytes, Compress::No, Validate::Yes)
+    };
     assert_eq!(decode(&encode(&prepared)).unwrap(), prepared);
     let mut short = prepared.clone();
     short.ell_coeffs.pop();
@@ -388,7 +435,13 @@ fn test_cyclotomic_exp_matches_pow_at_every_width() {
             e
         })
         .collect();
-    exps.extend([vec![u64::MAX; 4], vec![u64::MAX; 6], vec![2], vec![11], vec![103]]);
+    exps.extend([
+        vec![u64::MAX; 4],
+        vec![u64::MAX; 6],
+        vec![2],
+        vec![11],
+        vec![103],
+    ]);
     for e in &exps {
         assert_eq!(g.cyclotomic_exp(e), g.pow(e), "e = {e:?}");
     }

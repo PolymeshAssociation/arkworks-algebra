@@ -260,15 +260,17 @@ ark_ff::impl_additive_ops_from_ref!(PairingOutput, Pairing);
 
 impl<P: Pairing, T: Borrow<P::ScalarField>> MulAssign<T> for PairingOutput<P> {
     fn mul_assign(&mut self, other: T) {
-        *self = self.mul_bigint(other.borrow().into_bigint());
+        *self = *self * other;
     }
 }
 
+/// [`Pairing::gt_exp`], correct only on GT. [`PrimeGroup::mul_bigint`] is exact on every
+/// cyclotomic element.
 impl<P: Pairing, T: Borrow<P::ScalarField>> Mul<T> for PairingOutput<P> {
     type Output = Self;
 
     fn mul(self, other: T) -> Self {
-        self.mul_bigint(other.borrow().into_bigint())
+        Self(P::gt_exp(&self.0, other.borrow().into_bigint().as_ref()))
     }
 }
 
@@ -321,8 +323,10 @@ impl<P: Pairing> PrimeGroup for PairingOutput<P> {
         P::pairing(g1.into(), g2.into())
     }
 
+    /// Exact `f^k` on every cyclotomic `f`. Field-scalar multiplication uses [`Pairing::gt_exp`],
+    /// correct only on GT.
     fn mul_bigint(&self, other: impl AsRef<[u64]>) -> Self {
-        Self(P::gt_exp(&self.0, other.as_ref()))
+        Self(self.0.cyclotomic_exp(other.as_ref()))
     }
 
     /// [`Self::mul_bigint`] on the big-endian bits, packed into little-endian limbs from the end.
@@ -374,10 +378,7 @@ impl<P: Pairing> Mul<P::ScalarField> for MillerLoopOutput<P> {
 /// to Elliptic Curve Cryptography (2004), Algorithm 3.48), with the four-digit
 /// decomposition supplied by the callers' Galbraith-Scott GLS (`Bn::gt_exp`,
 /// `Bls12::gt_exp`).
-pub fn gt_multiexp<F: CyclotomicMultSubgroup>(
-    mut bases: [F; 4],
-    digits: [(bool, u64); 4],
-) -> F {
+pub fn gt_multiexp<F: CyclotomicMultSubgroup>(mut bases: [F; 4], digits: [(bool, u64); 4]) -> F {
     for i in 0..4 {
         if digits[i].0 {
             bases[i].cyclotomic_inverse_in_place();
@@ -390,7 +391,11 @@ pub fn gt_multiexp<F: CyclotomicMultSubgroup>(
         table[mask] = table[mask & (mask - 1)];
         table[mask] *= &bases[i];
     }
-    let nbits = mags.iter().map(|&m| 64 - m.leading_zeros()).max().unwrap_or(0);
+    let nbits = mags
+        .iter()
+        .map(|&m| 64 - m.leading_zeros())
+        .max()
+        .unwrap_or(0);
     let mut acc = F::one();
     let mut started = false;
     for bit in (0..nbits).rev() {

@@ -606,8 +606,16 @@ mod sparse_line_product_tests {
         let mut rng = test_rng();
         for _ in 0..100 {
             let f = Fq12::rand(&mut rng);
-            let l = [Fq2::rand(&mut rng), Fq2::rand(&mut rng), Fq2::rand(&mut rng)];
-            let m = [Fq2::rand(&mut rng), Fq2::rand(&mut rng), Fq2::rand(&mut rng)];
+            let l = [
+                Fq2::rand(&mut rng),
+                Fq2::rand(&mut rng),
+                Fq2::rand(&mut rng),
+            ];
+            let m = [
+                Fq2::rand(&mut rng),
+                Fq2::rand(&mut rng),
+                Fq2::rand(&mut rng),
+            ];
             let mut seq = f;
             seq.mul_by_014(&l[0], &l[1], &l[2]);
             seq.mul_by_014(&m[0], &m[1], &m[2]);
@@ -645,14 +653,24 @@ mod sparse_line_product_tests {
     #[test]
     fn sparse_products_match_full_multiplication() {
         use ark_std::One;
-        use ark_test_curves::{ark_ff::AdditiveGroup, bls12_381::{Fq, Fq6 as Fp6}};
+        use ark_test_curves::{
+            ark_ff::AdditiveGroup,
+            bls12_381::{Fq, Fq6 as Fp6},
+        };
         let mut rng = test_rng();
         let max = Fq2::new(-Fq::one(), -Fq::one());
         let max12 = Fq12::new(Fp6::new(max, max, max), Fp6::new(max, max, max));
         let mut cases: ark_std::vec::Vec<_> = (0..100)
             .map(|_| {
                 let f = Fq12::rand(&mut rng);
-                (f, [Fq2::rand(&mut rng), Fq2::rand(&mut rng), Fq2::rand(&mut rng)])
+                (
+                    f,
+                    [
+                        Fq2::rand(&mut rng),
+                        Fq2::rand(&mut rng),
+                        Fq2::rand(&mut rng),
+                    ],
+                )
             })
             .collect();
         cases.push((max12, [max; 3]));
@@ -660,10 +678,16 @@ mod sparse_line_product_tests {
             let z = Fq2::ZERO;
             let mut a = f;
             a.mul_by_014(&l[0], &l[1], &l[2]);
-            assert_eq!(a, f * Fq12::new(Fp6::new(l[0], l[1], z), Fp6::new(z, l[2], z)));
+            assert_eq!(
+                a,
+                f * Fq12::new(Fp6::new(l[0], l[1], z), Fp6::new(z, l[2], z))
+            );
             let mut a = f;
             a.mul_by_034(&l[0], &l[1], &l[2]);
-            assert_eq!(a, f * Fq12::new(Fp6::new(l[0], z, z), Fp6::new(l[1], l[2], z)));
+            assert_eq!(
+                a,
+                f * Fq12::new(Fp6::new(l[0], z, z), Fp6::new(l[1], l[2], z))
+            );
         }
     }
 
@@ -673,8 +697,9 @@ mod sparse_line_product_tests {
         use ark_test_curves::bls12_381::{Fq, Fq6};
         let mut rng = test_rng();
         let max = Fq2::new(-Fq::one(), -Fq::one());
-        let mut cases: ark_std::vec::Vec<_> =
-            (0..200).map(|_| (Fq6::rand(&mut rng), Fq6::rand(&mut rng))).collect();
+        let mut cases: ark_std::vec::Vec<_> = (0..200)
+            .map(|_| (Fq6::rand(&mut rng), Fq6::rand(&mut rng)))
+            .collect();
         cases.push((Fq6::new(max, max, max), Fq6::new(max, max, max)));
         for (a, b) in cases {
             let mut k = a;
@@ -691,12 +716,15 @@ mod sparse_line_product_tests {
     #[test]
     fn sum_of_products_seven_terms() {
         use ark_std::One;
-        use ark_test_curves::Field;
         use ark_test_curves::bls12_381::Fq;
+        use ark_test_curves::Field;
         let mut rng = test_rng();
         let max = -Fq::one();
         let naive = |a: &[Fq; 7], b: &[Fq; 7]| a.iter().zip(b).map(|(x, y)| *x * y).sum::<Fq>();
-        assert_eq!(Fq::sum_of_products(&[max; 7], &[max; 7]), naive(&[max; 7], &[max; 7]));
+        assert_eq!(
+            Fq::sum_of_products(&[max; 7], &[max; 7]),
+            naive(&[max; 7], &[max; 7])
+        );
         for _ in 0..1000 {
             let a: [Fq; 7] = core::array::from_fn(|_| Fq::rand(&mut rng));
             let b: [Fq; 7] = core::array::from_fn(|_| Fq::rand(&mut rng));
@@ -709,8 +737,16 @@ mod sparse_line_product_tests {
         let mut rng = test_rng();
         for _ in 0..100 {
             let f = Fq12::rand(&mut rng);
-            let l = [Fq2::rand(&mut rng), Fq2::rand(&mut rng), Fq2::rand(&mut rng)];
-            let m = [Fq2::rand(&mut rng), Fq2::rand(&mut rng), Fq2::rand(&mut rng)];
+            let l = [
+                Fq2::rand(&mut rng),
+                Fq2::rand(&mut rng),
+                Fq2::rand(&mut rng),
+            ];
+            let m = [
+                Fq2::rand(&mut rng),
+                Fq2::rand(&mut rng),
+                Fq2::rand(&mut rng),
+            ];
             let mut seq = f;
             seq.mul_by_034(&l[0], &l[1], &l[2]);
             seq.mul_by_034(&m[0], &m[1], &m[2]);

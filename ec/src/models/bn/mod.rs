@@ -1,5 +1,5 @@
 use crate::{
-    models::{short_weierstrass::SWCurveConfig, CurveConfig},
+    models::{fp12_lines as lines, short_weierstrass::SWCurveConfig, CurveConfig},
     pairing::{MillerLoopOutput, Pairing, PairingOutput},
     scalar_mul::glv::mul_shift_round_bigint,
 };
@@ -15,15 +15,12 @@ use ark_ff::{
 use ark_std::{cfg_chunks_mut, marker::PhantomData, vec::*};
 use educe::Educe;
 use itertools::Itertools;
-use num_traits::{One, Zero};
+use num_traits::One;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-pub enum TwistType {
-    M,
-    D,
-}
+pub use super::fp12_lines::TwistType;
 
 pub trait BnConfig: 'static + Sized {
     /// The absolute value of the BN curve parameter `X`
@@ -96,25 +93,18 @@ pub trait BnConfig: 'static + Sized {
             .collect::<Vec<_>>();
 
         // `(1/P.y, P.x/P.y)` for each pair whose `Q` has normalized lines
-        // (`G2Prepared::normalize_lines`), from one batched inversion. A zero `P.y` keeps the
-        // pair on raw lines.
-        let mut yinv: Vec<Self::Fp> = pairs
-            .iter()
-            .map(|(p, q)| match q.ell_coeffs.first() {
-                Some(c) if g2::py_coeff::<Self>(c).is_one() => p.0.y,
-                _ => Self::Fp::zero(),
-            })
-            .collect();
-        if yinv.iter().any(|y| !y.is_zero()) {
-            ark_ff::batch_inversion(&mut yinv);
-        }
+        // (`G2Prepared::normalize_lines`). A zero `P.y` keeps the pair on raw lines.
+        let scales = lines::line_scales(pairs.iter().map(|(p, q)| {
+            let normalized = q
+                .ell_coeffs
+                .first()
+                .is_some_and(|c| lines::py_coeff::<Self::Fp12Config>(Self::TWIST_TYPE, c).is_one());
+            (p.0.x, p.0.y, normalized)
+        }));
         let mut pairs = pairs
             .into_iter()
-            .zip(yinv)
-            .map(|((p, q), yinv)| {
-                let scale = (!yinv.is_zero()).then(|| (yinv, p.0.x * yinv));
-                (p, q.ell_coeffs.into_iter(), scale)
-            })
+            .zip(scales)
+            .map(|((p, q), scale)| (p, q.ell_coeffs.into_iter(), scale))
             .collect::<Vec<_>>();
 
         // Amortize the shared squaring across all pairs: serial builds keep every
@@ -141,25 +131,21 @@ pub trait BnConfig: 'static + Sized {
                     // and across doubling/addition.
                     let mut pending = None;
                     for (p, coeffs, scale) in pairs.iter_mut() {
-                        Bn::<Self>::feed_line(
-                            &mut f,
-                            &mut pending,
-                            &coeffs.next().unwrap(),
-                            &p.0,
-                            scale,
-                        );
-                        if has_add {
-                            Bn::<Self>::feed_line(
+                        for _ in 0..1 + usize::from(has_add) {
+                            let c = coeffs.next().unwrap();
+                            lines::feed_line(
+                                Self::TWIST_TYPE,
                                 &mut f,
                                 &mut pending,
-                                &coeffs.next().unwrap(),
-                                &p.0,
+                                &c,
+                                &p.0.x,
+                                &p.0.y,
                                 scale,
                             );
                         }
                     }
                     if let Some(line) = pending {
-                        Bn::<Self>::mul_line(&mut f, &line);
+                        lines::mul_line(Self::TWIST_TYPE, &mut f, &line);
                     }
                 }
                 f
@@ -173,41 +159,27 @@ pub trait BnConfig: 'static + Sized {
         // The two Frobenius steps contribute two lines per pair; pair them too.
         let mut pending = None;
         for (p, coeffs, scale) in &mut pairs {
-            Bn::<Self>::feed_line(&mut f, &mut pending, &coeffs.next().unwrap(), &p.0, scale);
-            Bn::<Self>::feed_line(&mut f, &mut pending, &coeffs.next().unwrap(), &p.0, scale);
+            for c in coeffs.take(2) {
+                lines::feed_line(
+                    Self::TWIST_TYPE,
+                    &mut f,
+                    &mut pending,
+                    &c,
+                    &p.0.x,
+                    &p.0.y,
+                    scale,
+                );
+            }
         }
         if let Some(line) = pending {
-            Bn::<Self>::mul_line(&mut f, &line);
+            lines::mul_line(Self::TWIST_TYPE, &mut f, &line);
         }
 
         MillerLoopOutput(f)
     }
 
     fn final_exponentiation(f: MillerLoopOutput<Bn<Self>>) -> Option<PairingOutput<Bn<Self>>> {
-        // Easy part: result = elt^((q^6-1)*(q^2+1)).
-        // Follows, e.g., Beuchat et al., https://eprint.iacr.org/2010/354, page 9, by
-        // computing result as follows:
-        //   elt^((q^6-1)*(q^2+1)) = (conj(elt) * elt^(-1))^(q^2+1)
-        let f = f.0;
-
-        // f1 = r.cyclotomic_inverse_in_place() = f^(p^6)
-        let mut f1 = f;
-        f1.cyclotomic_inverse_in_place();
-
-        f.inverse().map(|mut f2| {
-            // f2 = f^(-1);
-            // r = f^(p^6 - 1)
-            let mut r = f1 * &f2;
-
-            // f2 = f^(p^6 - 1)
-            f2 = r;
-            // r = f^((p^6 - 1)(p^2))
-            r.frobenius_map_in_place(2);
-
-            // r = f^((p^6 - 1)(p^2) + (p^6 - 1))
-            // r = f^((p^6 - 1)(p^2 + 1))
-            r *= &f2;
-
+        lines::final_exp_easy_part(f.0).map(|mut r| {
             // If the easy part already yields 1, the pairing is trivial.
             if r.is_one() {
                 return PairingOutput(r);
@@ -266,88 +238,7 @@ pub use self::{
 #[educe(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub struct Bn<P: BnConfig>(PhantomData<fn() -> P>);
 
-/// A line, scaled by a G1 point, in the three coefficient slots its sparse
-/// multiplication reads.
-type EllLine<P> = (
-    Fp2<<P as BnConfig>::Fp2Config>,
-    Fp2<<P as BnConfig>::Fp2Config>,
-    Fp2<<P as BnConfig>::Fp2Config>,
-);
-
 impl<P: BnConfig> Bn<P> {
-    // Scale a raw line by `p`, positioning the coefficients at their sparse slots.
-    fn scale_line(coeffs: &g2::EllCoeff<P>, p: &G1Affine<P>) -> EllLine<P> {
-        let (mut c0, mut c1, mut c2) = (coeffs.0, coeffs.1, coeffs.2);
-        match P::TWIST_TYPE {
-            TwistType::M => {
-                c2.mul_assign_by_fp(&p.y);
-                c1.mul_assign_by_fp(&p.x);
-            },
-            TwistType::D => {
-                c0.mul_assign_by_fp(&p.y);
-                c1.mul_assign_by_fp(&p.x);
-            },
-        }
-        (c0, c1, c2)
-    }
-
-    // Multiply `f` by one scaled line.
-    fn mul_line(f: &mut Fp12<P::Fp12Config>, a: &EllLine<P>) {
-        match P::TWIST_TYPE {
-            TwistType::M => f.mul_by_014(&a.0, &a.1, &a.2),
-            TwistType::D => f.mul_by_034(&a.0, &a.1, &a.2),
-        }
-    }
-
-    // Multiply `f` by two scaled lines. `Fp12::mul_by_014_pair` /
-    // `Fp12::mul_by_034_pair` pick between two sparse products and one line-by-line
-    // product followed by a semi-sparse one. Pairing lines across pairs follows MIRACL core
-    // `ate2` (https://github.com/miracl/core/blob/a6df6733c1ad1ad0918306abd0c3983b4cd4a58c/rust/pair.rs#L522-L541).
-    fn mul_line_pair(f: &mut Fp12<P::Fp12Config>, a: &EllLine<P>, b: &EllLine<P>) {
-        match P::TWIST_TYPE {
-            TwistType::M => f.mul_by_014_pair(&a.0, &a.1, &a.2, &b.0, &b.1, &b.2),
-            TwistType::D => f.mul_by_034_pair(&a.0, &a.1, &a.2, &b.0, &b.1, &b.2),
-        }
-    }
-
-    // Feed a scaled line into `f`, pairing it with a held-back line when one waits.
-    fn push_line(f: &mut Fp12<P::Fp12Config>, pending: &mut Option<EllLine<P>>, line: EllLine<P>) {
-        match pending.take() {
-            Some(prev) => Self::mul_line_pair(f, &prev, &line),
-            None => *pending = Some(line),
-        }
-    }
-
-    // Multiply `f` by one line at `p`. A normalized line, whose `P.y` coefficient is 1, is
-    // rescaled by `scale = (1/P.y, P.x/P.y)` when that is known and multiplied in with the
-    // unit-slot product. Any other line goes through `push_line`.
-    fn feed_line(
-        f: &mut Fp12<P::Fp12Config>,
-        pending: &mut Option<EllLine<P>>,
-        coeffs: &g2::EllCoeff<P>,
-        p: &G1Affine<P>,
-        scale: &Option<(P::Fp, P::Fp)>,
-    ) {
-        match scale {
-            Some((yinv, pxyinv)) if g2::py_coeff::<P>(coeffs).is_one() => {
-                let (mut a, mut b) = g2::fixed_line::<P>(coeffs);
-                match P::TWIST_TYPE {
-                    TwistType::M => {
-                        a.mul_assign_by_fp(yinv);
-                        b.mul_assign_by_fp(pxyinv);
-                        f.mul_by_014_c4_one(&a, &b);
-                    },
-                    TwistType::D => {
-                        a.mul_assign_by_fp(pxyinv);
-                        b.mul_assign_by_fp(yinv);
-                        f.mul_by_034_c0_one(&a, &b);
-                    },
-                }
-            },
-            _ => Self::push_line(f, pending, Self::scale_line(coeffs, p)),
-        }
-    }
-
     fn exp_by_neg_x(f: Fp12<P::Fp12Config>) -> Fp12<P::Fp12Config> {
         let mut f = P::exp_by_x(f);
         f.cyclotomic_inverse_in_place();
@@ -382,18 +273,9 @@ impl<P: BnConfig> Pairing for Bn<P> {
     }
 
     fn is_in_gt(f: &Fp12<P::Fp12Config>) -> bool {
-        // Scott, https://eprint.iacr.org/2021/1130.
-        if f.is_zero() {
-            return false;
-        }
-        // Cyclotomic: f^(p^2) == f^(p^4) * f, i.e. f^(p^4 - p^2 + 1) == 1. GT is the
-        // order-r subgroup of this group of order Phi_12(p) = p^4 - p^2 + 1.
-        let mut a = *f;
-        a.frobenius_map_in_place(2);
-        let mut b = a;
-        b.frobenius_map_in_place(2);
-        b *= f;
-        if a != b {
+        // Scott, https://eprint.iacr.org/2021/1130. GT is the order-r subgroup of the
+        // cyclotomic subgroup.
+        if !lines::is_cyclotomic(f) {
             return false;
         }
         // Order-r subgroup, via Dai-Lin-Zhao-Zhou https://eprint.iacr.org/2022/348, as MIRACL

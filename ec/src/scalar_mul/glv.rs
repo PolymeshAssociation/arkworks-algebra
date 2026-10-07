@@ -602,7 +602,7 @@ where
         (1, -1) => *res += diff,
         (-1, 1) => *res -= diff,
         // (0, 0) contributes nothing; it never leads the sequence (see `joint_sparse_form`).
-        _ => {}
+        _ => {},
     };
 
     let mut digits = digits.into_iter();
@@ -612,7 +612,7 @@ where
             let mut res = G::ZERO;
             apply(&mut res, first);
             res
-        }
+        },
         // Both scalars are zero.
         None => return G::ZERO,
     };

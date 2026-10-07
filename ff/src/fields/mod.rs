@@ -710,10 +710,7 @@ mod no_std_tests {
                     0 => {},
                     1 => src.first_mut().into_iter().for_each(|f| *f = Fr::zero()),
                     2 => src.last_mut().into_iter().for_each(|f| *f = Fr::zero()),
-                    3 => src
-                        .iter_mut()
-                        .step_by(2)
-                        .for_each(|f| *f = Fr::zero()),
+                    3 => src.iter_mut().step_by(2).for_each(|f| *f = Fr::zero()),
                     _ => src.iter_mut().for_each(|f| *f = Fr::zero()),
                 }
 
@@ -754,7 +751,10 @@ mod no_std_tests {
             src[0] = Fr::zero();
             src[len - 1] = Fr::zero();
             src.iter_mut().step_by(256).for_each(|f| *f = Fr::zero());
-            src.iter_mut().skip(255).step_by(1031).for_each(|f| *f = Fr::zero());
+            src.iter_mut()
+                .skip(255)
+                .step_by(1031)
+                .for_each(|f| *f = Fr::zero());
             let mut expected = src.clone();
             serial_batch_inversion_and_mul_single_chain(&mut expected, &coeff);
             let mut got = src.clone();

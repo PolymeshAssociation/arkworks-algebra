@@ -14,10 +14,11 @@
 //! examples 3 and 5 in section 6 (the BLS12 and BN splits), and section 7 (interleaved w-NAF).
 
 use crate::{
-    scalar_mul::{double_and_add, double_and_add_affine, glv::scalar_below_modulus},
+    scalar_mul::{double_and_add, double_and_add_affine},
     short_weierstrass::{Affine, Projective, SWCurveConfig},
     AdditiveGroup, AffineRepr, CurveGroup,
 };
+use ark_ff::biginteger::arithmetic::find_wnaf;
 use ark_std::{vec::Vec, Zero};
 
 /// Width of the NAF of each digit. The table of `P` holds `2^{W-2}` odd multiples, and each
@@ -26,33 +27,32 @@ use ark_std::{vec::Vec, Zero};
 /// (119 us and 65 us) to its 16-point table.
 const W: u32 = 5;
 
-/// `[k]P` by [`gls4_mul`] for `k < r`, with the digits of `k` from `digits`, and by
-/// `double_and_add` for `k >= r` or when `digits` returns `None`. `double_and_add` is exact on
-/// every curve point. The split applies `psi` wherever a digit other than `k_0` is nonzero and is
-/// exact there only where `psi` acts as `[p mod r]`, i.e. on the order-`r` subgroup. On BN254 and
-/// BLS12-381 every `k < 2^63` splits as `(k, 0, 0, 0)`, so those scalars are exact on every curve
-/// point too.
+/// `[k]P` by [`gls4_mul`] with the digits of `k` from `digits`, and by `double_and_add` when
+/// `digits` returns `None`. The digits need only be congruent to `k` modulo `r`. The split applies
+/// `psi` wherever a digit other than `k_0` is nonzero and is exact there only where `psi` acts as
+/// `[p mod r]`, i.e. on the order-`r` subgroup. On BN254 and BLS12-381 every `k < 2^63` splits as
+/// `(k, 0, 0, 0)`, so those scalars are exact on every curve point too.
 pub fn gls4_mul_bigint<P: SWCurveConfig>(
     p: &Projective<P>,
     k: &[u64],
     digits: impl FnOnce(&[u64]) -> Option<[(bool, u64); 4]>,
     psi: impl Fn(&Affine<P>) -> Affine<P>,
 ) -> Projective<P> {
-    match scalar_below_modulus::<P::ScalarField>(k).and_then(|_| digits(k)) {
+    match digits(k) {
         Some(d) => gls4_mul(p, &d, psi),
         None => double_and_add(p, k),
     }
 }
 
-/// [`gls4_mul_bigint`] for an affine base, whose `k >= r` fallback is `double_and_add_affine`
-/// with mixed additions.
+/// [`gls4_mul_bigint`] for an affine base, whose fallback is `double_and_add_affine` with mixed
+/// additions.
 pub fn gls4_mul_affine_bigint<P: SWCurveConfig>(
     p: &Affine<P>,
     k: &[u64],
     digits: impl FnOnce(&[u64]) -> Option<[(bool, u64); 4]>,
     psi: impl Fn(&Affine<P>) -> Affine<P>,
 ) -> Projective<P> {
-    match scalar_below_modulus::<P::ScalarField>(k).and_then(|_| digits(k)) {
+    match digits(k) {
         Some(d) => gls4_mul(&p.into_group(), &d, psi),
         None => double_and_add_affine(p, k),
     }
@@ -86,13 +86,13 @@ pub fn gls4_mul<P: SWCurveConfig>(
         tables[i] = tables[i - 1].iter().map(&psi).collect();
     }
 
-    let nafs = digits.map(|(_, k)| wnaf_u64(k));
-    let len = nafs.iter().map(|(_, len)| *len).max().unwrap_or(0);
+    let nafs = digits.map(|(_, k)| find_wnaf(&[k], W as usize));
+    let len = nafs.iter().map(Vec::len).max().unwrap_or(0);
     let mut acc = Projective::<P>::zero();
     for j in (0..len).rev() {
         acc.double_in_place();
         for i in 0..=top {
-            let d = nafs[i].0[j];
+            let d = nafs[i].get(j).copied().unwrap_or(0);
             if d != 0 {
                 let t = &tables[i][usize::from(d.unsigned_abs() / 2)];
                 if (d < 0) == digits[i].0 {
@@ -104,62 +104,4 @@ pub fn gls4_mul<P: SWCurveConfig>(
         }
     }
     acc
-}
-
-/// Width-`W` NAF digits of `k`, least significant first, and their count. Each nonzero digit is
-/// odd with absolute value below `2^{W-1}`, and there are at most 65 digits.
-fn wnaf_u64(k: u64) -> ([i8; 65], usize) {
-    let mut digits = [0i8; 65];
-    let mut k = u128::from(k);
-    let mut len = 0;
-    while k != 0 {
-        if k & 1 == 1 {
-            let low = (k & ((1 << W) - 1)) as i16;
-            let d = if low >= 1 << (W - 1) {
-                low - (1 << W)
-            } else {
-                low
-            };
-            digits[len] = d as i8;
-            k = (k as i128 - i128::from(d)) as u128;
-        }
-        k >>= 1;
-        len += 1;
-    }
-    (digits, len)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::wnaf_u64;
-
-    #[test]
-    fn wnaf_u64_reconstructs() {
-        for k in [
-            0u64,
-            1,
-            2,
-            15,
-            16,
-            31,
-            1 << 63,
-            u64::MAX,
-            u64::MAX - 1,
-            0xd201000000010000,
-        ] {
-            let (digits, len) = wnaf_u64(k);
-            let mut sum = 0i128;
-            for j in (0..len).rev() {
-                sum = 2 * sum + i128::from(digits[j]);
-                assert!(digits[j] == 0 || digits[j] % 2 != 0);
-                assert!(digits[j].unsigned_abs() < 1 << 4);
-            }
-            assert_eq!(sum, i128::from(k), "k = {k:#x}");
-            assert!(digits[..len].windows(super::W as usize).all(|w| w
-                .iter()
-                .filter(|&&d| d != 0)
-                .count()
-                <= 1));
-        }
-    }
 }

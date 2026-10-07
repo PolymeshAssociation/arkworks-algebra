@@ -229,9 +229,17 @@ fn sparse_products_karatsuba_forms_match_full_multiplication() {
     let z = Fq2::ZERO;
     let one = Fq2::one();
     let mut cases: Vec<(Fq12, [Fq2; 6])> = (0..200)
-        .map(|_| (Fq12::rand(&mut rng), core::array::from_fn(|_| Fq2::rand(&mut rng))))
+        .map(|_| {
+            (
+                Fq12::rand(&mut rng),
+                core::array::from_fn(|_| Fq2::rand(&mut rng)),
+            )
+        })
         .collect();
-    cases.push((Fq12::new(Fq6::new(max, max, max), Fq6::new(max, max, max)), [max; 6]));
+    cases.push((
+        Fq12::new(Fq6::new(max, max, max), Fq6::new(max, max, max)),
+        [max; 6],
+    ));
 
     for (f, l) in cases {
         let line_014 = |a: Fq2, b: Fq2, c: Fq2| Fq12::new(Fq6::new(a, b, z), Fq6::new(z, c, z));

@@ -18,7 +18,6 @@
 //! <https://github.com/AztecProtocol/aztec-packages/blob/86dfbab44d953e52a2544f79797c525177e4ed53/barretenberg/cpp/src/barretenberg/ecc/fields/field_impl_generic.hpp#L768-L897>,
 //! design notes in `field_docs.md` next to it.
 
-
 use super::MontConfig;
 use crate::BigInt;
 use ark_ff_macros::unroll_for_loops;
@@ -300,7 +299,13 @@ mod tests {
     /// `a b 2^{-256} mod p` on raw Montgomery limbs, independent of any field multiply.
     fn reference<C: MontConfig<4>>(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
         use num_bigint::BigUint;
-        let to_big = |x: &[u64; 4]| BigUint::from_slice(&x.iter().flat_map(|l| [*l as u32, (l >> 32) as u32]).collect::<Vec<_>>());
+        let to_big = |x: &[u64; 4]| {
+            BigUint::from_slice(
+                &x.iter()
+                    .flat_map(|l| [*l as u32, (l >> 32) as u32])
+                    .collect::<Vec<_>>(),
+            )
+        };
         let p = to_big(&C::MODULUS.0);
         let r_inv = (BigUint::from(1u8) << 256u32).modpow(&(&p - 2u8), &p);
         let v = (to_big(a) * to_big(b) * r_inv) % &p;

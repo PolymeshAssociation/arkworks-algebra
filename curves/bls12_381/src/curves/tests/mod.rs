@@ -271,10 +271,10 @@ fn test_exp_by_x_chain_matches_generic() {
         // Map into the cyclotomic subgroup.
         if let Some(out) = Bls12_381::final_exponentiation(MillerLoopOutput(f)) {
             let cyc = out.0;
-            let chain = <crate::Config as Bls12Config>::exp_by_x(cyc);
             let mut generic = cyc.cyclotomic_exp(crate::Config::X);
             generic.cyclotomic_inverse_in_place(); // X is negative
-            assert_eq!(chain, generic);
+            assert_eq!(super::exp_by_x_chain(cyc), generic);
+            assert_eq!(<crate::Config as Bls12Config>::exp_by_x(cyc), generic);
         }
     }
 }
@@ -319,8 +319,12 @@ fn test_multi_pairing_various_n() {
     use ark_std::vec::Vec;
     let mut rng = test_rng();
     for n in 1..=6usize {
-        let ps: Vec<_> = (0..n).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
-        let qs: Vec<_> = (0..n).map(|_| G2Projective::rand(&mut rng).into_affine()).collect();
+        let ps: Vec<_> = (0..n)
+            .map(|_| G1Projective::rand(&mut rng).into_affine())
+            .collect();
+        let qs: Vec<_> = (0..n)
+            .map(|_| G2Projective::rand(&mut rng).into_affine())
+            .collect();
         let multi = Bls12_381::multi_pairing(ps.iter().copied(), qs.iter().copied());
         let prod = ps
             .iter()
@@ -345,11 +349,44 @@ fn test_gt_exp_matches_generic() {
         let via_generic = gt.cyclotomic_exp(s.into_bigint().as_ref());
         assert_eq!(via_gls, via_generic);
     }
-    for s in [Fr::from(0u64), Fr::from(1u64), Fr::from(2u64), -Fr::from(1u64)] {
+    for s in [
+        Fr::from(0u64),
+        Fr::from(1u64),
+        Fr::from(2u64),
+        -Fr::from(1u64),
+    ] {
         let via_gls = <Bls12_381 as Pairing>::gt_exp(&gt, s.into_bigint().as_ref());
         let via_generic = gt.cyclotomic_exp(s.into_bigint().as_ref());
         assert_eq!(via_gls, via_generic, "s = {s}");
     }
+}
+
+/// `mul_bigint` is exact on a cyclotomic element outside GT, so `f^r == 1` and Scott's
+/// `f^p == f^x` reject it.
+#[test]
+fn test_gt_mul_bigint_exact_outside_gt() {
+    use ark_ec::{
+        bls12::Bls12Config,
+        pairing::{Pairing, PairingOutput},
+    };
+    use ark_ff::PrimeField;
+    let mut rng = test_rng();
+    let f = loop {
+        let f = crate::Fq12::rand(&mut rng);
+        let g = f.frobenius_map(6) * f.inverse().unwrap();
+        let f = g.frobenius_map(2) * g;
+        if !Bls12_381::is_in_gt(&f) {
+            break f;
+        }
+    };
+    let r = Fr::MODULUS;
+    let out = PairingOutput::<Bls12_381>(f).mul_bigint(r);
+    assert_eq!(out.0, f.pow(r));
+    assert!(!out.0.is_one());
+    let abs_x = <crate::Config as Bls12Config>::X;
+    let out = PairingOutput::<Bls12_381>(f).mul_bigint(abs_x);
+    assert_eq!(out.0, f.pow(abs_x));
+    assert_ne!(out.0.inverse().unwrap(), f.frobenius_map(1));
 }
 
 #[test]
@@ -359,12 +396,14 @@ fn test_fixed_q_miller_loop() {
     use ark_std::vec::Vec;
     let mut rng = test_rng();
     for n in 1..=4usize {
-        let ps: Vec<G1Affine> =
-            (0..n).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
-        let qs: Vec<G2Affine> =
-            (0..n).map(|_| G2Projective::rand(&mut rng).into_affine()).collect();
+        let ps: Vec<G1Affine> = (0..n)
+            .map(|_| G1Projective::rand(&mut rng).into_affine())
+            .collect();
+        let qs: Vec<G2Affine> = (0..n)
+            .map(|_| G2Projective::rand(&mut rng).into_affine())
+            .collect();
         let fixed: Vec<G2PreparedFixed<crate::Config>> =
-            qs.iter().map(|q| (*q).into()).collect();
+            qs.iter().map(|q| (*q).try_into().unwrap()).collect();
         let ml_fixed = Bls12::<crate::Config>::multi_miller_loop_fixed(ps.iter().copied(), &fixed);
         let ml_std = Bls12_381::multi_miller_loop(ps.iter().copied(), qs.iter().copied());
         assert_eq!(
@@ -375,15 +414,78 @@ fn test_fixed_q_miller_loop() {
     }
 }
 
+/// An order-13 point of the twist produces a line with a zero `P.y` coefficient. The fixed form
+/// rejects it, and the ordinary Miller loop's output has no final exponentiation.
+#[test]
+fn test_fixed_q_rejects_order_13_point() {
+    use ark_ec::{
+        bls12::{G2PreparedFixed, ZeroPyCoefficient},
+        pairing::{MillerLoopOutput, Pairing},
+        scalar_mul::double_and_add_affine,
+        short_weierstrass::SWCurveConfig,
+    };
+    use ark_ff::PrimeField;
+    let mut rng = test_rng();
+    // The cofactor with every factor 13 removed, so `[m][r]P` lies in the 13-Sylow subgroup.
+    let mut m = <crate::g2::Config as ark_ec::CurveConfig>::COFACTOR.to_vec();
+    loop {
+        let mut quot = vec![0u64; m.len()];
+        let mut rem = 0u128;
+        for (i, &limb) in m.iter().enumerate().rev() {
+            let cur = (rem << 64) | u128::from(limb);
+            quot[i] = (cur / 13) as u64;
+            rem = cur % 13;
+        }
+        if rem != 0 {
+            break;
+        }
+        m = quot;
+    }
+    let q = (0..64)
+        .find_map(|_| {
+            let p = G2Affine::get_point_from_x_unchecked(Fq2::rand(&mut rng), rng.gen())?;
+            let t = double_and_add_affine(&p, Fr::MODULUS).into_affine();
+            let mut q = double_and_add_affine(&t, &m).into_affine();
+            if q.is_zero() {
+                return None;
+            }
+            loop {
+                let next = double_and_add_affine(&q, [13u64]).into_affine();
+                if next.is_zero() {
+                    return Some(q);
+                }
+                q = next;
+            }
+        })
+        .expect("no point with a 13-torsion component in 64 tries");
+    assert!(double_and_add_affine(&q, [13u64]).is_zero());
+    assert!(!<crate::g2::Config as SWCurveConfig>::is_in_correct_subgroup_assuming_on_curve(&q));
+    assert_eq!(
+        G2PreparedFixed::<crate::Config>::try_from(q),
+        Err(ZeroPyCoefficient)
+    );
+    let p = G1Projective::rand(&mut rng).into_affine();
+    let ml: MillerLoopOutput<Bls12_381> = Bls12_381::multi_miller_loop([p], [q]);
+    assert_eq!(Bls12_381::final_exponentiation(ml), None);
+}
+
 #[test]
 #[should_panic]
 fn test_fixed_q_miller_loop_rejects_length_mismatch() {
     use ark_ec::bls12::{Bls12, G2PreparedFixed};
     use ark_std::vec::Vec;
     let mut rng = test_rng();
-    let ps: Vec<G1Affine> = (0..3).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
-    let fixed: Vec<G2PreparedFixed<crate::Config>> =
-        (0..2).map(|_| G2Projective::rand(&mut rng).into_affine().into()).collect();
+    let ps: Vec<G1Affine> = (0..3)
+        .map(|_| G1Projective::rand(&mut rng).into_affine())
+        .collect();
+    let fixed: Vec<G2PreparedFixed<crate::Config>> = (0..2)
+        .map(|_| {
+            G2Projective::rand(&mut rng)
+                .into_affine()
+                .try_into()
+                .unwrap()
+        })
+        .collect();
     let _ = Bls12::<crate::Config>::multi_miller_loop_fixed(ps.iter().copied(), &fixed);
 }
 
@@ -395,10 +497,12 @@ fn test_normalized_lines_mixed_miller_loop() {
     let mut rng = test_rng();
     // Up to 9 pairs, so parallel builds split the loop into several chunks.
     for n in [1usize, 2, 3, 5, 9] {
-        let ps: Vec<G1Affine> =
-            (0..n).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
-        let qs: Vec<G2Affine> =
-            (0..n).map(|_| G2Projective::rand(&mut rng).into_affine()).collect();
+        let ps: Vec<G1Affine> = (0..n)
+            .map(|_| G1Projective::rand(&mut rng).into_affine())
+            .collect();
+        let qs: Vec<G2Affine> = (0..n)
+            .map(|_| G2Projective::rand(&mut rng).into_affine())
+            .collect();
         let expected = Bls12_381::multi_pairing(ps.iter().copied(), qs.iter().copied());
         for mask in [0usize, 1, 0b01010, 0b10101, usize::MAX] {
             let preps: Vec<Prep> = qs
@@ -485,14 +589,23 @@ fn test_karabina_compressed_squaring() {
             }
         }
         let (c15, full15) = checkpoint.unwrap();
-        assert_eq!(CompressedCyclotomic::decompress_pair(&c15, &c), Some((full15, full)));
+        assert_eq!(
+            CompressedCyclotomic::decompress_pair(&c15, &c),
+            Some((full15, full))
+        );
         let mut expected = g.cyclotomic_exp(crate::Config::X);
         expected.cyclotomic_inverse_in_place();
         assert_eq!(<crate::Config as Bls12Config>::exp_by_x(g), expected);
     }
     // g3 = 0 takes the uncompressed fallback.
     let one = crate::Fq12::one();
-    assert_eq!(CompressedCyclotomic::decompress_pair(&one.compress_cyclotomic(), &one.compress_cyclotomic()), None);
+    assert_eq!(
+        CompressedCyclotomic::decompress_pair(
+            &one.compress_cyclotomic(),
+            &one.compress_cyclotomic()
+        ),
+        None
+    );
     assert_eq!(<crate::Config as Bls12Config>::exp_by_x(one), one);
 }
 
@@ -520,12 +633,17 @@ fn test_g2_subgroup_check() {
 fn test_g1_x_zero_torsion_rejected() {
     let mut rng = test_rng();
     let two = Fq::from(2u64);
-    for t in [G1Affine::new_unchecked(Fq::zero(), two), G1Affine::new_unchecked(Fq::zero(), -two)] {
+    for t in [
+        G1Affine::new_unchecked(Fq::zero(), two),
+        G1Affine::new_unchecked(Fq::zero(), -two),
+    ] {
         assert!(t.is_on_curve());
         assert!(!t.is_in_correct_subgroup_assuming_on_curve());
         assert!(t.into_group().mul_bigint(Fr::characteristic()) != G1Projective::zero());
         let s = G1Projective::rand(&mut rng);
-        assert!(!(s + t).into_affine().is_in_correct_subgroup_assuming_on_curve());
+        assert!(!(s + t)
+            .into_affine()
+            .is_in_correct_subgroup_assuming_on_curve());
 
         let mut bytes = vec![];
         t.serialize_with_mode(&mut bytes, Compress::Yes).unwrap();
@@ -540,9 +658,13 @@ fn test_prepared_g2_line_count_is_validated() {
     use ark_ec::bls12::{G2Prepared, G2PreparedFixed};
     let q = G2Affine::rand(&mut test_rng());
     let prepared = G2Prepared::<crate::Config>::from(q);
-    let fixed = G2PreparedFixed::<crate::Config>::from(q);
-    let decode = |bytes: &[u8]| G2Prepared::<crate::Config>::deserialize_with_mode(bytes, Compress::No, Validate::Yes);
-    let decode_fixed = |bytes: &[u8]| G2PreparedFixed::<crate::Config>::deserialize_with_mode(bytes, Compress::No, Validate::Yes);
+    let fixed = G2PreparedFixed::<crate::Config>::try_from(q).unwrap();
+    let decode = |bytes: &[u8]| {
+        G2Prepared::<crate::Config>::deserialize_with_mode(bytes, Compress::No, Validate::Yes)
+    };
+    let decode_fixed = |bytes: &[u8]| {
+        G2PreparedFixed::<crate::Config>::deserialize_with_mode(bytes, Compress::No, Validate::Yes)
+    };
     fn encode<T: ark_serialize::CanonicalSerialize>(p: &T) -> ark_std::vec::Vec<u8> {
         let mut bytes = vec![];
         p.serialize_with_mode(&mut bytes, Compress::No).unwrap();
@@ -554,7 +676,12 @@ fn test_prepared_g2_line_count_is_validated() {
     let mut short = prepared.clone();
     short.ell_coeffs.pop();
     assert!(decode(&encode(&short)).is_err());
-    assert!(G2Prepared::<crate::Config>::deserialize_with_mode(&encode(&short)[..], Compress::No, Validate::No).is_ok());
+    assert!(G2Prepared::<crate::Config>::deserialize_with_mode(
+        &encode(&short)[..],
+        Compress::No,
+        Validate::No
+    )
+    .is_ok());
     let mut infinite = prepared.clone();
     infinite.infinity = true;
     assert!(decode(&encode(&infinite)).is_err());

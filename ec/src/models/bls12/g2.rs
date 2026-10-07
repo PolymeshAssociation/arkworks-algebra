@@ -2,11 +2,12 @@ use ark_ff::{AdditiveGroup, BitIteratorBE, Field, Fp2};
 use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
 };
-use ark_std::{io::Read, ops::Neg, vec::*, One, Zero};
+use ark_std::{io::Read, ops::Neg, vec::*, One};
 use educe::Educe;
 
 use crate::{
     bls12::{Bls12Config, TwistType},
+    models::fp12_lines as lines,
     pairing::g2_doubling_y,
     short_weierstrass::{Affine, Projective},
     AffineRepr, CurveGroup,
@@ -35,7 +36,11 @@ pub struct G2Prepared<P: Bls12Config> {
 impl<P: Bls12Config> Valid for G2Prepared<P> {
     /// The line count the Miller loop consumes, none at infinity.
     fn check(&self) -> Result<(), SerializationError> {
-        let expected = if self.infinity { 0 } else { num_ell_coeffs::<P>() };
+        let expected = if self.infinity {
+            0
+        } else {
+            num_ell_coeffs::<P>()
+        };
         if self.ell_coeffs.len() != expected {
             return Err(SerializationError::InvalidData);
         }
@@ -50,9 +55,14 @@ impl<P: Bls12Config> CanonicalDeserialize for G2Prepared<P> {
         compress: Compress,
         validate: Validate,
     ) -> Result<Self, SerializationError> {
-        let ell_coeffs = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
-        let infinity = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
-        let prepared = Self { ell_coeffs, infinity };
+        let ell_coeffs =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let infinity =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let prepared = Self {
+            ell_coeffs,
+            infinity,
+        };
         if validate == Validate::Yes {
             prepared.check()?;
         }
@@ -94,7 +104,9 @@ impl<P: Bls12Config> From<G2Affine<P>> for G2Prepared<P> {
                 z: Fp2::one(),
             };
 
-            let mut iter = BitIteratorBE::without_leading_zeros(P::X).skip(1).peekable();
+            let mut iter = BitIteratorBE::without_leading_zeros(P::X)
+                .skip(1)
+                .peekable();
             while let Some(i) = iter.next() {
                 if iter.peek().is_none() && !i {
                     // Last iteration with no trailing addition: the doubled
@@ -150,45 +162,7 @@ impl<P: Bls12Config> G2Prepared<P> {
     /// [`normalize_lines`](https://github.com/zakura-core/common/blob/348011982f03eb0bbca703b1c91cd2d52dc97c27/crates/bls12_381/src/pairings.rs#L640-L664),
     /// which normalizes the constant coefficient instead.
     pub fn normalize_lines(&mut self) {
-        let mut inv: Vec<Fp2<P::Fp2Config>> =
-            self.ell_coeffs.iter().map(|c| *py_coeff::<P>(c)).collect();
-        ark_ff::batch_inversion(&mut inv);
-        for (c, inv) in self.ell_coeffs.iter_mut().zip(inv) {
-            if inv.is_zero() {
-                continue;
-            }
-            match P::TWIST_TYPE {
-                TwistType::M => {
-                    c.0 *= inv;
-                    c.1 *= inv;
-                    c.2 = Fp2::one();
-                },
-                TwistType::D => {
-                    c.0 = Fp2::one();
-                    c.1 *= inv;
-                    c.2 *= inv;
-                },
-            }
-        }
-    }
-}
-
-/// The coefficient `ell` scales by `P.y`: index 2 for an M-twist, index 0 for a D-twist.
-pub(crate) const fn py_coeff<P: Bls12Config>(c: &EllCoeff<P>) -> &Fp2<P::Fp2Config> {
-    match P::TWIST_TYPE {
-        TwistType::M => &c.2,
-        TwistType::D => &c.0,
-    }
-}
-
-/// The two coefficients of a normalized line other than its unit `P.y` coefficient, in the order
-/// [`G2PreparedFixed`] stores them.
-pub(crate) const fn fixed_line<P: Bls12Config>(
-    c: &EllCoeff<P>,
-) -> (Fp2<P::Fp2Config>, Fp2<P::Fp2Config>) {
-    match P::TWIST_TYPE {
-        TwistType::M => (c.0, c.1),
-        TwistType::D => (c.1, c.2),
+        lines::normalize_lines::<P::Fp12Config>(P::TWIST_TYPE, &mut self.ell_coeffs);
     }
 }
 
@@ -321,7 +295,11 @@ pub type FixedLine<P> = (
 impl<P: Bls12Config> Valid for G2PreparedFixed<P> {
     /// The line count the Miller loop consumes, none at infinity.
     fn check(&self) -> Result<(), SerializationError> {
-        let expected = if self.infinity { 0 } else { num_ell_coeffs::<P>() };
+        let expected = if self.infinity {
+            0
+        } else {
+            num_ell_coeffs::<P>()
+        };
         if self.lines.len() != expected {
             return Err(SerializationError::InvalidData);
         }
@@ -337,7 +315,8 @@ impl<P: Bls12Config> CanonicalDeserialize for G2PreparedFixed<P> {
         validate: Validate,
     ) -> Result<Self, SerializationError> {
         let lines = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
-        let infinity = CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let infinity =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
         let prepared = Self { lines, infinity };
         if validate == Validate::Yes {
             prepared.check()?;
@@ -346,32 +325,52 @@ impl<P: Bls12Config> CanonicalDeserialize for G2PreparedFixed<P> {
     }
 }
 
-impl<P: Bls12Config> From<G2Prepared<P>> for G2PreparedFixed<P> {
-    /// `Q` must be in the prime-order subgroup, where no line's `P.y` coefficient is zero.
-    fn from(mut prep: G2Prepared<P>) -> Self {
+/// A line whose `P.y` coefficient is zero, which [`G2PreparedFixed`] cannot hold. Only a `Q`
+/// outside the prime-order subgroup produces one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ZeroPyCoefficient;
+
+impl<P: Bls12Config> TryFrom<G2Prepared<P>> for G2PreparedFixed<P> {
+    type Error = ZeroPyCoefficient;
+
+    fn try_from(mut prep: G2Prepared<P>) -> Result<Self, Self::Error> {
         if prep.infinity {
-            return Self {
+            return Ok(Self {
                 lines: Vec::new(),
                 infinity: true,
-            };
+            });
         }
         prep.normalize_lines();
-        Self {
-            lines: prep.ell_coeffs.iter().map(fixed_line::<P>).collect(),
-            infinity: false,
+        let twist = P::TWIST_TYPE;
+        if !prep
+            .ell_coeffs
+            .iter()
+            .all(|c| lines::py_coeff::<P::Fp12Config>(twist, c).is_one())
+        {
+            return Err(ZeroPyCoefficient);
         }
+        Ok(Self {
+            lines: prep
+                .ell_coeffs
+                .iter()
+                .map(|c| lines::fixed_line::<P::Fp12Config>(twist, c))
+                .collect(),
+            infinity: false,
+        })
     }
 }
 
-impl<P: Bls12Config> From<G2Affine<P>> for G2PreparedFixed<P> {
-    fn from(q: G2Affine<P>) -> Self {
-        G2Prepared::from(q).into()
+impl<P: Bls12Config> TryFrom<G2Affine<P>> for G2PreparedFixed<P> {
+    type Error = ZeroPyCoefficient;
+
+    fn try_from(q: G2Affine<P>) -> Result<Self, Self::Error> {
+        G2Prepared::from(q).try_into()
     }
 }
 
 impl<P: Bls12Config> Default for G2PreparedFixed<P> {
     fn default() -> Self {
-        Self::from(G2Affine::<P>::generator())
+        Self::try_from(G2Affine::<P>::generator()).expect("the generator is in the subgroup")
     }
 }
 
@@ -388,25 +387,7 @@ impl<P: Bls12Config> Neg for G2Prepared<P> {
     /// instead, the same line up to a factor `-1`, so it stays normalized. Since
     /// `e(P, -Q) = e(-P, Q)`, negating the affine `P` is cheaper when it is available.
     fn neg(mut self) -> Self {
-        for coeff in &mut self.ell_coeffs {
-            let normalized = py_coeff::<P>(coeff).is_one();
-            match (P::TWIST_TYPE, normalized) {
-                (TwistType::M, false) => {
-                    coeff.2.neg_in_place();
-                },
-                (TwistType::D, false) => {
-                    coeff.0.neg_in_place();
-                },
-                (TwistType::M, true) => {
-                    coeff.0.neg_in_place();
-                    coeff.1.neg_in_place();
-                },
-                (TwistType::D, true) => {
-                    coeff.1.neg_in_place();
-                    coeff.2.neg_in_place();
-                },
-            }
-        }
+        lines::negate_lines::<P::Fp12Config>(P::TWIST_TYPE, &mut self.ell_coeffs);
         self
     }
 }

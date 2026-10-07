@@ -1,5 +1,5 @@
-pub mod glv;
 pub mod gls;
+pub mod glv;
 pub mod wnaf;
 
 pub mod sw_pippenger;

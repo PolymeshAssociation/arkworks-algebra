@@ -749,7 +749,10 @@ mod tests {
             assert_eq!(a * inv, F::<C, N>::one(), "a * a^-1 != 1");
             max_batches = max_batches.max(batches);
         }
-        assert!(max_batches <= super::batches(N), "batch bound exceeded: {max_batches}");
+        assert!(
+            max_batches <= super::batches(N),
+            "batch bound exceeded: {max_batches}"
+        );
     }
 
     fn check_vectors<C: MontConfig<4>>(vectors: &[([u64; 4], u32)]) {

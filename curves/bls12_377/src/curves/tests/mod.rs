@@ -77,8 +77,12 @@ fn test_g2_subgroup_check() {
 /// subgroup below `2^128`.
 #[test]
 fn test_scalar_mul_matches_double_and_add() {
-    ark_algebra_test_templates::subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(8);
-    ark_algebra_test_templates::subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(8);
+    ark_algebra_test_templates::subgroup::test_scalar_mul_matches_double_and_add::<crate::g1::Config>(
+        8,
+    );
+    ark_algebra_test_templates::subgroup::test_scalar_mul_matches_double_and_add::<crate::g2::Config>(
+        8,
+    );
 }
 
 #[test]
@@ -93,7 +97,10 @@ fn test_exp_by_x_and_twist_hooks() {
             <crate::g2::Config as SWCurveConfig>::COEFF_B * (c.double() + c)
         );
         let f = Bls12_377::pairing(G1Projective::rand(&mut rng), G2Projective::rand(&mut rng)).0;
-        assert_eq!(crate::Config::exp_by_x(f), f.cyclotomic_exp(crate::Config::X));
+        assert_eq!(
+            crate::Config::exp_by_x(f),
+            f.cyclotomic_exp(crate::Config::X)
+        );
     }
 }
 
@@ -104,12 +111,14 @@ fn test_fixed_q_miller_loop_dtwist() {
     use ark_std::{test_rng, vec::Vec, UniformRand};
     let mut rng = test_rng();
     for n in 1..=4usize {
-        let ps: Vec<crate::G1Affine> =
-            (0..n).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
-        let qs: Vec<crate::G2Affine> =
-            (0..n).map(|_| G2Projective::rand(&mut rng).into_affine()).collect();
+        let ps: Vec<crate::G1Affine> = (0..n)
+            .map(|_| G1Projective::rand(&mut rng).into_affine())
+            .collect();
+        let qs: Vec<crate::G2Affine> = (0..n)
+            .map(|_| G2Projective::rand(&mut rng).into_affine())
+            .collect();
         let fixed: Vec<G2PreparedFixed<crate::Config>> =
-            qs.iter().map(|q| (*q).into()).collect();
+            qs.iter().map(|q| (*q).try_into().unwrap()).collect();
         let ml_fixed = Bls12::<crate::Config>::multi_miller_loop_fixed(ps.iter().copied(), &fixed);
         let ml_std = Bls12_377::multi_miller_loop(ps.iter().copied(), qs.iter().copied());
         assert_eq!(
@@ -128,10 +137,12 @@ fn test_normalized_lines_mixed_miller_loop_dtwist() {
     type Prep = G2Prepared<crate::Config>;
     let mut rng = test_rng();
     for n in [1usize, 3, 5] {
-        let ps: Vec<crate::G1Affine> =
-            (0..n).map(|_| G1Projective::rand(&mut rng).into_affine()).collect();
-        let qs: Vec<crate::G2Affine> =
-            (0..n).map(|_| G2Projective::rand(&mut rng).into_affine()).collect();
+        let ps: Vec<crate::G1Affine> = (0..n)
+            .map(|_| G1Projective::rand(&mut rng).into_affine())
+            .collect();
+        let qs: Vec<crate::G2Affine> = (0..n)
+            .map(|_| G2Projective::rand(&mut rng).into_affine())
+            .collect();
         let expected = Bls12_377::multi_pairing(ps.iter().copied(), qs.iter().copied());
         for mask in [0usize, 0b01010, 0b10101, usize::MAX] {
             let preps: Vec<Prep> = qs

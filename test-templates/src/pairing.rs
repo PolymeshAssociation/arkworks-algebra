@@ -8,8 +8,8 @@ macro_rules! test_pairing {
             use ark_std::{test_rng, vec, vec::Vec, One, UniformRand, Zero};
             #[test]
             fn test_bilinearity() {
+                let mut rng = test_rng();
                 for _ in 0..100 {
-                    let mut rng = test_rng();
                     let a: <$Pairing as Pairing>::G1 = UniformRand::rand(&mut rng);
                     let b: <$Pairing as Pairing>::G2 = UniformRand::rand(&mut rng);
                     let s: <$Pairing as Pairing>::ScalarField = UniformRand::rand(&mut rng);
@@ -32,14 +32,16 @@ macro_rules! test_pairing {
                     assert_eq!(ans1.mul_bigint(group_order), PairingOutput::zero());
                     assert_eq!(ans2.mul_bigint(group_order), PairingOutput::zero());
                     assert_eq!(ans3.mul_bigint(group_order), PairingOutput::zero());
+                    assert!(<$Pairing as Pairing>::is_in_gt(&ans1.0));
+                    assert!(<$Pairing as Pairing>::is_in_gt(&ans2.0));
+                    assert!(<$Pairing as Pairing>::is_in_gt(&ans3.0));
                 }
             }
 
             #[test]
             fn test_multi_pairing() {
+                let rng = &mut test_rng();
                 for _ in 0..ITERATIONS {
-                    let rng = &mut test_rng();
-
                     let a = <$Pairing as Pairing>::G1::rand(rng).into_affine();
                     let b = <$Pairing as Pairing>::G2::rand(rng).into_affine();
                     let c = <$Pairing as Pairing>::G1::rand(rng).into_affine();
@@ -59,10 +61,18 @@ macro_rules! test_pairing {
                 let b: Vec<_> = (0..9)
                     .map(|_| <$Pairing as Pairing>::G2::rand(rng).into_affine())
                     .collect();
-                let singles: Vec<_> = a.iter().zip(&b).map(|(p, q)| <$Pairing>::pairing(p, q)).collect();
+                let singles: Vec<_> = a
+                    .iter()
+                    .zip(&b)
+                    .map(|(p, q)| <$Pairing>::pairing(p, q))
+                    .collect();
                 for n in [1, 3, 4, 5, 8, 9] {
                     let expected = singles[..n].iter().sum::<PairingOutput<$Pairing>>();
-                    assert_eq!(<$Pairing>::multi_pairing(&a[..n], &b[..n]), expected, "n = {n}");
+                    assert_eq!(
+                        <$Pairing>::multi_pairing(&a[..n], &b[..n]),
+                        expected,
+                        "n = {n}"
+                    );
                 }
             }
 
@@ -72,7 +82,8 @@ macro_rules! test_pairing {
             fn test_gt_mul_bits_be() {
                 use ark_ff::BitIteratorBE;
                 let rng = &mut test_rng();
-                let g = PairingOutput::<$Pairing>::generator() * <$Pairing as Pairing>::ScalarField::rand(rng);
+                let g = PairingOutput::<$Pairing>::generator()
+                    * <$Pairing as Pairing>::ScalarField::rand(rng);
                 let mut scalars: Vec<Vec<u64>> = vec![
                     vec![1],
                     vec![2],
@@ -80,20 +91,33 @@ macro_rules! test_pairing {
                     vec![u64::MAX, 0, 1],
                     vec![7, 0, 0, 0, 0, 0, 3],
                 ];
-                scalars.push(<$Pairing as Pairing>::ScalarField::rand(rng).into_bigint().as_ref().to_vec());
+                scalars.push(
+                    <$Pairing as Pairing>::ScalarField::rand(rng)
+                        .into_bigint()
+                        .as_ref()
+                        .to_vec(),
+                );
                 for k in &scalars {
                     let expected = PairingOutput::<$Pairing>(g.0.pow(k));
                     assert_eq!(g.mul_bigint(k), expected, "mul_bigint, k = {k:?}");
-                    assert_eq!(g.mul_bits_be(BitIteratorBE::new(k)), expected, "mul_bits_be, k = {k:?}");
+                    assert_eq!(
+                        g.mul_bits_be(BitIteratorBE::new(k)),
+                        expected,
+                        "mul_bits_be, k = {k:?}"
+                    );
                     let trimmed: Vec<bool> = BitIteratorBE::without_leading_zeros(k).collect();
-                    assert_eq!(g.mul_bits_be(trimmed.into_iter()), expected, "trimmed bits, k = {k:?}");
+                    assert_eq!(
+                        g.mul_bits_be(trimmed.into_iter()),
+                        expected,
+                        "trimmed bits, k = {k:?}"
+                    );
                 }
             }
 
             #[test]
             fn test_final_exp() {
+                let rng = &mut test_rng();
                 for _ in 0..ITERATIONS {
-                    let rng = &mut test_rng();
                     let fp_ext = <$Pairing as Pairing>::TargetField::rand(rng);
                     let gt = <$Pairing as Pairing>::final_exponentiation(MillerLoopOutput(fp_ext))
                         .unwrap()

@@ -1,5 +1,5 @@
 use crate::{
-    models::{short_weierstrass::SWCurveConfig, CurveConfig},
+    models::{fp12_lines as lines, short_weierstrass::SWCurveConfig, CurveConfig},
     pairing::{MillerLoopOutput, Pairing, PairingOutput},
     AffineRepr,
 };
@@ -14,17 +14,12 @@ use ark_ff::{
 };
 use ark_std::{cfg_chunks_mut, marker::PhantomData, vec::*};
 use educe::Educe;
-use num_traits::{One, Zero};
+use num_traits::One;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-/// A particular BLS12 group can have G2 being either a multiplicative or a
-/// divisive twist.
-pub enum TwistType {
-    M,
-    D,
-}
+pub use super::fp12_lines::TwistType;
 
 pub trait Bls12Config: 'static + Sized {
     /// Parameterizes the BLS12 family.
@@ -81,24 +76,21 @@ pub trait Bls12Config: 'static + Sized {
             .collect::<Vec<_>>();
 
         // `(1/P.y, P.x/P.y)` for each pair whose `Q` has normalized lines
-        // (`G2Prepared::normalize_lines`), from one batched inversion. A zero `P.y` keeps the
-        // pair on raw lines.
-        let mut yinv: Vec<Self::Fp> = pairs
-            .iter()
-            .map(|(p, q)| match q.ell_coeffs.first() {
-                Some(c) if g2::py_coeff::<Self>(c).is_one() => p.0.xy().unwrap().1,
-                _ => Self::Fp::zero(),
-            })
-            .collect();
-        if yinv.iter().any(|y| !y.is_zero()) {
-            ark_ff::batch_inversion(&mut yinv);
-        }
+        // (`G2Prepared::normalize_lines`). A zero `P.y` keeps the pair on raw lines.
+        let scales = lines::line_scales(pairs.iter().map(|(p, q)| {
+            let (x, y) = p.0.xy().unwrap();
+            let normalized = q
+                .ell_coeffs
+                .first()
+                .is_some_and(|c| lines::py_coeff::<Self::Fp12Config>(Self::TWIST_TYPE, c).is_one());
+            (x, y, normalized)
+        }));
         let mut pairs = pairs
             .into_iter()
-            .zip(yinv)
-            .map(|((p, q), yinv)| {
-                let scale = (!yinv.is_zero()).then(|| (yinv, p.0.xy().unwrap().0 * yinv));
-                (p, q.ell_coeffs.into_iter(), scale)
+            .zip(scales)
+            .map(|((p, q), scale)| {
+                let (x, y) = p.0.xy().unwrap();
+                (x, y, q.ell_coeffs.into_iter(), scale)
             })
             .collect::<Vec<_>>();
 
@@ -121,29 +113,27 @@ pub trait Bls12Config: 'static + Sized {
                         f.square_in_place();
                     }
                     first = false;
-                    // Pair every raw line in this iteration two at a time, across pairs
-                    // and across doubling/addition, halving the sparse-by-full mults.
+                    // Pair every raw line in this iteration two at a time, across pairs and
+                    // across doubling/addition. `Fp12::mul_by_014_pair` multiplies the two lines
+                    // together only when `Fp` has fewer than 3 spare bits, and otherwise takes
+                    // two sparse products, as on BLS12-377 and BLS12-381.
                     let mut pending = None;
-                    for (p, coeffs, scale) in pairs.iter_mut() {
-                        Bls12::<Self>::feed_line(
-                            &mut f,
-                            &mut pending,
-                            &coeffs.next().unwrap(),
-                            &p.0,
-                            scale,
-                        );
-                        if i {
-                            Bls12::<Self>::feed_line(
+                    for (x, y, coeffs, scale) in pairs.iter_mut() {
+                        for _ in 0..1 + usize::from(i) {
+                            let c = coeffs.next().unwrap();
+                            lines::feed_line(
+                                Self::TWIST_TYPE,
                                 &mut f,
                                 &mut pending,
-                                &coeffs.next().unwrap(),
-                                &p.0,
+                                &c,
+                                x,
+                                y,
                                 scale,
                             );
                         }
                     }
                     if let Some(line) = pending {
-                        Bls12::<Self>::mul_line(&mut f, &line);
+                        lines::mul_line(Self::TWIST_TYPE, &mut f, &line);
                     }
                 }
                 f
@@ -162,26 +152,7 @@ pub trait Bls12Config: 'static + Sized {
         // Computing the final exponentiation following
         // https://eprint.iacr.org/2020/875
         // Adapted from the implementation in https://github.com/ConsenSys/gurvy/pull/29
-
-        // f1 = r.cyclotomic_inverse_in_place() = f^(p^6)
-        let f = f.0;
-        let mut f1 = f;
-        f1.cyclotomic_inverse_in_place();
-
-        f.inverse().map(|mut f2| {
-            // f2 = f^(-1);
-            // r = f^(p^6 - 1)
-            let mut r = f1 * &f2;
-
-            // f2 = f^(p^6 - 1)
-            f2 = r;
-            // r = f^((p^6 - 1)(p^2))
-            r.frobenius_map_in_place(2);
-
-            // r = f^((p^6 - 1)(p^2) + (p^6 - 1))
-            // r = f^((p^6 - 1)(p^2 + 1))
-            r *= &f2;
-
+        lines::final_exp_easy_part(f.0).map(|mut r| {
             // If the easy part already yields 1, the pairing is trivial.
             if r.is_one() {
                 return PairingOutput(r);
@@ -259,112 +230,14 @@ pub mod g2;
 
 pub use self::{
     g1::{G1Affine, G1Prepared, G1Projective},
-    g2::{G2Affine, G2Prepared, G2PreparedFixed, G2Projective},
+    g2::{G2Affine, G2Prepared, G2PreparedFixed, G2Projective, ZeroPyCoefficient},
 };
 
 #[derive(Educe)]
 #[educe(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub struct Bls12<P: Bls12Config>(PhantomData<fn() -> P>);
 
-/// A line, scaled by a G1 point, in the three coefficient slots its sparse
-/// multiplication reads.
-type EllLine<P> = (
-    Fp2<<P as Bls12Config>::Fp2Config>,
-    Fp2<<P as Bls12Config>::Fp2Config>,
-    Fp2<<P as Bls12Config>::Fp2Config>,
-);
-
 impl<P: Bls12Config> Bls12<P> {
-    // Scale a raw line by `p`, positioning the coefficients at their sparse slots
-    // (0,1,4 for an M-twist, 0,3,4 for a D-twist).
-    fn scale_line(coeffs: &g2::EllCoeff<P>, p: &G1Affine<P>) -> EllLine<P> {
-        let (px, py) = p.xy().unwrap();
-        let (mut c0, mut c1, mut c2) = (coeffs.0, coeffs.1, coeffs.2);
-        match P::TWIST_TYPE {
-            TwistType::M => {
-                c2.mul_assign_by_fp(&py);
-                c1.mul_assign_by_fp(&px);
-            },
-            TwistType::D => {
-                c0.mul_assign_by_fp(&py);
-                c1.mul_assign_by_fp(&px);
-            },
-        }
-        (c0, c1, c2)
-    }
-
-    // Multiply `f` by one scaled line.
-    fn mul_line(f: &mut Fp12<P::Fp12Config>, a: &EllLine<P>) {
-        match P::TWIST_TYPE {
-            TwistType::M => f.mul_by_014(&a.0, &a.1, &a.2),
-            TwistType::D => f.mul_by_034(&a.0, &a.1, &a.2),
-        }
-    }
-
-    // Multiply `f` by two scaled lines, which may come from the same pair (doubling
-    // and addition) or from different pairs. `Fp12::mul_by_014_pair` /
-    // `Fp12::mul_by_034_pair` pick between two sparse products and one line-by-line
-    // product followed by a semi-sparse one. Pairing lines across pairs follows MIRACL core
-    // `ate2` (https://github.com/miracl/core/blob/a6df6733c1ad1ad0918306abd0c3983b4cd4a58c/rust/pair.rs#L522-L541).
-    fn mul_line_pair(f: &mut Fp12<P::Fp12Config>, a: &EllLine<P>, b: &EllLine<P>) {
-        match P::TWIST_TYPE {
-            TwistType::M => f.mul_by_014_pair(&a.0, &a.1, &a.2, &b.0, &b.1, &b.2),
-            TwistType::D => f.mul_by_034_pair(&a.0, &a.1, &a.2, &b.0, &b.1, &b.2),
-        }
-    }
-
-    // Feed a scaled line into `f`, pairing it with a held-back line when one waits.
-    fn push_line(f: &mut Fp12<P::Fp12Config>, pending: &mut Option<EllLine<P>>, line: EllLine<P>) {
-        match pending.take() {
-            Some(prev) => Self::mul_line_pair(f, &prev, &line),
-            None => *pending = Some(line),
-        }
-    }
-
-    // Multiply `f` by one line at `p`. A normalized line, whose `P.y` coefficient is 1, takes the
-    // fixed-Q product when `scale = (1/P.y, P.x/P.y)` is known. Any other line goes through
-    // `push_line`.
-    fn feed_line(
-        f: &mut Fp12<P::Fp12Config>,
-        pending: &mut Option<EllLine<P>>,
-        coeffs: &g2::EllCoeff<P>,
-        p: &G1Affine<P>,
-        scale: &Option<(P::Fp, P::Fp)>,
-    ) {
-        match scale {
-            Some((yinv, pxyinv)) if g2::py_coeff::<P>(coeffs).is_one() => {
-                Self::mul_fixed_line(f, &g2::fixed_line::<P>(coeffs), yinv, pxyinv)
-            },
-            _ => Self::push_line(f, pending, Self::scale_line(coeffs, p)),
-        }
-    }
-
-    // Multiply `f` by one fixed-Q two-coefficient line reconstructed at `p`, whose
-    // third slot is 1 after the per-`p` rescale by `yinv`/`pxyinv`.
-    fn mul_fixed_line(
-        f: &mut Fp12<P::Fp12Config>,
-        line: &(Fp2<P::Fp2Config>, Fp2<P::Fp2Config>),
-        yinv: &P::Fp,
-        pxyinv: &P::Fp,
-    ) {
-        match P::TWIST_TYPE {
-            TwistType::M => {
-                let mut s0 = line.0;
-                s0.mul_assign_by_fp(yinv);
-                let mut s1 = line.1;
-                s1.mul_assign_by_fp(pxyinv);
-                f.mul_by_014_c4_one(&s0, &s1);
-            },
-            TwistType::D => {
-                let mut s3 = line.0;
-                s3.mul_assign_by_fp(pxyinv);
-                let mut s4 = line.1;
-                s4.mul_assign_by_fp(yinv);
-                f.mul_by_034_c0_one(&s3, &s4);
-            },
-        }
-    }
-
     /// Miller loop with each `Q` fixed and preprocessed to two-coefficient lines
     /// ([`G2PreparedFixed`]). Panics if `a` and `b` differ in length.
     pub fn multi_miller_loop_fixed(
@@ -404,9 +277,9 @@ impl<P: Bls12Config> Bls12<P> {
             }
             first = false;
             for (idx, it) in lines.iter_mut().enumerate() {
-                Self::mul_fixed_line(&mut f, it.next().unwrap(), &yinv[idx], &pxyinv[idx]);
-                if i {
-                    Self::mul_fixed_line(&mut f, it.next().unwrap(), &yinv[idx], &pxyinv[idx]);
+                for _ in 0..1 + usize::from(i) {
+                    let line = it.next().unwrap();
+                    lines::mul_fixed_line(P::TWIST_TYPE, &mut f, line, &yinv[idx], &pxyinv[idx]);
                 }
             }
         }
@@ -466,16 +339,7 @@ impl<P: Bls12Config> Pairing for Bls12<P> {
         // subgroup within it. On GT the Frobenius is [p mod r] = [x], so f^p == f^x is
         // necessary, and Scott shows it is sufficient on the cyclotomic subgroup of a
         // BLS12 curve. This costs one exponentiation by x instead of one by r.
-        if f.is_zero() {
-            return false;
-        }
-        // Cyclotomic: f^(p^2) == f^(p^4) * f, i.e. f^(p^4 - p^2 + 1) == 1.
-        let mut a = *f;
-        a.frobenius_map_in_place(2);
-        let mut b = a;
-        b.frobenius_map_in_place(2);
-        b *= f;
-        if a != b {
+        if !lines::is_cyclotomic(f) {
             return false;
         }
         // Order-r subgroup: f^p == f^x, since p == x (mod r).

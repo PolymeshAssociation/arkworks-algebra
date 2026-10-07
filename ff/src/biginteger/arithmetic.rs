@@ -307,7 +307,8 @@ mod tests {
                 }
                 let mut expected = num_bigint::BigInt::from(0);
                 for (i, &limb) in num.iter().enumerate() {
-                    expected += num_bigint::BigInt::from(limb) * (num_bigint::BigInt::from(1) << (64 * i));
+                    expected +=
+                        num_bigint::BigInt::from(limb) * (num_bigint::BigInt::from(1) << (64 * i));
                 }
                 assert_eq!(acc, expected, "w={w}");
                 // Non-adjacency: each nonzero digit is followed by >= w-1 zeros.
