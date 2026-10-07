@@ -298,7 +298,7 @@ impl<P: Fp12Config> Fp12<P> {
         let mut bb = self.c1;
         P::mul_fp6_by_nonresidue_in_place(&mut bb);
         let mut o = *c1;
-        o += <Fp2<Fp2Config<P>> as num_traits::One>::one();
+        o += Fp2::<Fp2Config<P>>::ONE;
         self.c1 += &self.c0;
         self.c1.mul_by_01(c0, &o);
         self.c1 -= &aa;
@@ -336,7 +336,7 @@ impl<P: Fp12Config> Fp12<P> {
         let a = self.c0; // self.c0 * 1
         let mut b = self.c1;
         b.mul_by_01(c3, c4);
-        let c0 = *c3 + <Fp2<Fp2Config<P>> as num_traits::One>::one();
+        let c0 = *c3 + Fp2::<Fp2Config<P>>::ONE;
         let mut e = self.c0 + &self.c1;
         e.mul_by_01(&c0, c4);
         self.c1 = e - &(a + &b);
@@ -456,7 +456,7 @@ impl<P: Fp12Config> CompressedCyclotomic<P> {
         let nr = <P::Fp6Config as Fp6Config>::mul_fp2_by_nonresidue;
         let g1_g2 = self.g1 * self.g2;
         let g0 = nr(g4.square().double() + self.g3 * self.g5 - g1_g2.double() - g1_g2)
-            + <Fp2<Fp2Config<P>> as num_traits::One>::one();
+            + Fp2::<Fp2Config<P>>::ONE;
         Fp12::new(
             Fp6::new(g0, self.g1, self.g2),
             Fp6::new(self.g3, g4, self.g5),
