@@ -9,9 +9,10 @@
 //! The accumulator holds `sum(a_i * b_i)` unreduced, as `2N` limbs plus a 64-bit carry, so
 //! it takes `2^64` terms to overflow. [`MontAccumulator::reduce`] folds the top limb and the
 //! carry back under `2^{64(2N-1)}` using their residues, then runs the same REDC loop as
-//! `square_in_place`. Under the `asm` feature on AArch64 the 4-limb accumulate and fold run in
-//! the inline assembly of `deferred/aarch64.rs`, which on an Apple M3 Max takes a Pallas inner
-//! product from 6.3 to 4.5 ns per term.
+//! `square_in_place`. Under the `asm` feature the 4-limb accumulate and fold run in inline
+//! assembly, `deferred/aarch64.rs` on AArch64 and `deferred/x86_64.rs` on x86-64 CPUs with BMI2
+//! and ADX. On an Apple M3 Max the AArch64 kernels take a Pallas inner product from 6.3 to 4.5 ns
+//! per term.
 //!
 //! # Sources
 //!
@@ -19,6 +20,7 @@
 //!   `partial_reduce` this generalizes over `N`:
 //!   <https://github.com/zakura-core/common/blob/98846ee/crates/pasta_curves/src/deferred.rs>
 //! - Zakura `deferred/aarch64.rs` for the AArch64 kernels, cited in `deferred/aarch64.rs`
+//! - Zakura Udon `x86_64_asm/products.rs` for the x86-64 kernels, cited in `deferred/x86_64.rs`
 //! - Their [blog](https://zakura.com/engineering/deferred-montgomery-products/) on the technique
 
 use super::{mont29::Mont29Params, Fp, MontBackend, MontConfig};
@@ -28,6 +30,21 @@ use ark_std::marker::PhantomData;
 #[cfg(all(feature = "asm", target_arch = "aarch64"))]
 #[allow(unsafe_code)]
 mod aarch64;
+#[cfg(all(feature = "asm", target_arch = "aarch64"))]
+use aarch64 as kernel;
+
+#[cfg(all(feature = "asm", target_arch = "x86_64"))]
+#[allow(unsafe_code)]
+mod x86_64;
+#[cfg(all(feature = "asm", target_arch = "x86_64"))]
+use x86_64 as kernel;
+
+/// Whether the 4-limb kernels are usable on this CPU, which on x86-64 needs BMI2 and ADX.
+#[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
+#[inline(always)]
+fn kernel_available() -> bool {
+    cfg!(target_arch = "aarch64") || super::asm_backend_active()
+}
 
 /// A running sum of unreduced `2N`-limb Montgomery products.
 #[derive(educe::Educe)]
@@ -60,15 +77,9 @@ impl<T: MontConfig<N>, const N: usize> MontAccumulator<T, N> {
     #[allow(clippy::needless_range_loop)]
     pub fn mul_accumulate(&mut self, a: &Fp<MontBackend<T, N>, N>, b: &Fp<MontBackend<T, N>, N>) {
         let (a, b) = (&(a.0).0, &(b.0).0);
-        #[cfg(all(feature = "asm", target_arch = "aarch64"))]
-        if N == 4 {
-            let (limbs, overflow) = aarch64::mul_accumulate(
-                self.limbs8(),
-                a[..4].try_into().unwrap(),
-                b[..4].try_into().unwrap(),
-            );
-            self.set_limbs8(limbs);
-            self.add_carry(overflow);
+        #[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
+        if N == 4 && kernel_available() {
+            self.mul_accumulate_kernel(a, b);
             return;
         }
         let mut overflow = 0;
@@ -134,14 +145,27 @@ impl<T: MontConfig<N>, const N: usize> MontAccumulator<T, N> {
         self.carry = carry;
     }
 
+    /// [`Self::mul_accumulate`] by the 4-limb kernel. Requires `N = 4` and [`kernel_available`].
+    #[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
+    #[inline(always)]
+    fn mul_accumulate_kernel(&mut self, a: &[u64; N], b: &[u64; N]) {
+        let (limbs, overflow) = kernel::mul_accumulate(
+            self.limbs8(),
+            a[..4].try_into().unwrap(),
+            b[..4].try_into().unwrap(),
+        );
+        self.set_limbs8(limbs);
+        self.add_carry(overflow);
+    }
+
     /// The `2N = 8` limbs, for the 4-limb kernels.
-    #[cfg(all(feature = "asm", target_arch = "aarch64"))]
+    #[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
     #[inline(always)]
     fn limbs8(&self) -> [u64; 8] {
         core::array::from_fn(|i| self.buf[i])
     }
 
-    #[cfg(all(feature = "asm", target_arch = "aarch64"))]
+    #[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
     #[inline(always)]
     fn set_limbs8(&mut self, limbs: [u64; 8]) {
         for (i, limb) in limbs.into_iter().enumerate() {
@@ -150,16 +174,16 @@ impl<T: MontConfig<N>, const N: usize> MontAccumulator<T, N> {
     }
 
     /// Whether the 4-limb fold kernel's bounds hold, `B_HIGH < 2^253` and `R2 < 2^252`.
-    #[cfg(all(feature = "asm", target_arch = "aarch64"))]
+    #[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
     const ASM_FOLD: bool = N == 4 && T::B_HIGH.0[N - 1] < 1 << 61 && T::R2.0[N - 1] < 1 << 60;
 
     /// Reduces the running sum to a canonical field element.
     pub fn reduce(mut self) -> Fp<MontBackend<T, N>, N> {
         // Fold the top limb and the carry back in through their residues, leaving a value
         // below `2^{64(2N-1)} + 2^65 m`, which `T::CAN_DEFER` keeps under `R*m`.
-        #[cfg(all(feature = "asm", target_arch = "aarch64"))]
-        let folded = Self::ASM_FOLD && {
-            let limbs = aarch64::partial_reduce(
+        #[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
+        let folded = Self::ASM_FOLD && kernel_available() && {
+            let limbs = kernel::partial_reduce(
                 self.limbs8(),
                 self.carry,
                 T::B_HIGH.0[..4].try_into().unwrap(),
@@ -168,7 +192,7 @@ impl<T: MontConfig<N>, const N: usize> MontAccumulator<T, N> {
             self.set_limbs8(limbs);
             true
         };
-        #[cfg(not(all(feature = "asm", target_arch = "aarch64")))]
+        #[cfg(not(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64"))))]
         let folded = false;
         if !folded {
             let hi = self.buf[2 * N - 1];
@@ -298,7 +322,16 @@ fn deferred_sum<T: MontConfig<N>, const N: usize>(
             acc.mul_accumulate_block(a, b);
         }
     }
-    for (a, b) in a[blocked..].iter().zip(&b[blocked..]) {
+    let (a, b) = (&a[blocked..], &b[blocked..]);
+    // One CPU check for the whole sum instead of one per term.
+    #[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
+    if N == 4 && kernel_available() {
+        for (a, b) in a.iter().zip(b) {
+            acc.mul_accumulate_kernel(&(a.0).0, &(b.0).0);
+        }
+        return acc.reduce();
+    }
+    for (a, b) in a.iter().zip(b) {
         acc.mul_accumulate(a, b);
     }
     acc.reduce()
@@ -524,7 +557,7 @@ mod tests {
 
     #[test]
     fn accumulator_is_exact() {
-        #[cfg(all(feature = "asm", target_arch = "aarch64"))]
+        #[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
         {
             const { assert!(MontAccumulator::<PallasBase, 4>::ASM_FOLD) };
             const { assert!(MontAccumulator::<Secp256k1Base, 4>::ASM_FOLD) };
