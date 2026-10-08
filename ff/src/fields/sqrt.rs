@@ -198,6 +198,65 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
         }
     }
 
+    /// `(true, sqrt(elem))` when `elem` is a square, else `(false, sqrt(zeta * elem))`, for a
+    /// non-square `zeta`, with `p - 1 = T * 2^S`, `T` odd. Tonelli-Shanks shares one
+    /// exponentiation between the two roots through `zeta_trace_power = zeta^((T - 1) / 2)`,
+    /// since `(zeta * elem)^((T - 1) / 2)` is `zeta_trace_power * elem^((T - 1) / 2)`. `Sarkar2020`
+    /// shares the whole root: its candidate for a non-square is `sqrt(g * elem)` for the two-adic
+    /// root of unity `g`, which `zeta_over_root_sqrt = sqrt(zeta / g)` turns into
+    /// `sqrt(zeta * elem)`. The other variants take two square roots.
+    pub fn sqrt_or_scaled_sqrt(
+        &self,
+        elem: &F,
+        zeta: &F,
+        zeta_trace_power: &F,
+        zeta_over_root_sqrt: &F,
+    ) -> (bool, F) {
+        match self {
+            Self::TonelliShanks {
+                trace_of_modulus_minus_one_div_two: trace,
+                ..
+            } => {
+                if elem.is_zero() {
+                    return (true, F::zero());
+                }
+                let v = elem.pow(trace);
+                match self.sqrt_given_trace_power(elem, v) {
+                    Some(y) => (true, y),
+                    None => (
+                        false,
+                        self.sqrt_given_trace_power(&(*zeta * elem), v * zeta_trace_power)
+                            .expect("zeta * elem is a square when elem is not"),
+                    ),
+                }
+            },
+            Self::Sarkar2020 {
+                trace_minus_one_div_two: trace,
+                ..
+            } => {
+                if elem.is_zero() {
+                    return (true, F::zero());
+                }
+                let res = self.sarkar_candidate(elem, elem.pow(trace));
+                if res.square() == *elem {
+                    (true, res)
+                } else {
+                    let scaled = res * zeta_over_root_sqrt;
+                    debug_assert_eq!(scaled.square(), *zeta * elem);
+                    (false, scaled)
+                }
+            },
+            _ => match self.sqrt(elem) {
+                Some(y) => (true, y),
+                None => (
+                    false,
+                    self.sqrt(&(*zeta * elem))
+                        .expect("zeta * elem is a square when elem is not"),
+                ),
+            },
+        }
+    }
+
     /// Square root of a nonzero `elem` given `trace_power = elem^((T - 1) / 2)`, for the
     /// Tonelli-Shanks and `Sarkar2020` variants.
     fn sqrt_given_trace_power(&self, elem: &F, trace_power: F) -> Option<F> {
@@ -257,73 +316,8 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
                     None
                 }
             },
-            Self::Sarkar2020 {
-                g0,
-                g1,
-                g2,
-                g3,
-                inv,
-                hash_xor,
-                hash_mod,
-                ..
-            } => {
-                // Ported from `zcash/pasta_curves`, `SqrtTables::sqrt_alt` and
-                // `SqrtTables::sqrt_common` (plus `SqrtHasher::hash`):
-                // <https://github.com/zcash/pasta_curves/blob/main/src/arithmetic/fields.rs>
-                // Canonical low 32 bits of a prime-field element. This variant is
-                // only ever constructed for prime fields, so the (single) base
-                // prime field element is `x` itself.
-                let low32 = |x: &F| -> usize {
-                    let c = x
-                        .to_base_prime_field_elements()
-                        .next()
-                        .expect("a prime field element has exactly one base element");
-                    <F::BasePrimeField as super::PrimeField>::into_bigint(c).as_ref()[0] as u32
-                        as usize
-                };
-                let inv_lookup = |x: &F| -> usize {
-                    let h = (low32(x) ^ (*hash_xor as usize)) % (*hash_mod as usize);
-                    inv[h] as usize
-                };
-                let sqr = |mut x: F, i: u32| {
-                    for _ in 0..i {
-                        x.square_in_place();
-                    }
-                    x
-                };
-
-                // v = elem^((T-1)/2), uv = elem * v. The exponentiation is the dominant
-                // cost; the rest replaces the data-dependent discrete-log search with
-                // four windowed table lookups.
-                let v = trace_power;
-                let uv = *elem * v;
-
-                // Project `uv * v` (which lies in the order-2^32 subgroup) down to
-                // the order-256 subgroup by successive 8-bit squarings, then peel
-                // off the discrete log one 8-bit window at a time using `inv`/`g*`.
-                let x3 = uv * v;
-                let x2 = sqr(x3, 8);
-                let x1 = sqr(x2, 8);
-                let x0 = sqr(x1, 8);
-
-                let mut t = inv_lookup(&x0);
-                let alpha = x1 * g2[t];
-
-                t += inv_lookup(&alpha) << 8;
-                let alpha = x2 * g1[t & 0xFF] * g2[t >> 8];
-
-                t += inv_lookup(&alpha) << 16;
-                let alpha = x3 * g0[t & 0xFF] * g1[(t >> 8) & 0xFF] * g2[t >> 16];
-
-                t += inv_lookup(&alpha) << 24;
-                t = (((t as u64) + 1) >> 1) as usize;
-                if t > 0x80000000 {
-                    return None;
-                }
-                
-                let res =
-                    uv * g0[t & 0xFF] * g1[(t >> 8) & 0xFF] * g2[(t >> 16) & 0xFF] * g3[t >> 24];
-
+            Self::Sarkar2020 { .. } => {
+                let res = self.sarkar_candidate(elem, trace_power);
                 // The algorithm returns the correct root iff `elem` is a square;
                 // otherwise the squared candidate disagrees, signalling no root.
                 (res.square() == *elem).then_some(res)
@@ -331,4 +325,117 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
             _ => unreachable!("only Tonelli-Shanks and Sarkar2020 start from the trace power"),
         }
     }
+
+    /// The Sarkar candidate root of a nonzero `elem` given `trace_power = elem^((T - 1) / 2)`:
+    /// `sqrt(elem)` for a square, else `sqrt(g * elem)` for the two-adic root of unity `g`, as
+    /// `sqrt_alt` in `zcash/pasta_curves`.
+    fn sarkar_candidate(&self, elem: &F, trace_power: F) -> F {
+        let Self::Sarkar2020 {
+            g0,
+            g1,
+            g2,
+            g3,
+            inv,
+            hash_xor,
+            hash_mod,
+            ..
+        } = self
+        else {
+            unreachable!("only the Sarkar2020 variant has the tables")
+        };
+        // Ported from `zcash/pasta_curves`, `SqrtTables::sqrt_alt` and
+        // `SqrtTables::sqrt_common` (plus `SqrtHasher::hash`):
+        // <https://github.com/zcash/pasta_curves/blob/main/src/arithmetic/fields.rs>
+        // Canonical low 32 bits of a prime-field element. This variant is
+        // only ever constructed for prime fields, so the (single) base
+        // prime field element is `x` itself.
+        let low32 = |x: &F| -> usize {
+            let c = x
+                .to_base_prime_field_elements()
+                .next()
+                .expect("a prime field element has exactly one base element");
+            <F::BasePrimeField as super::PrimeField>::into_bigint(c).as_ref()[0] as u32
+                as usize
+        };
+        let inv_lookup = |x: &F| -> usize {
+            let h = (low32(x) ^ (*hash_xor as usize)) % (*hash_mod as usize);
+            inv[h] as usize
+        };
+        let sqr = |mut x: F, i: u32| {
+            for _ in 0..i {
+                x.square_in_place();
+            }
+            x
+        };
+
+        // v = elem^((T-1)/2), uv = elem * v. The exponentiation is the dominant
+        // cost; the rest replaces the data-dependent discrete-log search with
+        // four windowed table lookups.
+        let v = trace_power;
+        let uv = *elem * v;
+
+        // Project `uv * v` (which lies in the order-2^32 subgroup) down to
+        // the order-256 subgroup by successive 8-bit squarings, then peel
+        // off the discrete log one 8-bit window at a time using `inv`/`g*`.
+        let x3 = uv * v;
+        let x2 = sqr(x3, 8);
+        let x1 = sqr(x2, 8);
+        let x0 = sqr(x1, 8);
+
+        let mut t = inv_lookup(&x0);
+        let alpha = x1 * g2[t];
+
+        t += inv_lookup(&alpha) << 8;
+        let alpha = x2 * g1[t & 0xFF] * g2[t >> 8];
+
+        t += inv_lookup(&alpha) << 16;
+        let alpha = x3 * g0[t & 0xFF] * g1[(t >> 8) & 0xFF] * g2[t >> 16];
+
+        t += inv_lookup(&alpha) << 24;
+        t = (((t as u64) + 1) >> 1) as usize;
+        uv * g0[t & 0xFF] * g1[(t >> 8) & 0xFF] * g2[(t >> 16) & 0xFF] * g3[t >> 24]
+    }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use ark_std::test_rng;
+    use ark_test_curves::{
+        ark_ff::{LegendreSymbol, PrimeField, SqrtPrecomputation},
+        bls12_381::{Fq, Fr},
+    };
+
+    /// `sqrt_or_scaled_sqrt` against `sqrt` of `elem` or `zeta * elem`: BLS12-381 `Fr` takes the
+    /// Tonelli-Shanks path, `Fq` (3 mod 4) the two-root fallback.
+    fn check<F: PrimeField>() {
+        let zeta = (2u64..)
+            .map(F::from)
+            .find(|z| z.legendre() == LegendreSymbol::QuadraticNonResidue)
+            .unwrap();
+        let zeta_trace_power = zeta.pow(F::TRACE_MINUS_ONE_DIV_TWO);
+        let zeta_over_root_sqrt = (zeta / F::TWO_ADIC_ROOT_OF_UNITY).sqrt().unwrap();
+        let precomp: SqrtPrecomputation<F> = F::SQRT_PRECOMP.unwrap();
+        let mut rng = test_rng();
+        let inputs = [F::zero(), F::one(), -F::one(), zeta]
+            .into_iter()
+            .chain((0..1000).map(|_| F::rand(&mut rng)));
+        for e in inputs {
+            let expected = match e.sqrt() {
+                Some(y) => (true, y),
+                None => (false, (zeta * e).sqrt().unwrap()),
+            };
+            assert_eq!(
+                precomp.sqrt_or_scaled_sqrt(&e, &zeta, &zeta_trace_power, &zeta_over_root_sqrt),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn sqrt_or_scaled_sqrt_matches_two_roots() {
+        check::<Fr>();
+        check::<Fq>();
+    }
+
 }

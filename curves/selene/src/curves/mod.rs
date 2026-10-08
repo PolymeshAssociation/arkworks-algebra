@@ -2,7 +2,7 @@ use ark_ec::{models::CurveConfig, short_weierstrass::{self as sw, SWCurveConfig,
 use ark_ff::{AdditiveGroup, Field, MontFp};
 use ark_serialize::{Compress, SerializationError, Validate};
 use ark_std::io::{Read, Write};
-use ark_ec::hashing::curve_maps::swu::SWUConfig;
+use ark_ec::hashing::curve_maps::swu::{sqrt_ratio_3mod4, SWUConfig};
 use crate::{fq::Fq, fr::Fr};
 
 #[cfg(test)]
@@ -80,6 +80,26 @@ impl SWSerializationXNonZero for SeleneConfig {}
 
 impl SWUConfig for SeleneConfig {
     const ZETA: Self::BaseField = MontFp!("6");
+
+    /// `Fq` is `3 mod 4`, so `gx1^((p+1)/4)` is a square root of `gx1` when it is
+    /// a QR. Otherwise `ZETA*gx1` is the QR and `sqrt(ZETA*gx1) = ZETA^((p+1)/4) *
+    /// gx1^((p+1)/4)`, so one exponentiation suffices instead of two. This is
+    /// `sqrt_ratio_3mod4` of RFC 9380 appendix F.2.1
+    /// (<https://www.rfc-editor.org/rfc/rfc9380#appendix-F.2.1>).
+    fn sqrt_or_zeta_sqrt(gx1: Fq) -> (bool, Fq) {
+        // (p + 1) / 4, little-endian.
+        const EXP: [u64; 4] = [
+            0xfe6142da37c477d5,
+            0xfdcd5207465a7cc5,
+            0xffffffffffffffff,
+            0x1fffffffffffffff,
+        ];
+        // ZETA^((p+1)/4).
+        const ZETA_POW: Fq = MontFp!(
+            "36423136542801878583971952434299822049605830330823636749199379649448828414867"
+        );
+        sqrt_ratio_3mod4(gx1, &EXP, ZETA_POW)
+    }
 }
 
 /// G_GENERATOR_X = 1

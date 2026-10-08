@@ -2,10 +2,12 @@ use ark_ec::{models::CurveConfig, scalar_mul::glv::{try_glv_msm_bigint_full_widt
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
 use ark_serialize::{Compress, SerializationError, Validate};
 use ark_std::io::{Write, Read};
+use ark_ec::hashing::curve_maps::wb::{IsogenyMap, WBConfig};
 use crate::{fq::Fq, fr::Fr};
 
 #[cfg(test)]
 mod tests;
+mod swu_iso;
 
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 pub struct PallasConfig;
@@ -162,3 +164,10 @@ pub const G_GENERATOR_X: Fq = MontFp!("-1");
 
 /// G_GENERATOR_Y = 2
 pub const G_GENERATOR_Y: Fq = MontFp!("2");
+
+impl WBConfig for PallasConfig {
+    type IsogenousCurve = swu_iso::SwuIsoConfig;
+
+    const ISOGENY_MAP: IsogenyMap<'static, Self::IsogenousCurve, Self> =
+        swu_iso::ISOGENY_MAP_TO_PALLAS;
+}

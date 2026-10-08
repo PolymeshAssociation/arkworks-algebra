@@ -6,6 +6,7 @@ use ark_ec::{
         CurveConfig,
     },
 };
+use ark_ec::hashing::curve_maps::swu::sqrt_ratio_3mod4;
 use ark_ff::MontFp;
 
 type G1Affine = Affine<SwuIsoConfig>;
@@ -61,6 +62,26 @@ const G1_GENERATOR_Y: Fq = MontFp!("14050980615731046394137281902407192295715839
 impl SWUConfig for SwuIsoConfig {
     // ZETA = 0xb as per the IETF draft.
     const ZETA: Fq = MontFp!("11");
+
+    /// `Fq` is `3 mod 4`, so `gx1^((p+1)/4)` is a square root of `gx1` when it is
+    /// a QR. Otherwise `ZETA*gx1` is the QR and `sqrt(ZETA*gx1) = ZETA^((p+1)/4) *
+    /// gx1^((p+1)/4)`, so one exponentiation suffices instead of two. This is
+    /// `sqrt_ratio_3mod4` of RFC 9380 appendix F.2.1
+    /// (<https://www.rfc-editor.org/rfc/rfc9380#appendix-F.2.1>).
+    fn sqrt_or_zeta_sqrt(gx1: Fq) -> (bool, Fq) {
+        // (p + 1) / 4, little-endian.
+        const EXP: [u64; 6] = [
+            0xee7fbfffffffeaab,
+            0x07aaffffac54ffff,
+            0xd9cc34a83dac3d89,
+            0xd91dd2e13ce144af,
+            0x92c6e9ed90d2eb35,
+            0x0680447a8e5ff9a6,
+        ];
+        // ZETA^((p+1)/4).
+        const ZETA_POW: Fq = MontFp!("3328401317247454955169066096158510917373398464830982355414973725925807849732239772068917122934374686992605919146728");
+        sqrt_ratio_3mod4(gx1, &EXP, ZETA_POW)
+    }
 }
 
 pub const ISOGENY_MAP_TO_G1 : IsogenyMap<'_, SwuIsoConfig, g1::Config, > = IsogenyMap {

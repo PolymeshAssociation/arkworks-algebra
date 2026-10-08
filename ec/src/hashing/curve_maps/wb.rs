@@ -1,8 +1,7 @@
 use core::marker::PhantomData;
 
 use crate::{models::short_weierstrass::SWCurveConfig, CurveConfig};
-use ark_ff::batch_inversion;
-use ark_poly::{univariate::DensePolynomial, DenseUVPolynomial, Polynomial};
+use ark_ff::{batch_inversion, Field, One, Zero};
 
 use crate::{
     hashing::{map_to_curve_hasher::MapToCurve, HashToCurveError},
@@ -48,21 +47,88 @@ where
     fn apply(&self, domain_point: Affine<Domain>) -> Result<Affine<Codomain>, HashToCurveError> {
         match domain_point.xy() {
             Some((x, y)) => {
-                let x_num = DensePolynomial::from_coefficients_slice(self.x_map_numerator);
-                let x_den = DensePolynomial::from_coefficients_slice(self.x_map_denominator);
-
-                let y_num = DensePolynomial::from_coefficients_slice(self.y_map_numerator);
-                let y_den = DensePolynomial::from_coefficients_slice(self.y_map_denominator);
-
-                let mut v: [BaseField<Domain>; 2] = [x_den.evaluate(&x), y_den.evaluate(&x)];
+                let mut v: [BaseField<Domain>; 2] = [
+                    horner(self.x_map_denominator, &x),
+                    horner(self.y_map_denominator, &x),
+                ];
+                // The kernel maps to the identity, whatever `ZeroFlag` encodes it as.
+                if v[0].is_zero() {
+                    return Ok(Affine::identity());
+                }
                 batch_inversion(&mut v);
-                let img_x = x_num.evaluate(&x) * v[0];
-                let img_y = (y_num.evaluate(&x) * y) * v[1];
+                let img_x = horner(self.x_map_numerator, &x) * v[0];
+                let img_y = (horner(self.y_map_numerator, &x) * y) * v[1];
                 Ok(Affine::new_unchecked(img_x, img_y))
             },
             None => Ok(Affine::identity()),
         }
     }
+
+    /// Apply the isogeny to a point in Jacobian coordinates without an inversion. With `k` the
+    /// largest degree among the four polynomials, each polynomial `f` of degree `d` is evaluated
+    /// as `F = \sum_i{c_i * X^i * Z^{2(k - i)}} = Z^{2k} * f(x)` for affine `x = X / Z^2`, so
+    /// the image is `x' = F_xn / F_xd`, `y' = Y * F_yn / (Z^3 * F_yd)`, and it is returned as
+    /// `(F_xn * F_xd * F_yd^2 * Z^6, Y * F_yn * F_xd^3 * F_yd^2 * Z^6, F_xd * F_yd * Z^3)`. The
+    /// four polynomials run Horner's rule in one loop, where step `j` multiplies the coefficient
+    /// `j` below the top by the shared power `Z^{2j}`.
+    fn apply_projective(&self, domain_point: Projective<Domain>) -> Projective<Codomain> {
+        let Projective { x, y, z } = domain_point;
+        let polys = [
+            self.x_map_numerator,
+            self.x_map_denominator,
+            self.y_map_numerator,
+            self.y_map_denominator,
+        ];
+        let degrees = polys.map(|coeffs| coeffs.len().saturating_sub(1));
+        let k = degrees.into_iter().max().unwrap_or(0);
+
+        let z2 = z.square();
+        // `accs[i] = \sum_j{c_j X^j Z^{2(d_i - j)}}` for degree `d_i`.
+        // `pads[i] = Z^{2(k - d_i)}`.
+        let mut accs = polys.map(|coeffs| coeffs.last().copied().unwrap_or_else(Zero::zero));
+        let mut pads = [BaseField::<Domain>::one(); 4];
+        let mut z2_power = BaseField::<Domain>::one();
+        for j in 1..=k {
+            z2_power *= z2;
+            for i in 0..4 {
+                if j <= degrees[i] {
+                    accs[i] = accs[i] * x + polys[i][degrees[i] - j] * z2_power;
+                }
+                if j == k - degrees[i] {
+                    pads[i] = z2_power;
+                }
+            }
+        }
+        for i in 0..4 {
+            if degrees[i] < k {
+                accs[i] *= pads[i];
+            }
+        }
+
+        let [x_num, x_den, y_num, y_den] = accs;
+        let y_num = y_num * y;
+        let y_den = y_den * z2 * z;
+
+        let z_out = x_den * y_den;
+        let x_out = x_num * y_den * z_out;
+        let y_out = y_num * x_den * z_out.square();
+        Projective::new_unchecked(x_out, y_out, z_out)
+    }
+}
+
+/// Evaluates the polynomial with coefficients `coeffs`, lowest degree first, at `x` by Horner's
+/// rule. From [arkworks-rs/algebra#1135](https://github.com/arkworks-rs/algebra/pull/1135).
+fn horner<F: Field>(coeffs: &[F], x: &F) -> F {
+    let mut iter = coeffs.iter().rev();
+    let mut acc = match iter.next() {
+        Some(c) => *c,
+        None => return F::zero(),
+    };
+    for c in iter {
+        acc *= x;
+        acc += c;
+    }
+    acc
 }
 
 /// Trait defining the necessary parameters for the WB hash-to-curve method.
@@ -113,10 +179,21 @@ impl<P: WBConfig> MapToCurve<Projective<P>> for WBMap<P> {
         let point_on_isogenious_curve = SWUMap::map_to_curve(element).unwrap();
         P::ISOGENY_MAP.apply(point_on_isogenious_curve)
     }
+
+    /// Maps both elements to the isogenous curve through one shared inversion, adds the points
+    /// and applies the isogeny once. Equal to the sum of the two `map_to_curve` images since an
+    /// isogeny is a group homomorphism.
+    fn map_to_curve_sum(
+        u0: <Affine<P> as AffineRepr>::BaseField,
+        u1: <Affine<P> as AffineRepr>::BaseField,
+    ) -> Result<Projective<P>, HashToCurveError> {
+        let (p0, p1) = SWUMap::<P::IsogenousCurve>::map_to_curve_pair(u0, u1);
+        Ok(P::ISOGENY_MAP.apply_projective(p0.into_group() + p1))
+    }
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use crate::{
         hashing::{
             curve_maps::{
@@ -142,7 +219,7 @@ mod test {
     const F127_ONE: F127 = MontFp!("1");
 
     /// The struct defining our parameters for the target curve of hashing
-    struct TestWBF127MapToCurveConfig;
+    pub(crate) struct TestWBF127MapToCurveConfig;
 
     impl CurveConfig for TestWBF127MapToCurveConfig {
         const COFACTOR: &[u64] = &[1];
@@ -173,7 +250,7 @@ mod test {
     /// E_isogenous : Elliptic Curve defined by y^2 = x^3 + 109*x + 124 over Finite
     /// Field of size 127
     /// Isogenous to E : y^2 = x^3 + 3
-    struct TestSWU127MapToIsogenousCurveConfig;
+    pub(crate) struct TestSWU127MapToIsogenousCurveConfig;
 
     /// First we define the isogenous curve
     /// sage: E_isogenous.order()
@@ -335,6 +412,42 @@ mod test {
         assert!(
             hash_result.is_on_curve(),
             "hash results into a point off the curve"
+        );
+    }
+
+    /// `map_to_curve_sum` adds on the isogenous curve and applies the isogeny once. It must equal
+    /// the sum of the two `map_to_curve` images for every pair of inputs, including equal inputs
+    /// and pairs whose images cancel.
+    #[test]
+    fn map_to_curve_sum_matches_separate_maps() {
+        use crate::{hashing::map_to_curve_hasher::MapToCurve, CurveGroup, PrimeGroup};
+        use ark_ff::Zero;
+
+        type Map = WBMap<TestWBF127MapToCurveConfig>;
+        let mut cancelling_pairs = 0;
+        for i in 0..127u64 {
+            for j in 0..127u64 {
+                let (u0, u1) = (F127::from(i), F127::from(j));
+                let expected: Projective<TestWBF127MapToCurveConfig> =
+                    Map::map_to_curve(u0).unwrap() + Map::map_to_curve(u1).unwrap();
+                let got = Map::map_to_curve_sum(u0, u1).unwrap();
+                assert_eq!(got.into_affine(), expected.into_affine(), "u0 = {i}, u1 = {j}");
+                if expected == Projective::zero() {
+                    cancelling_pairs += 1;
+                }
+            }
+        }
+        assert!(cancelling_pairs > 0);
+
+        let identity = Projective::<TestSWU127MapToIsogenousCurveConfig>::zero();
+        assert_eq!(
+            TestWBF127MapToCurveConfig::ISOGENY_MAP.apply_projective(identity),
+            Projective::<TestWBF127MapToCurveConfig>::zero()
+        );
+        let g = Projective::<TestSWU127MapToIsogenousCurveConfig>::generator();
+        assert_eq!(
+            TestWBF127MapToCurveConfig::ISOGENY_MAP.apply_projective(g).into_affine(),
+            TestWBF127MapToCurveConfig::ISOGENY_MAP.apply(g.into_affine()).unwrap()
         );
     }
 }

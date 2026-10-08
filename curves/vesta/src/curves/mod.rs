@@ -6,6 +6,7 @@ use ark_std::io::{Read, Write};
 
 #[cfg(test)]
 mod tests;
+mod swu_iso;
 
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 pub struct VestaConfig;
@@ -163,3 +164,10 @@ pub const G_GENERATOR_X: Fq = MontFp!("-1");
 /// G_GENERATOR_Y = 2
 /// Encoded in Montgomery form, so the value here is 2R mod p.
 pub const G_GENERATOR_Y: Fq = MontFp!("2");
+
+impl ark_ec::hashing::curve_maps::wb::WBConfig for VestaConfig {
+    type IsogenousCurve = swu_iso::SwuIsoConfig;
+
+    const ISOGENY_MAP: ark_ec::hashing::curve_maps::wb::IsogenyMap<'static, Self::IsogenousCurve, Self> =
+        swu_iso::ISOGENY_MAP_TO_VESTA;
+}

@@ -37,6 +37,10 @@ pub struct Map {
 pub struct Vector {
     #[serde(rename = "P")]
     pub p: P,
+    #[serde(rename = "Q0", default)]
+    pub q0: Option<P>,
+    #[serde(rename = "Q1", default)]
+    pub q1: Option<P>,
     pub msg: String,
     pub u: Vec<String>,
 }
