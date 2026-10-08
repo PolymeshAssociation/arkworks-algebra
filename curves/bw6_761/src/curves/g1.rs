@@ -54,6 +54,27 @@ impl SWCurveConfig for Config {
         use ark_ff::Zero;
         Self::BaseField::zero()
     }
+
+    /// GLV ([`GLVConfig::glv_mul_projective`]) for `Mul<ScalarField>`, exact only on the order-`r`
+    /// subgroup. `mul_bigint` keeps the default `double_and_add`, exact on every curve point.
+    #[inline]
+    fn mul_projective_scalar_field(
+        p: &Projective<Self>,
+        scalar: &Self::ScalarField,
+    ) -> Projective<Self> {
+        <Self as GLVConfig>::glv_mul_projective(*p, *scalar)
+    }
+
+    /// [`Self::mul_projective_scalar_field`] for an affine base.
+    #[inline]
+    fn mul_affine_scalar_field(p: &Affine<Self>, scalar: &Self::ScalarField) -> Projective<Self> {
+        <Self as GLVConfig>::glv_mul_affine_projective(*p, *scalar)
+    }
+
+    #[inline]
+    fn is_in_correct_subgroup_assuming_on_curve(p: &G1Affine) -> bool {
+        super::is_in_subgroup_glv_row(p)
+    }
 }
 
 impl GLVConfig for Config {

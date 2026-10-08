@@ -2,9 +2,9 @@ use ark_ec::{
     bls12,
     bls12::Bls12Config,
     hashing::curve_maps::wb::{IsogenyMap, WBConfig},
-    scalar_mul::glv::GLVConfig,
+    scalar_mul::{double_and_add, double_and_add_affine, glv::GLVConfig},
     short_weierstrass::{Affine, Projective, SWCurveConfig},
-    AffineRepr, CurveConfig, CurveGroup, PrimeGroup,
+    AffineRepr, CurveConfig, CurveGroup,
 };
 
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
@@ -71,6 +71,27 @@ impl SWCurveConfig for Config {
         Self::BaseField::zero()
     }
 
+    /// GLV ([`GLVConfig::glv_mul_projective`]) for `Mul<ScalarField>`, exact only on the order-`r`
+    /// subgroup. `mul_bigint` keeps the default `double_and_add`, exact on every curve point.
+    #[inline]
+    fn mul_projective_scalar_field(
+        p: &Projective<Self>,
+        scalar: &Self::ScalarField,
+    ) -> Projective<Self> {
+        <Self as GLVConfig>::glv_mul_projective(*p, *scalar)
+    }
+
+    /// [`Self::mul_projective_scalar_field`] for an affine base.
+    #[inline]
+    fn mul_affine_scalar_field(p: &Affine<Self>, scalar: &Self::ScalarField) -> Projective<Self> {
+        <Self as GLVConfig>::glv_mul_affine_projective(*p, *scalar)
+    }
+
+    /// Scott, <https://eprint.iacr.org/2021/1130>, section 4: `psi(P) == [x]P`.
+    fn is_in_correct_subgroup_assuming_on_curve(point: &G2Affine) -> bool {
+        double_and_add_affine(point, crate::Config::X) == p_power_endomorphism(point)
+    }
+
     #[inline]
     fn clear_cofactor(p: &G2Affine) -> G2Affine {
         // Based on Section 4.1 of https://eprint.iacr.org/2017/419.pdf
@@ -90,9 +111,9 @@ impl SWCurveConfig for Config {
         let mut tmp = x_p;
         tmp += &psi_p;
 
-        // tmp2 = [x^2]P + [x]ψ(P)
-        let mut tmp2: Projective<Config> = tmp;
-        tmp2 = tmp2.mul_bigint(x);
+        // tmp2 = [x^2]P + [x]ψ(P). `tmp` is not in the order-r subgroup, so this
+        // [x] multiplication must use double-and-add rather than GLV.
+        let tmp2 = double_and_add(&tmp, x);
 
         // add up all the terms
         psi2_p2 += tmp2;
@@ -222,11 +243,10 @@ mod test {
     use super::*;
     use ark_std::{rand::Rng, UniformRand};
 
-    fn sample_unchecked() -> Affine<g2::Config> {
-        let mut rng = ark_std::test_rng();
+    fn sample_unchecked(rng: &mut impl Rng) -> Affine<g2::Config> {
         loop {
-            let x1 = Fq::rand(&mut rng);
-            let x2 = Fq::rand(&mut rng);
+            let x1 = Fq::rand(rng);
+            let x2 = Fq::rand(rng);
             let greatest = rng.gen();
             let x = Fq2::new(x1, x2);
 
@@ -238,7 +258,8 @@ mod test {
 
     #[test]
     fn test_psi_2() {
-        let p = sample_unchecked();
+        let mut rng = ark_std::test_rng();
+        let p = sample_unchecked(&mut rng);
         let psi_p = p_power_endomorphism(&p);
         let psi2_p_composed = p_power_endomorphism(&psi_p);
         let psi2_p_optimised = double_p_power_endomorphism(&p.into());
@@ -248,6 +269,7 @@ mod test {
 
     #[test]
     fn test_cofactor_clearing() {
+        let mut rng = ark_std::test_rng();
         let h_eff = &[
             0x1e34800000000000,
             0xcf664765b0000003,
@@ -262,7 +284,7 @@ mod test {
         ];
         const SAMPLES: usize = 10;
         for _ in 0..SAMPLES {
-            let p: Affine<g2::Config> = sample_unchecked();
+            let p: Affine<g2::Config> = sample_unchecked(&mut rng);
             let optimised = p.clear_cofactor();
             let naive = g2::Config::mul_affine(&p, h_eff);
             assert_eq!(optimised.into_group(), naive);

@@ -148,11 +148,24 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     /// Sets `a = a - b`.
     #[inline(always)]
     fn sub_assign(a: &mut Fp<MontBackend<Self, N>, N>, b: &Fp<MontBackend<Self, N>, N>) {
-        // If `other` is larger than `self`, add the modulus to self first.
-        if b.0 > a.0 {
-            a.0.add_with_carry(&Self::MODULUS);
+        if N > 4 {
+            // On underflow add the modulus back, masked rather than branched (faster for 6
+            // limbs, slower for 4); both inputs are canonical, so the result is below the
+            // modulus. After Zakura #484 (https://github.com/zakura-core/common/pull/484).
+            let borrow = a.0.sub_with_borrow(&b.0);
+            let mask = 0u64.wrapping_sub(borrow as u64);
+            let mut m = Self::MODULUS;
+            for limb in m.0.iter_mut() {
+                *limb &= mask;
+            }
+            a.0.add_with_carry(&m);
+        } else {
+            // If `other` is larger than `self`, add the modulus to self first.
+            if b.0 > a.0 {
+                a.0.add_with_carry(&Self::MODULUS);
+            }
+            a.0.sub_with_borrow(&b.0);
         }
-        a.0.sub_with_borrow(&b.0);
     }
 
     /// Sets `a = 2 * a`.
@@ -187,6 +200,11 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     #[unroll_for_loops(12)]
     #[inline(always)]
     fn mul_assign(a: &mut Fp<MontBackend<Self, N>, N>, b: &Fp<MontBackend<Self, N>, N>) {
+        #[cfg(target_family = "wasm")]
+        if <Self as super::mont29::Mont29Params<N>>::APPLIES {
+            mont29_mul_assign::<Self, N>(a, b);
+            return;
+        }
         // No-carry optimisation applied to CIOS
         if Self::CAN_USE_NO_CARRY_MUL_OPT {
             if N <= 6
@@ -256,6 +274,11 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     #[inline(always)]
     #[unroll_for_loops(12)]
     fn square_in_place(a: &mut Fp<MontBackend<Self, N>, N>) {
+        #[cfg(target_family = "wasm")]
+        if <Self as super::mont29::Mont29Params<N>>::APPLIES {
+            mont29_square_in_place::<Self, N>(a);
+            return;
+        }
         if N == 1 {
             // We default to multiplying with `a` using the `Mul` impl
             // for the N == 1 case
@@ -326,11 +349,11 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
 
     /// Computes `a^{-1}` if `a` is not zero.
     ///
-    /// Variable-time in `a`. For 4-limb fields this is the Bernstein-Yang 62-bit divstep
-    /// inversion (safegcd); otherwise the binary extended Euclidean algorithm of
+    /// Variable-time in `a`. For 4- and 6-limb fields this is the Bernstein-Yang 62-bit
+    /// divstep inversion (safegcd); otherwise the binary extended Euclidean algorithm of
     /// `Fp::bea_inverse`, which is also the divstep path's test oracle.
     fn inverse(a: &Fp<MontBackend<Self, N>, N>) -> Option<Fp<MontBackend<Self, N>, N>> {
-        if N == 4 {
+        if modinv62::supports(N) {
             return modinv62::invert::<Self, N>(&a.0).map(Fp::new_unchecked);
         }
         a.bea_inverse()
@@ -385,6 +408,13 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         a: &[Fp<MontBackend<Self, N>, N>; M],
         b: &[Fp<MontBackend<Self, N>, N>; M],
     ) -> Fp<MontBackend<Self, N>, N> {
+        // On wasm32 the fused loop below emulates every 64x64->128 product, and separate
+        // radix-2^29 products are faster (BN254 Fq two terms: 78 ns against 107 ns in wasmtime).
+        #[cfg(target_family = "wasm")]
+        if <Self as super::mont29::Mont29Params<N>>::APPLIES {
+            return a.iter().zip(b).map(|(a, b)| *a * b).sum();
+        }
+
         // Adapted from https://github.com/zkcrypto/bls12_381/pull/84 by @str4d.
 
         // For a single `a x b` multiplication, operand scanning (schoolbook) takes each
@@ -403,9 +433,13 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         //   intermediate results and eventually having twice as many limbs.
 
         let modulus_size = Self::MODULUS.const_num_bits() as usize;
+        // A chunk of `M` products stays below `2^64 R` before each shift and ends below
+        // `2p` while `(M + 1) p < R`, which `M = 2^s - 1` meets for `s >= 2` spare bits.
+        let spare_bits = N * 64 - modulus_size;
+        let chunk_size = (1usize << spare_bits.min(16)) - 1;
         if modulus_size >= 64 * N - 1 {
             a.iter().zip(b).map(|(a, b)| *a * b).sum()
-        } else if M == 2 {
+        } else if M <= chunk_size {
             // Algorithm 2, line 2
             let result = (0..N).fold(BigInt::zero(), |mut result, j| {
                 // Algorithm 2, line 3
@@ -440,8 +474,6 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
             );
             result
         } else {
-            let chunk_size = 2 * (N * 64 - modulus_size) - 1;
-            // chunk_size is at least 1, since MODULUS_BIT_SIZE is at most N * 64 - 1.
             a.chunks(chunk_size)
                 .zip(b.chunks(chunk_size))
                 .map(|(a, b)| {
@@ -504,6 +536,30 @@ pub const fn inv<T: MontConfig<N>, const N: usize>() -> u64 {
         inv = inv.wrapping_mul(T::MODULUS.0[0]);
     });
     inv.wrapping_neg()
+}
+
+/// `a *= b` by the radix-`2^29` Montgomery multiplication of [`super::mont29`], the
+/// wasm32 path of [`MontConfig::mul_assign`] (also emitted by the `MontConfig` derive).
+/// Requires `N == 4` and `MODULUS < 2^255`.
+#[doc(hidden)]
+#[inline(always)]
+pub fn mont29_mul_assign<T: MontConfig<N>, const N: usize>(
+    a: &mut Fp<MontBackend<T, N>, N>,
+    b: &Fp<MontBackend<T, N>, N>,
+) {
+    debug_assert!(<T as super::mont29::Mont29Params<N>>::APPLIES);
+    let r = super::mont29::mul::<T, N>(&a.0, &b.0);
+    (a.0).0[..4].copy_from_slice(&r);
+}
+
+/// `a = a^2` by the radix-`2^29` Montgomery squaring of [`super::mont29`]; see
+/// [`mont29_mul_assign`].
+#[doc(hidden)]
+#[inline(always)]
+pub fn mont29_square_in_place<T: MontConfig<N>, const N: usize>(a: &mut Fp<MontBackend<T, N>, N>) {
+    debug_assert!(<T as super::mont29::Mont29Params<N>>::APPLIES);
+    let r = super::mont29::square::<T, N>(&a.0);
+    (a.0).0[..4].copy_from_slice(&r);
 }
 
 #[inline]

@@ -26,6 +26,7 @@ hex = "^0.4.0"
 [features]
 default = [ "curve" ]
 std = [ "ark-std/std", "ark-ff/std", "ark-ec/std" ]
+parallel = [ "std", "ark-ff/parallel", "ark-ec/parallel", "ark-std/parallel" ]
 
 curve = [ "scalar_field" ]
 scalar_field = []

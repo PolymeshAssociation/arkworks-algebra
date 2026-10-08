@@ -204,9 +204,127 @@ pub fn find_relaxed_naf(num: &[u64]) -> Vec<i8> {
     res
 }
 
+/// Width-`w` non-adjacent form of `num` (little-endian digits). Each digit is
+/// zero or an odd integer in `(-2^(w-1), 2^(w-1))`, and every nonzero digit is
+/// followed by at least `w - 1` zeros. Requires `2 <= w <= 8`.
+///
+/// Hankerson, Menezes, Vanstone, Guide to Elliptic Curve Cryptography (2004),
+/// Algorithm 3.35 (computing the width-`w` NAF). The `w = 2` case is `find_naf`.
+pub fn find_wnaf(num: &[u64], w: usize) -> Vec<i8> {
+    assert!((2..=8).contains(&w), "wNAF width {w} outside 2..=8");
+    // One spare limb takes the carry of a negative digit's correction when `num` is within
+    // `2^(w-1)` of `2^(64 * num.len())`.
+    let mut num = num.to_vec();
+    num.push(0);
+    let mut res = vec![];
+    let width = 1i64 << w; // 2^w
+    let half = 1i64 << (w - 1); // 2^(w-1)
+
+    let is_non_zero = |num: &[u64]| num.iter().any(|&x| x != 0);
+    let is_odd = |num: &[u64]| num[0] & 1 == 1;
+    let sub_noborrow = |num: &mut [u64], z: u64| {
+        num.iter_mut()
+            .zip(ark_std::iter::once(z).chain(ark_std::iter::repeat(0)))
+            .fold(0, |borrow, (a, b)| sbb(a, b, borrow));
+    };
+    let add_nocarry = |num: &mut [u64], z: u64| {
+        num.iter_mut()
+            .zip(ark_std::iter::once(z).chain(ark_std::iter::repeat(0)))
+            .fold(0, |carry, (a, b)| adc(a, b, carry));
+    };
+    let div2 = |num: &mut [u64]| {
+        num.iter_mut().rev().fold(0, |carry, x| {
+            let next_carry = *x << 63;
+            *x = (*x >> 1) | carry;
+            next_carry
+        });
+    };
+
+    while is_non_zero(&num) {
+        let z = if is_odd(&num) {
+            // Signed residue mod 2^w: the low w bits of the low limb, mapped into
+            // (-2^(w-1), 2^(w-1)). Subtracting it clears the low w bits.
+            let m = (num[0] as i64) & (width - 1);
+            let z = if m >= half { m - width } else { m };
+            if z >= 0 {
+                sub_noborrow(&mut num, z as u64);
+            } else {
+                add_nocarry(&mut num, (-z) as u64);
+            }
+            z as i8
+        } else {
+            0
+        };
+        res.push(z);
+        div2(&mut num);
+    }
+
+    res
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "outside 2..=8")]
+    fn test_find_wnaf_rejects_width_one() {
+        find_wnaf(&[3], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside 2..=8")]
+    fn test_find_wnaf_rejects_width_nine() {
+        find_wnaf(&[3], 9);
+    }
+
+    #[test]
+    fn test_find_wnaf_correctness() {
+        use ark_std::{rand::Rng, test_rng};
+        let mut rng = test_rng();
+        let mut inputs: Vec<Vec<u64>> = (0..2000)
+            .map(|_| {
+                let limbs: usize = rng.gen_range(1..=4);
+                (0..limbs).map(|_| rng.gen()).collect()
+            })
+            .collect();
+        // Values within `2^7` of a limb boundary, where a negative digit carries out of the top
+        // limb.
+        for limbs in 1..=4 {
+            for j in 1..=130u64 {
+                let mut num = vec![u64::MAX; limbs];
+                num[0] = u64::MAX - (j - 1);
+                inputs.push(num);
+            }
+        }
+        for num in inputs {
+            for w in 2..=8 {
+                let wnaf = find_wnaf(&num, w);
+                // Reconstruct the value as a big integer and compare to `num`.
+                let mut acc = num_bigint::BigInt::from(0);
+                for (i, &d) in wnaf.iter().enumerate() {
+                    acc += num_bigint::BigInt::from(d) * (num_bigint::BigInt::from(1) << i);
+                }
+                let mut expected = num_bigint::BigInt::from(0);
+                for (i, &limb) in num.iter().enumerate() {
+                    expected +=
+                        num_bigint::BigInt::from(limb) * (num_bigint::BigInt::from(1) << (64 * i));
+                }
+                assert_eq!(acc, expected, "w={w}");
+                // Non-adjacency: each nonzero digit is followed by >= w-1 zeros.
+                let mut gap = w;
+                for &d in &wnaf {
+                    if d != 0 {
+                        assert!(gap >= w - 1);
+                        assert_eq!(d & 1, 1);
+                        gap = 0;
+                    } else {
+                        gap += 1;
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_adc() {

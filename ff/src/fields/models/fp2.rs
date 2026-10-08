@@ -1,5 +1,5 @@
 use super::quadratic_extension::{QuadExtConfig, QuadExtField};
-use crate::{fields::PrimeField, CyclotomicMultSubgroup, Zero};
+use crate::{fields::PrimeField, AdditiveGroup, CyclotomicMultSubgroup, Zero};
 use core::{marker::PhantomData, ops::Not};
 
 /// Trait that specifies constants and methods for defining degree-two extension fields.
@@ -85,8 +85,12 @@ impl<P: Fp2Config> QuadExtConfig for Fp2ConfigWrapper<P> {
         P::sub_and_mul_fp_by_nonresidue(y, x)
     }
 
+    /// The coefficient is `NONRESIDUE^{(p^power - 1)/2}`, which is `1` for an even `power` and,
+    /// by Euler's criterion on the nonresidue, `-1` for an odd one.
     fn mul_base_field_by_frob_coeff(fe: &mut Self::BaseField, power: usize) {
-        *fe *= &Self::FROBENIUS_COEFF_C1[power % Self::DEGREE_OVER_BASE_PRIME_FIELD];
+        if power % 2 == 1 {
+            fe.neg_in_place();
+        }
     }
 }
 
@@ -117,6 +121,25 @@ impl<P: Fp2Config> Fp2<P> {
     pub fn mul_assign_by_fp(&mut self, other: &P::Fp) {
         self.c0 *= other;
         self.c1 *= other;
+    }
+
+    /// Multiplies by a Frobenius coefficient of a tower over `Fp2`, with one `Fp` product per
+    /// coordinate when the coefficient lies in `Fp` or `u * Fp`. Every even-power coefficient of
+    /// the BN and BLS12 towers lies in `Fp`, since `p = 1 (mod 6)` puts the sixth roots of unity
+    /// there. After Zakura [`frobenius_map_2`](https://github.com/zakura-core/common/blob/572299ac8bff1cc1e370a89f85f18e7d12cb03cd/crates/bls12_381/src/pairings.rs#L62-L88).
+    #[inline(always)]
+    pub(crate) fn mul_assign_by_frob_coeff(&mut self, coeff: &Self) {
+        if coeff.c1.is_zero() {
+            self.mul_assign_by_fp(&coeff.c0);
+        } else if coeff.c0.is_zero() {
+            // (a0 + a1 u) * c u = NONRESIDUE * c a1 + c a0 u.
+            let mut c0 = self.c1 * coeff.c1;
+            P::mul_fp_by_nonresidue_in_place(&mut c0);
+            self.c1 = self.c0 * coeff.c1;
+            self.c0 = c0;
+        } else {
+            *self *= coeff;
+        }
     }
 }
 

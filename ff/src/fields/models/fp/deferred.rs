@@ -18,7 +18,7 @@
 //!   <https://github.com/zakura-core/common/blob/98846ee/crates/pasta_curves/src/deferred.rs>
 //! - Their [blog](https://zakura.com/engineering/deferred-montgomery-products/) on the technique
 
-use super::{Fp, MontBackend, MontConfig};
+use super::{mont29::Mont29Params, Fp, MontBackend, MontConfig};
 use crate::{biginteger::arithmetic as fa, const_helpers::MulBuffer, BigInt};
 use ark_std::marker::PhantomData;
 
@@ -117,20 +117,27 @@ impl<T: MontConfig<N>, const N: usize> MontAccumulator<T, N> {
 
 /// Shortest inner product that takes the deferred path. Below it `reduce` costs more than the
 /// per-term reductions it saves: on an Apple M3 Max a Pallas naive sum is 1.7x faster at 1 term
-/// and 1.02x at 2, and in wasmtime, where the naive multiply also emulates its 64-bit products,
-/// 1.35x faster at 1 term and 1.08x slower at 2.
-const MIN_DEFERRED_LEN: usize = if cfg!(target_family = "wasm") { 2 } else { 3 };
+/// and 1.02x at 2. On wasm32, for a field whose naive multiply takes the radix-`2^29` path
+/// ([`Mont29Params::APPLIES`]), the accumulator emulates its 64-bit products, so in wasmtime the
+/// naive sum is 1.5x faster at 2 terms, 1.2x at 4, level at 8 and 1.1x slower at 16.
+const fn min_deferred_len<T: MontConfig<N>, const N: usize>() -> usize {
+    if cfg!(target_family = "wasm") && <T as Mont29Params<N>>::APPLIES {
+        8
+    } else {
+        3
+    }
+}
 
 /// `sum(a_i * b_i)` with one Montgomery reduction for the whole sum. Falls back to the naive
 /// sum when the accumulator's bound does not hold ([`MontConfig::CAN_DEFER`]) or the sum is
-/// shorter than [`MIN_DEFERRED_LEN`].
+/// shorter than [`min_deferred_len`].
 #[inline]
 pub(super) fn inner_product<T: MontConfig<N>, const N: usize>(
     a: &[Fp<MontBackend<T, N>, N>],
     b: &[Fp<MontBackend<T, N>, N>],
 ) -> Fp<MontBackend<T, N>, N> {
     assert_eq!(a.len(), b.len());
-    if !T::CAN_DEFER || a.len() < MIN_DEFERRED_LEN {
+    if !T::CAN_DEFER || a.len() < min_deferred_len::<T, N>() {
         return a.iter().zip(b).map(|(a, b)| *a * b).sum();
     }
     deferred_sum::<T, N>(a, b)

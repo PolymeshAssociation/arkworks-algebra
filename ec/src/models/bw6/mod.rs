@@ -101,8 +101,16 @@ pub trait BW6Config: 'static + Eq + Sized {
             })
             .unzip::<_, _, Vec<_>, Vec<_>>();
 
+        // Serial builds run every pair in one chunk (no duplicated squarings), parallel
+        // builds split into chunks so the loops run concurrently.
+        let chunk_size = if cfg!(feature = "parallel") {
+            4
+        } else {
+            pairs_1.len().max(1)
+        };
+
         // compute f_u which we can later re-use for the 2nd loop
-        let mut f_u = cfg_chunks_mut!(pairs_1, 4)
+        let mut f_u = cfg_chunks_mut!(pairs_1, chunk_size)
             .map(|pairs| {
                 let mut f = <BW6<Self> as Pairing>::TargetField::one();
                 for i in BitIteratorBE::without_leading_zeros(Self::ATE_LOOP_COUNT_1).skip(1) {
@@ -129,19 +137,27 @@ pub trait BW6Config: 'static + Eq + Sized {
             f_u_inv = f_u.cyclotomic_inverse().unwrap();
         }
 
+        // `f_u` is the product over all pairs, so only the first chunk carries it; the
+        // others start at 1.
+        let one = <BW6<Self> as Pairing>::TargetField::one();
+
         // f_1(P) = f_(u+1)(P) = f_u(P) * l([u]q, q)(P)
-        let mut f_1 = cfg_chunks_mut!(pairs_1, 4)
-            .map(|pairs| {
-                pairs.iter_mut().fold(f_u, |mut f, (p, coeffs)| {
+        let mut f_1 = cfg_chunks_mut!(pairs_1, chunk_size)
+            .enumerate()
+            .map(|(chunk, pairs)| {
+                let init = if chunk == 0 { f_u } else { one };
+                pairs.iter_mut().fold(init, |mut f, (p, coeffs)| {
                     BW6::<Self>::ell(&mut f, &coeffs.next().unwrap(), &p.0);
                     f
                 })
             })
             .product::<<BW6<Self> as Pairing>::TargetField>();
 
-        let mut f_2 = cfg_chunks_mut!(pairs_2, 4)
-            .map(|pairs| {
-                let mut f = f_u;
+        let mut f_2 = cfg_chunks_mut!(pairs_2, chunk_size)
+            .enumerate()
+            .map(|(chunk, pairs)| {
+                let first = chunk == 0;
+                let mut f = if first { f_u } else { one };
                 for i in (1..Self::ATE_LOOP_COUNT_2.len()).rev() {
                     f.square_in_place();
 
@@ -150,12 +166,11 @@ pub trait BW6Config: 'static + Eq + Sized {
                     }
 
                     let bit = Self::ATE_LOOP_COUNT_2[i - 1];
-                    if bit == 1 {
-                        f *= &f_u;
-                    } else if bit == -1 {
-                        f *= &f_u_inv;
-                    } else {
+                    if bit == 0 {
                         continue;
+                    }
+                    if first {
+                        f *= if bit == 1 { &f_u } else { &f_u_inv };
                     }
                     for &mut (p, ref mut coeffs) in pairs.iter_mut() {
                         BW6::<Self>::ell(&mut f, &coeffs.next().unwrap(), &p.0);

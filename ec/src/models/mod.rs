@@ -6,6 +6,8 @@ pub mod bw6;
 pub mod mnt4;
 pub mod mnt6;
 
+pub(crate) mod fp12_lines;
+
 pub mod double_odd;
 pub mod short_weierstrass;
 pub mod twisted_edwards;

@@ -3,8 +3,8 @@ use ark_ec::{
     short_weierstrass::{Affine, Projective},
     AffineRepr, CurveGroup, PrimeGroup,
 };
-use ark_ff::{BigInteger, PrimeField, Zero, One, AdditiveGroup};
-use ark_std::{ops::Mul, UniformRand, test_rng, vec::Vec};
+use ark_ff::{AdditiveGroup, BigInteger, One, PrimeField, Zero};
+use ark_std::{ops::Mul, test_rng, vec::Vec, UniformRand};
 use std::time::Instant;
 
 pub fn glv_scalar_decomposition<P: GLVConfig>() {
@@ -29,8 +29,8 @@ pub fn glv_scalar_decomposition<P: GLVConfig>() {
         }
 
         // check if k1 and k2 are indeed small.
-        // We add 2 to the expected max bits to account for the slightly looser bounds 
-        // in some curves like secp256k1/secq256k1 where the lattice vectors can result 
+        // We add 2 to the expected max bits to account for the slightly looser bounds
+        // in some curves like secp256k1/secq256k1 where the lattice vectors can result
         // in a decomposed scalar of up to 130 bits.
         let expected_max_bits = P::ScalarField::MODULUS_BIT_SIZE.div_ceil(2) + 2;
         assert!(
@@ -135,7 +135,10 @@ pub fn jsf_recodes_full_width_limbs<P: ark_ec::short_weierstrass::SWCurveConfig 
         (u128::MAX, u128::MAX),
         (u128::MAX, 1),
         (0x8000_0000_0000_0000_0000_0000_0000_0000, u128::MAX),
-        (0xDEAD_BEEF_DEAD_BEEF_FFFF_FFFF_FFFF_FFFF, 0xFFFF_FFFF_0000_0000_FFFF_FFFF_FFFF_FFFF),
+        (
+            0xDEAD_BEEF_DEAD_BEEF_FFFF_FFFF_FFFF_FFFF,
+            0xFFFF_FFFF_0000_0000_FFFF_FFFF_FFFF_FFFF,
+        ),
     ];
     let to_limbs = |x: u128| [x as u64, (x >> 64) as u64];
     for (k1, k2) in cases {
@@ -145,7 +148,11 @@ pub fn jsf_recodes_full_width_limbs<P: ark_ec::short_weierstrass::SWCurveConfig 
             a1 = a1.wrapping_mul(2).wrapping_add(u1 as i128 as u128);
             a2 = a2.wrapping_mul(2).wrapping_add(u2 as i128 as u128);
         }
-        assert_eq!((a1, a2), (k1, k2), "JSF reconstruction failed for ({k1:#x}, {k2:#x})");
+        assert_eq!(
+            (a1, a2),
+            (k1, k2),
+            "JSF reconstruction failed for ({k1:#x}, {k2:#x})"
+        );
     }
 }
 
@@ -153,7 +160,12 @@ pub fn jsf_mul_handles_edge_scalars<P: ark_ec::short_weierstrass::SWCurveConfig 
     let rng = &mut test_rng();
     let b1 = Projective::<P>::rand(rng);
     let b2 = Projective::<P>::rand(rng);
-    let specials = [P::ScalarField::zero(), P::ScalarField::one(), -P::ScalarField::one(), P::LAMBDA];
+    let specials = [
+        P::ScalarField::zero(),
+        P::ScalarField::one(),
+        -P::ScalarField::one(),
+        P::LAMBDA,
+    ];
     for &k1 in &specials {
         for &k2 in &specials {
             let naive = b1.mul(k1) + b2.mul(k2);
@@ -169,7 +181,12 @@ pub fn jsf_mul_handles_edge_scalars<P: ark_ec::short_weierstrass::SWCurveConfig 
 
 pub fn glv_mul_identity_point<P: ark_ec::short_weierstrass::SWCurveConfig + GLVConfig>() {
     let id = Projective::<P>::zero();
-    for k in [P::ScalarField::one(), -P::ScalarField::one(), P::LAMBDA, P::ScalarField::from(12345u64)] {
+    for k in [
+        P::ScalarField::one(),
+        -P::ScalarField::one(),
+        P::LAMBDA,
+        P::ScalarField::from(12345u64),
+    ] {
         assert_eq!(P::glv_mul_projective(id, k), Projective::<P>::zero());
         assert!(P::glv_mul_affine(id.into_affine(), k).is_zero());
     }
@@ -190,12 +207,13 @@ pub fn glv_mul_handles_edge_scalars<P: ark_ec::short_weierstrass::SWCurveConfig 
     }
 }
 
-/// `mul_bigint` on projective and affine bases against [`double_and_add`] for integer scalars
-/// below, at, and above `r`, and wider than the scalar field. On a curve with cofactor, also
-/// on points outside the order-`r` subgroup: `mul_bigint` for every scalar, and
-/// [`GLVConfig::glv_mul_projective_bigint`] / [`GLVConfig::glv_mul_affine_projective_bigint`] for
-/// `k < 2^128` and `k >= r`, the ranges where GLV is exact there. For `2^128 <= k < r` the
-/// endomorphism is not `[\lambda]` off the subgroup.
+/// `mul_bigint` and [`GLVConfig::glv_mul_projective_bigint`] /
+/// [`GLVConfig::glv_mul_affine_projective_bigint`] on projective and affine bases against
+/// [`double_and_add`] for integer scalars below, at, and above `r`, and wider than the scalar
+/// field. On a curve with cofactor, also `mul_bigint` on points outside the order-`r` subgroup
+/// for every scalar, and the GLV functions there for `k < 2^128` and `k >= r`, the ranges where
+/// GLV is exact there; for `2^128 <= k < r` the endomorphism is not `[\lambda]` off the
+/// subgroup.
 pub fn glv_mul_bigint_matches_double_and_add<
     P: ark_ec::short_weierstrass::SWCurveConfig + GLVConfig,
 >() {
@@ -251,8 +269,19 @@ pub fn glv_mul_bigint_matches_double_and_add<
     for p in &points {
         let a = p.into_affine();
         for k in &scalars {
-            assert_eq!(p.mul_bigint(k), double_and_add(p, k), "projective, k = {k:?}");
-            assert_eq!(a.mul_bigint(k), double_and_add_affine(&a, k), "affine, k = {k:?}");
+            let expected = double_and_add(p, k);
+            assert_eq!(p.mul_bigint(k), expected, "projective, k = {k:?}");
+            assert_eq!(a.mul_bigint(k), expected, "affine, k = {k:?}");
+            assert_eq!(
+                P::glv_mul_projective_bigint(p, k),
+                expected,
+                "GLV projective, k = {k:?}"
+            );
+            assert_eq!(
+                P::glv_mul_affine_projective_bigint(&a, k),
+                expected,
+                "GLV affine, k = {k:?}"
+            );
         }
     }
 
@@ -271,13 +300,19 @@ pub fn glv_mul_bigint_matches_double_and_add<
     for p in &points {
         let a = p.into_affine();
         for k in &scalars {
-            assert_eq!(p.mul_bigint(k), double_and_add(p, k), "off-subgroup projective, k = {k:?}");
-            assert_eq!(a.mul_bigint(k), double_and_add_affine(&a, k), "off-subgroup affine, k = {k:?}");
+            let expected = double_and_add(p, k);
+            assert_eq!(
+                p.mul_bigint(k),
+                expected,
+                "off-subgroup projective, k = {k:?}"
+            );
+            assert_eq!(a.mul_bigint(k), expected, "off-subgroup affine, k = {k:?}");
         }
         for k in scalars.iter().filter(|k| exact_off_subgroup(k)) {
+            let expected = double_and_add(p, k);
             assert_eq!(
                 P::glv_mul_projective_bigint(p, k),
-                double_and_add(p, k),
+                expected,
                 "off-subgroup GLV projective, k = {k:?}"
             );
             assert_eq!(
@@ -315,8 +350,12 @@ fn compare<T: PartialEq>(
 pub fn jsf_affine_vs_projective<P: ark_ec::short_weierstrass::SWCurveConfig + GLVConfig>() {
     let rng = &mut test_rng();
     let n = 1000;
-    let b1: Vec<Affine<P>> = (0..n).map(|_| Projective::<P>::rand(rng).into_affine()).collect();
-    let b2: Vec<Affine<P>> = (0..n).map(|_| Projective::<P>::rand(rng).into_affine()).collect();
+    let b1: Vec<Affine<P>> = (0..n)
+        .map(|_| Projective::<P>::rand(rng).into_affine())
+        .collect();
+    let b2: Vec<Affine<P>> = (0..n)
+        .map(|_| Projective::<P>::rand(rng).into_affine())
+        .collect();
     let k1: Vec<P::ScalarField> = (0..n).map(|_| P::ScalarField::rand(rng)).collect();
     let k2: Vec<P::ScalarField> = (0..n).map(|_| P::ScalarField::rand(rng)).collect();
 
@@ -493,7 +532,9 @@ pub fn eisenstein_same_scalar_batch<P: GLVConfig>() {
     // gate after two identity lanes (31 live); 40 and 64 clear it (38 and 62 live), so this curve's
     // order and lambda exercise the synchronized affine kernel, not only the fallback.
     for n in [0usize, 1, 2, 3, 8, 9, 10, 33, 40, 64] {
-        let mut points: Vec<_> = (0..n).map(|_| Projective::<P>::rand(rng).into_affine()).collect();
+        let mut points: Vec<_> = (0..n)
+            .map(|_| Projective::<P>::rand(rng).into_affine())
+            .collect();
         if n > 2 {
             points[1] = Affine::<P>::zero();
             points[2] = points[0];
@@ -527,7 +568,7 @@ fn cofactor_div(cofactor: &[u64], l: u64) -> Option<Vec<u64>> {
     (rem == 0).then_some(q)
 }
 
-/// Every GLV entry point against double-and-add on bases with no order-`r` component: points of
+/// The GLV entry points against double-and-add on bases with no order-`r` component: points of
 /// the cofactor group, points of each prime order below `2^16` dividing the cofactor (the order-3
 /// points `x = 0` and 2-torsion among them), their sums with subgroup points, and the identity,
 /// spread over more lanes than the batch-affine ladder's minimum. GLV is exact on every point
@@ -596,11 +637,26 @@ pub fn eisenstein_torsion_bases<P: GLVConfig>() {
     }
     for k in &scalars {
         let k_repr = k.into_bigint();
-        let expected: Vec<Projective<P>> = bases.iter().map(|b| double_and_add(b, k_repr)).collect();
-        assert_eq!(glv_mul_same_scalar::<P>(&affine, *k), expected, "glv_mul_same_scalar, k = {k}");
+        let expected: Vec<Projective<P>> =
+            bases.iter().map(|b| double_and_add(b, k_repr)).collect();
+        assert_eq!(
+            glv_mul_same_scalar::<P>(&affine, *k),
+            expected,
+            "glv_mul_same_scalar, k = {k}"
+        );
+        // The GLV entry points, which a curve's `mul_bigint` may override with a split that is
+        // exact off the subgroup over a narrower range.
         for ((b, a), e) in bases.iter().zip(&affine).zip(&expected) {
-            assert_eq!(b.mul_bigint(k_repr), *e, "projective mul_bigint, k = {k}");
-            assert_eq!(a.mul_bigint(k_repr), *e, "affine mul_bigint, k = {k}");
+            assert_eq!(
+                P::glv_mul_projective_bigint(b, k_repr.as_ref()),
+                *e,
+                "projective, k = {k}"
+            );
+            assert_eq!(
+                P::glv_mul_affine_projective_bigint(a, k_repr.as_ref()),
+                *e,
+                "affine, k = {k}"
+            );
         }
     }
     let lanes = affine.len().min(scalars.len());
@@ -609,7 +665,11 @@ pub fn eisenstein_torsion_bases<P: GLVConfig>() {
         .zip(&scalars)
         .map(|(a, s)| double_and_add_affine(a, s.into_bigint()))
         .sum();
-    assert_eq!(eisenstein_msm::<P>(&affine[..lanes], &scalars[..lanes]), Some(sum));
+    // `None` only where the scalar field is wider than the recoding's 256 bits.
+    match eisenstein_msm::<P>(&affine[..lanes], &scalars[..lanes]) {
+        Some(res) => assert_eq!(res, sum),
+        None => assert!(P::ScalarField::MODULUS_BIT_SIZE > 256),
+    }
 }
 
 /// [`msm_batch_affine_glv_bigint`](ark_ec::scalar_mul::sw_pippenger::msm_batch_affine_glv_bigint)
@@ -633,19 +693,27 @@ pub fn glv_msm_batch_affine_matches_wnaf<P: GLVConfig>() {
         let bigints: Vec<_> = scalars.iter().map(|s| s.into_bigint()).collect();
         let expected: Projective<P> = msm_bigint_wnaf(bases, &bigints);
         let n = bases.len();
-        assert_eq!(msm_batch_affine_glv_bigint::<P>(bases, &bigints), Some(expected), "n = {n}");
-        assert_eq!(Projective::<P>::msm_bigint(bases, &bigints), expected, "n = {n}");
+        assert_eq!(
+            msm_batch_affine_glv_bigint::<P>(bases, &bigints),
+            Some(expected),
+            "n = {n}"
+        );
+        assert_eq!(
+            Projective::<P>::msm_bigint(bases, &bigints),
+            expected,
+            "n = {n}"
+        );
         assert_eq!(msm_batch_affine::<P>(bases, scalars), expected, "n = {n}");
     };
 
     for n in [1usize, 2, 3, 64, 127, 128, 129, 255, 256, 257, 1000] {
-        let random: Vec<Affine<P>> = (0..n).map(|_| Projective::<P>::rand(rng).into_affine()).collect();
+        let random: Vec<Affine<P>> = (0..n)
+            .map(|_| Projective::<P>::rand(rng).into_affine())
+            .collect();
         let base = random[0];
         let phi = P::endomorphism_affine(&base);
         let phi2 = P::endomorphism_affine(&phi);
-        let orbit: Vec<Affine<P>> = (0..n)
-            .map(|i| [base, phi, -phi2, -base][i % 4])
-            .collect();
+        let orbit: Vec<Affine<P>> = (0..n).map(|i| [base, phi, -phi2, -base][i % 4]).collect();
         let mut with_identity = random.clone();
         for (i, b) in with_identity.iter_mut().enumerate() {
             if i % 3 == 0 {
@@ -654,7 +722,9 @@ pub fn glv_msm_batch_affine_matches_wnaf<P: GLVConfig>() {
         }
         for bases in [random, orbit, with_identity, vec![base; n]] {
             for scalars in [
-                (0..n).map(|_| P::ScalarField::rand(rng)).collect::<Vec<_>>(),
+                (0..n)
+                    .map(|_| P::ScalarField::rand(rng))
+                    .collect::<Vec<_>>(),
                 vec![P::ScalarField::zero(); n],
                 vec![one; n],
                 vec![-one; n],
@@ -666,19 +736,36 @@ pub fn glv_msm_batch_affine_matches_wnaf<P: GLVConfig>() {
         }
     }
     let n = 1 << 12;
-    let bases: Vec<Affine<P>> = (0..n).map(|_| Projective::<P>::rand(rng).into_affine()).collect();
+    let bases: Vec<Affine<P>> = (0..n)
+        .map(|_| Projective::<P>::rand(rng).into_affine())
+        .collect();
     let scalars: Vec<_> = (0..n).map(|_| P::ScalarField::rand(rng)).collect();
     check(&bases, &scalars);
 
     let mut above = P::ScalarField::MODULUS;
-    for k in [P::ScalarField::MODULUS, { above.add_with_carry(&1u64.into()); above }] {
+    for k in [P::ScalarField::MODULUS, {
+        above.add_with_carry(&1u64.into());
+        above
+    }] {
         for n in [4usize, 300] {
-            let bases: Vec<Affine<P>> = (0..n).map(|_| Projective::<P>::rand(rng).into_affine()).collect();
-            let mut bigints: Vec<_> = (0..n).map(|_| P::ScalarField::rand(rng).into_bigint()).collect();
+            let bases: Vec<Affine<P>> = (0..n)
+                .map(|_| Projective::<P>::rand(rng).into_affine())
+                .collect();
+            let mut bigints: Vec<_> = (0..n)
+                .map(|_| P::ScalarField::rand(rng).into_bigint())
+                .collect();
             bigints[n / 2] = k;
             assert_eq!(msm_batch_affine_glv_bigint::<P>(&bases, &bigints), None);
-            let expected: Projective<P> = bases.iter().zip(&bigints).map(|(b, k)| b.mul_bigint(k)).sum();
-            assert_eq!(Projective::<P>::msm_bigint(&bases, &bigints), expected, "n = {n}");
+            let expected: Projective<P> = bases
+                .iter()
+                .zip(&bigints)
+                .map(|(b, k)| b.mul_bigint(k))
+                .sum();
+            assert_eq!(
+                Projective::<P>::msm_bigint(&bases, &bigints),
+                expected,
+                "n = {n}"
+            );
         }
     }
 }
@@ -698,7 +785,10 @@ pub fn glv_scalar_decomposition_bigint_matches_field<P: GLVConfig>() {
         P::LAMBDA,
         -P::LAMBDA,
     ];
-    for k in edges.into_iter().chain((0..1000).map(|_| P::ScalarField::rand(rng))) {
+    for k in edges
+        .into_iter()
+        .chain((0..1000).map(|_| P::ScalarField::rand(rng)))
+    {
         let ((s1, k1), (s2, k2)) = P::scalar_decomposition(k);
         assert_eq!(
             P::scalar_decomposition_bigint(&k.into_bigint()),

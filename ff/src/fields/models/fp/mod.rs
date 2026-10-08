@@ -24,6 +24,7 @@ mod deferred;
 pub use deferred::MontAccumulator;
 
 mod modinv62;
+mod mont29;
 
 /// A trait that specifies the configuration of a prime field.
 /// Also specifies how to perform arithmetic on field elements.
@@ -146,16 +147,29 @@ impl<P: FpConfig<N>, const N: usize> Fp<P, N> {
         self.0 >= P::MODULUS
     }
 
+    /// `self -= MODULUS` if `self >= MODULUS`. Selected by mask for more than 4 limbs, where
+    /// that beats the branch, and by a branch otherwise. The mask select is zkcrypto's
+    /// [`Fp::subtract_p`](https://github.com/zkcrypto/bls12_381/blob/5d22dd74c2a14fb9f3d3b85ae2c39d0c669ddd99/src/fp.rs#L361-L379).
     #[inline]
     fn subtract_modulus(&mut self) {
-        if self.is_geq_modulus() {
+        if N > 4 {
+            let mut t = self.0;
+            let borrow = t.sub_with_borrow(&Self::MODULUS);
+            self.0 = select_limbs(borrow, &self.0, &t);
+        } else if self.is_geq_modulus() {
             self.0.sub_with_borrow(&Self::MODULUS);
         }
     }
 
+    /// `self -= MODULUS` if `carry` or `self >= MODULUS`, selected as in
+    /// [`Self::subtract_modulus`].
     #[inline]
     fn subtract_modulus_with_carry(&mut self, carry: bool) {
-        if carry || self.is_geq_modulus() {
+        if N > 4 {
+            let mut t = self.0;
+            let borrow = t.sub_with_borrow(&Self::MODULUS);
+            self.0 = select_limbs(borrow & !carry, &self.0, &t);
+        } else if carry || self.is_geq_modulus() {
             self.0.sub_with_borrow(&Self::MODULUS);
         }
     }
@@ -163,6 +177,17 @@ impl<P: FpConfig<N>, const N: usize> Fp<P, N> {
     const fn num_bits_to_shave() -> usize {
         64 * N - (Self::MODULUS_BIT_SIZE as usize)
     }
+}
+
+/// `if keep { a } else { b }` by limb masks, with no data-dependent branch.
+#[inline(always)]
+pub(crate) fn select_limbs<const N: usize>(keep: bool, a: &BigInt<N>, b: &BigInt<N>) -> BigInt<N> {
+    let mask = 0u64.wrapping_sub(keep as u64);
+    let mut r = *b;
+    for i in 0..N {
+        r.0[i] = (a.0[i] & mask) | (b.0[i] & !mask);
+    }
+    r
 }
 
 impl<P: FpConfig<N>, const N: usize> ark_std::fmt::Debug for Fp<P, N> {
