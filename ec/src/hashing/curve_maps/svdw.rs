@@ -14,7 +14,7 @@ use crate::{
 ///
 /// - [\[RFC9380\]] <https://www.rfc-editor.org/rfc/rfc9380.html#section-6.6.1>
 pub trait SVDWConfig: SWCurveConfig {
-    /// `Z` meeting the four criteria of \[RFC9380, section 6.6.1\].
+    /// Nonzero `Z` meeting the four criteria of \[RFC9380, section 6.6.1\].
     const Z: Self::BaseField;
 
     /// `C1 = g(Z)` where `g(x) = x^3 + a*x + b`.
@@ -34,7 +34,8 @@ pub trait SVDWConfig: SWCurveConfig {
 pub struct SVDWMap<P: SVDWConfig>(PhantomData<fn() -> P>);
 
 impl<P: SVDWConfig> MapToCurve<Projective<P>> for SVDWMap<P> {
-    /// Checks the criteria of \[RFC9380, section 6.6.1\] on `Z` and that `C1..C4` derive from it.
+    /// Checks that `Z` is nonzero and meets the criteria of \[RFC9380, section 6.6.1\], and that
+    /// `C1..C4` derive from it.
     fn check_parameters() -> Result<(), HashToCurveError> {
         let err = |msg: &str| Err(HashToCurveError::MapToCurveError(msg.into()));
         let g = |x: P::BaseField| P::add_b(x.square() * x + P::mul_by_a(x));
@@ -51,13 +52,16 @@ impl<P: SVDWConfig> MapToCurve<Projective<P>> for SVDWMap<P> {
         {
             return err("SVDW constants C1..C4 do not match Z");
         }
+        if z.is_zero() {
+            return err("SVDW requires Z != 0");
+        }
         if gz.is_zero() || three_z2_plus_4a.is_zero() {
             return err("SVDW requires g(Z) != 0 and 3 * Z^2 + 4 * a != 0");
         }
         if !(-three_z2_plus_4a / four_gz).legendre().is_qr() {
             return err("SVDW requires -(3 * Z^2 + 4 * a) / (4 * g(Z)) to be a square");
         }
-        if !gz.legendre().is_qr() && !g(P::C2).legendre().is_qr() {
+        if gz.legendre().is_qnr() && g(P::C2).legendre().is_qnr() {
             return err("SVDW requires g(Z) or g(-Z / 2) to be a square");
         }
         Ok(())
@@ -89,12 +93,15 @@ impl<P: SVDWConfig> MapToCurve<Projective<P>> for SVDWMap<P> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::hashing::{
-        curve_maps::wb::test::{TestWBF127MapToCurveConfig as TestSVDWConfig, F127},
-        map_to_curve_hasher::MapToCurveBasedHasher,
-        HashToCurve,
+    use crate::{
+        hashing::{
+            curve_maps::wb::test::{TestWBF127MapToCurveConfig as TestSVDWConfig, F127},
+            map_to_curve_hasher::MapToCurveBasedHasher,
+            HashToCurve,
+        },
+        CurveConfig,
     };
-    use ark_ff::{field_hashers::DefaultFieldHasher, MontFp};
+    use ark_ff::{field_hashers::DefaultFieldHasher, fields::Fp64, MontBackend, MontFp};
     use sha2::Sha256;
 
     /// `y^2 = x^3 + 3` over `F127`. `find_z_svdw(GF(127), 0, 3)` of
@@ -126,6 +133,83 @@ mod test {
             images.iter().any(|p| *p != images[0]),
             "a constant hash function is not good."
         );
+    }
+
+    #[derive(ark_ff::MontConfig)]
+    #[modulus = "11"]
+    #[generator = "2"]
+    struct F11Config;
+    type F11 = Fp64<MontBackend<F11Config, 1>>;
+
+    /// `y^2 = x^3 + 7` over `F11` with `Z = 1`. `g(Z) = 8` is a nonsquare and `g(-Z / 2) = 0`.
+    struct TestSVDWZeroGC2Config;
+
+    impl CurveConfig for TestSVDWZeroGC2Config {
+        const COFACTOR: &[u64] = &[1];
+        const COFACTOR_INV: F11 = MontFp!("1");
+        type BaseField = F11;
+        type ScalarField = F11;
+    }
+
+    impl SWCurveConfig for TestSVDWZeroGC2Config {
+        const COEFF_A: F11 = MontFp!("0");
+        const COEFF_B: F11 = MontFp!("7");
+        const GENERATOR: Affine<Self> = Affine::new_unchecked(MontFp!("2"), MontFp!("2"));
+        type ZeroFlag = ();
+    }
+
+    impl SVDWConfig for TestSVDWZeroGC2Config {
+        const Z: F11 = MontFp!("1");
+        const C1: F11 = MontFp!("8");
+        const C2: F11 = MontFp!("5");
+        const C3: F11 = MontFp!("8");
+        const C4: F11 = MontFp!("4");
+    }
+
+    /// `y^2 = x^3 + 2 * x + 1` over `F11` with `Z = 0`, which meets the four criteria.
+    struct TestSVDWZeroZConfig;
+
+    impl CurveConfig for TestSVDWZeroZConfig {
+        const COFACTOR: &[u64] = &[1];
+        const COFACTOR_INV: F11 = MontFp!("1");
+        type BaseField = F11;
+        type ScalarField = F11;
+    }
+
+    impl SWCurveConfig for TestSVDWZeroZConfig {
+        const COEFF_A: F11 = MontFp!("2");
+        const COEFF_B: F11 = MontFp!("1");
+        const GENERATOR: Affine<Self> = Affine::new_unchecked(MontFp!("1"), MontFp!("2"));
+        type ZeroFlag = ();
+    }
+
+    impl SVDWConfig for TestSVDWZeroZConfig {
+        const Z: F11 = MontFp!("0");
+        const C1: F11 = MontFp!("1");
+        const C2: F11 = MontFp!("0");
+        const C3: F11 = MontFp!("6");
+        const C4: F11 = MontFp!("5");
+    }
+
+    #[test]
+    fn check_parameters_rejects_zero_z() {
+        assert!(matches!(
+            SVDWMap::<TestSVDWZeroZConfig>::check_parameters(),
+            Err(HashToCurveError::MapToCurveError(msg)) if msg == "SVDW requires Z != 0"
+        ));
+    }
+
+    /// Criterion 4 counts 0 as a square, so `g(-Z / 2) = 0` passes and every input maps. Inputs
+    /// mapping to `x = -Z / 2` get `y = 0`, whose sign cannot follow `u`.
+    #[test]
+    fn check_parameters_accepts_zero_g_c2() {
+        SVDWMap::<TestSVDWZeroGC2Config>::check_parameters().unwrap();
+        for u in 0..11u64 {
+            let u = F11::from(u);
+            let p = SVDWMap::<TestSVDWZeroGC2Config>::map_to_curve(u).unwrap();
+            assert!(p.is_on_curve());
+            assert!(p.y.is_zero() || parity(&p.y) == parity(&u));
+        }
     }
 
     #[test]

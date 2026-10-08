@@ -50,6 +50,9 @@ def find_z_svdw(F, A, B, init_ctr=1):
     ctr = init_ctr
     while True:
         for Z_cand in (F(ctr), F(-ctr)):
+            # Z != 0 in F.
+            if Z_cand == 0:
+                continue
             # Criterion 1: g(Z) != 0 in F.
             if g(Z_cand) == 0:
                 continue
