@@ -20,7 +20,7 @@
 //! Under `parallel` the one bucket array is split into equal bucket ranges. Per-thread histograms
 //! give the bucket sizes and bin each nonzero entry's index by thread group; each group then
 //! gathers its ranges' points from the table, in table order, into its contiguous slice of one
-//! bucket-sorted buffer; each range reduces and running-sums on its own thread with reused
+//! bucket-sorted buffer; each range reduces and weighs its buckets on its own thread with reused
 //! staging; the ranges combine with additions and one short scalar multiplication. Costs: a table
 //! of `n W` affine points (`64 n W` bytes, tens of MB at `n ~ 2^13`), a one-time precompute of
 //! about `n MODULUS_BIT_SIZE` doublings, and per call `8 n W` bytes of digits and indices plus
@@ -39,7 +39,10 @@
 
 use crate::{
     scalar_mul::{
-        sw_pippenger::{counting_sort, reduce_tree, running_bucket_sum},
+        sw_pippenger::{
+            affine_bucket_sum, counting_sort, reduce_tree, running_bucket_sum, WeighScratch,
+            AFFINE_WEIGHTING,
+        },
         variable_base::{make_digits, VariableBaseMSM},
     },
     short_weierstrass::{Affine, Projective, SWCurveConfig},
@@ -51,7 +54,10 @@ use itertools::Either;
 
 #[cfg(feature = "parallel")]
 use crate::{
-    scalar_mul::sw_pippenger::{reduce_tree_with, signed_point, Point, ReduceScratch},
+    scalar_mul::sw_pippenger::{
+        affine_bucket_sums, reduce_tree_with, running_bucket_sums, signed_point, Point,
+        ReduceScratch,
+    },
     short_weierstrass::Bucket,
 };
 #[cfg(feature = "parallel")]
@@ -67,20 +73,6 @@ const MIN_PARALLEL_ENTRIES: usize = 1 << 13;
 /// Bucket-range chunks per thread in the parallel evaluation.
 #[cfg(feature = "parallel")]
 const CHUNKS_PER_THREAD: usize = 4;
-
-/// Per-thread growth of the bucket-term weight in [`best_window_parallel`]. At `t` threads the
-/// weight is `1 + (t-1) * PAR_BUCKET_SLOPE`. Tested on a 16-thread host (weight ~= 6) so the
-/// parallel window stays at least as fast as a variable-base MSM across 2^10..2^16 bases.
-/// Recheck via the `fixed_base_window_bench` test on other hosts.
-#[cfg(feature = "parallel")]
-const PAR_BUCKET_SLOPE: f64 = 0.35;
-
-/// Floor on the parallel window: below it the per-window paralle and the narrower batch inversion
-/// lose at small base counts (a measured regression at 2^10 bases). Capped at the serial pick so a
-/// tiny field is unaffected.
-#[cfg(feature = "parallel")]
-const PAR_MIN_WINDOW: usize = 12;
-
 
 /// A precomputed table of place-value multiples of a fixed base set.
 pub struct FixedBaseMSM<P: SWCurveConfig> {
@@ -101,14 +93,9 @@ pub struct FixedBaseMSM<P: SWCurveConfig> {
 
 impl<P: SWCurveConfig> FixedBaseMSM<P> {
     /// Builds a table with the window `c` minimizing the modeled addition count
-    /// `n ceil(bits/c) + 2^{c-1}`.
+    /// `n ceil(bits/c) + 2^c`.
     pub fn new(bases: &[Affine<P>]) -> Self {
-        let n = bases.len().max(1);
-        #[cfg(feature = "parallel")]
-        let c = best_window_parallel::<P>(n, rayon::current_num_threads());
-        #[cfg(not(feature = "parallel"))]
-        let c = best_window::<P>(n);
-        Self::new_given_window_size(bases, c)
+        Self::new_given_window_size(bases, best_window::<P>(bases.len().max(1)))
     }
 
     /// Builds a table with an explicit window `c` (`2 <= c < 31`). Larger `c` gives fewer windows
@@ -224,7 +211,11 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
             counting_sort::<P>(m, digits.len(), |idx| (digits[idx], self.table[idx]));
 
         reduce_tree::<P>(&mut points, &mut offsets, false);
-        running_bucket_sum::<P>(&points, &offsets).into()
+        if AFFINE_WEIGHTING.load(core::sync::atomic::Ordering::Relaxed) {
+            affine_bucket_sum::<P>(&points, &offsets, &mut WeighScratch::default()).into()
+        } else {
+            running_bucket_sum::<P>(&points, &offsets).into()
+        }
     }
 
     /// The bucket array split into `k` equal ranges of `L` buckets. Segment `s` covers buckets
@@ -337,26 +328,20 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
 
         let parts: Vec<(Bucket<P>, Bucket<P>)> = segs
             .par_iter()
-            .map_init(ReduceScratch::<P::BaseField>::default, |scratch, &(lo, hi)| {
-                let base = offsets[lo];
-                let local: Vec<usize> = offsets[lo..=hi].iter().map(|o| o - base).collect();
-                let (pts, offs) =
-                    reduce_tree_with::<P>(&points[base..offsets[hi]], &local, false, scratch);
-                let nb = offs.len() - 1;
-                let mut running = Bucket::<P>::ZERO;
-                let mut ls = Bucket::<P>::ZERO;
-                let mut ss = Bucket::<P>::ZERO;
-                for bi in (0..nb).rev() {
-                    if offs[bi + 1] > offs[bi] {
-                        let p = pts[offs[bi]];
-                        let aff = Affine::<P>::new_unchecked(p.x, p.y);
-                        running += aff;
-                        ss += aff;
+            .map_init(
+                || (ReduceScratch::<P::BaseField>::default(), WeighScratch::default()),
+                |(scratch, weigh), &(lo, hi)| {
+                    let base = offsets[lo];
+                    let local: Vec<usize> = offsets[lo..=hi].iter().map(|o| o - base).collect();
+                    let (pts, offs) =
+                        reduce_tree_with::<P>(&points[base..offsets[hi]], &local, false, scratch);
+                    if AFFINE_WEIGHTING.load(core::sync::atomic::Ordering::Relaxed) {
+                        affine_bucket_sums::<P>(pts, offs, weigh)
+                    } else {
+                        running_bucket_sums::<P>(pts, offs)
                     }
-                    ls += &running;
-                }
-                (ls, ss)
-            })
+                },
+            )
             .collect();
 
         let mut sum_ls = Bucket::<P>::ZERO;
@@ -434,30 +419,15 @@ fn base_multiples<P: SWCurveConfig>(base: &Affine<P>, num_windows: usize, c: usi
 /// Widest window the constructors choose on their own, a `2^19`-entry bucket array.
 pub const MAX_WINDOW: usize = 20;
 
-/// Window minimizing the modeled addition count `n ceil(bits/c) + 2^{c-1}`.
+/// Window minimizing the modeled addition count `n ceil(bits/c) + 2^c`, one addition per nonzero
+/// digit and two per bucket of the `2^{c-1}` the affine weighting reduces. Serial and parallel
+/// evaluation share it. On Apple M3 Max (Pallas, 1, 4 and 16 threads, `2^10 + 2` to `2^16 + 2`
+/// bases) its pick is within 7% of the fastest `c`.
 fn best_window<P: SWCurveConfig>(n: usize) -> usize {
     let num_bits = P::ScalarField::MODULUS_BIT_SIZE as usize;
     (2..=MAX_WINDOW)
-        .min_by_key(|&c| n * num_bits.div_ceil(c) + (1usize << (c - 1)))
+        .min_by_key(|&c| n * num_bits.div_ceil(c) + (1usize << c))
         .unwrap()
-}
-
-/// Window for the parallel evaluation. This divides the accumulation `n W` across threads,
-/// but the shared bucket array's running sum and combine (size `2^{c-1}`) and its memory traffic
-/// parallelize worse, so [`best_window`]'s bucket term is up-weighted by the thread count. The pick
-/// is a smaller `c` than [`best_window`] (more, smaller windows), the more so at fewer bases, and
-/// reduces to [`best_window`] at one thread. Never exceeds [`best_window`].
-#[cfg(feature = "parallel")]
-#[allow(clippy::suboptimal_flops)]
-fn best_window_parallel<P: SWCurveConfig>(n: usize, threads: usize) -> usize {
-    let num_bits = P::ScalarField::MODULUS_BIT_SIZE as usize;
-    let weight = 1.0 + (threads.max(1) - 1) as f64 * PAR_BUCKET_SLOPE;
-    let cost = |c: usize| n as f64 * num_bits.div_ceil(c) as f64 + weight * (1u64 << (c - 1)) as f64;
-    let serial = best_window::<P>(n);
-    let model = (2..=serial)
-        .min_by(|&a, &b| cost(a).total_cmp(&cost(b)))
-        .unwrap_or(serial);
-    model.max(serial.min(PAR_MIN_WINDOW))
 }
 
 /// Bucket-array size for `num_windows` radix-`2^c` signed-digit windows. Every window but
