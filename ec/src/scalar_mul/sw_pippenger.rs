@@ -115,6 +115,7 @@ struct WindowScratch<F: Field> {
     positions: Vec<usize>,
     points: Vec<Point<F>>,
     reduce: ReduceScratch<F>,
+    weigh: WeighScratch<F>,
 }
 
 /// `sum(bases_i * scalars_i)` with affine buckets. Mirrors
@@ -284,6 +285,7 @@ fn window_sum<P: SWCurveConfig>(
         positions,
         points,
         reduce,
+        weigh,
     } = scratch;
     // `scalar_digits` is scalar-major, so base `i`'s digit for this window is
     // `scalar_digits[i * digits_count + window_index]`. An identity base is mapped to digit 0 so it
@@ -306,7 +308,11 @@ fn window_sum<P: SWCurveConfig>(
     );
 
     let (points, offsets) = reduce_tree_with::<P>(points, offsets, true, reduce);
-    running_bucket_sum::<P>(points, offsets)
+    if AFFINE_WEIGHTING.load(core::sync::atomic::Ordering::Relaxed) {
+        affine_bucket_sum::<P>(points, offsets, weigh)
+    } else {
+        running_bucket_sum::<P>(points, offsets)
+    }
 }
 
 /// Same idea as [crate::scalar_mul::variable_base::reduce_buckets]. bucket `b` (magnitude `b + 1`)
@@ -315,6 +321,14 @@ pub(crate) fn running_bucket_sum<P: SWCurveConfig>(
     points: &[Point<P::BaseField>],
     offsets: &[usize],
 ) -> Bucket<P> {
+    running_bucket_sums::<P>(points, offsets).0
+}
+
+/// [`running_bucket_sum`] and the plain sum of the buckets, the final running sum.
+pub(crate) fn running_bucket_sums<P: SWCurveConfig>(
+    points: &[Point<P::BaseField>],
+    offsets: &[usize],
+) -> (Bucket<P>, Bucket<P>) {
     let mut running = Bucket::<P>::ZERO;
     let mut sum = Bucket::<P>::ZERO;
     for b in (0..offsets.len() - 1).rev() {
@@ -324,7 +338,175 @@ pub(crate) fn running_bucket_sum<P: SWCurveConfig>(
         }
         sum += &running;
     }
-    sum
+    (sum, running)
+}
+
+/// Prototype switch between [`affine_bucket_sum`] and [`running_bucket_sum`] in [`window_sum`].
+#[doc(hidden)]
+pub static AFFINE_WEIGHTING: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(true);
+
+/// Fewest pending additions a weighting step must have to run in affine; below it the inversion
+/// outweighs the cheaper additions and the remainder is finished in `xyzz`.
+const WEIGH_MIN_RECORDS: usize = 16;
+
+/// Fewest buckets [`affine_bucket_sums`] weighs in affine; below it the staging costs more than
+/// the affine steps save and the `xyzz` running sum runs instead (Apple M3 Max: 0.96x at 24
+/// buckets, 1.05x at 32, 1.14x at 48).
+const WEIGH_MIN_BUCKETS: usize = 48;
+
+/// Buffers for [`affine_bucket_sum`], reused across the windows a worker runs.
+#[derive(Default)]
+pub(crate) struct WeighScratch<F: Field> {
+    cur: Vec<Point<Loose<F>>>,
+    cur_off: Vec<usize>,
+    src: Vec<Point<Loose<F>>>,
+    src_off: Vec<usize>,
+    pending: Pending<Loose<F>>,
+}
+
+/// [`running_bucket_sum`] with the additions in affine, each step sharing one inversion. Uses
+/// `W(M_1, ..., M_{2m}) = 2 W(M_1 + M_2, ..., M_{2m-1} + M_{2m}) - \sum_j M_{2j-1}`, where
+/// `W(M) = \sum_i i * M_i`. Each step pairs the main list, starts a tree summing its odd entries,
+/// and advances every earlier tree one level, so all of them share the step's inversion. Once a
+/// step would have fewer than [`WEIGH_MIN_RECORDS`] additions, the main list's running sum and
+/// the trees' leftovers are combined in `xyzz` by Horner's rule. Ported from Udon's
+/// [`collapse_with_scratch`](https://github.com/zakura-core/common/blob/a58eb39b/crates/udon/src/curve/pasta/reduce.rs#L579-L692),
+/// which fixes 128 buckets and four steps.
+pub(crate) fn affine_bucket_sum<P: SWCurveConfig>(
+    points: &[Point<P::BaseField>],
+    offsets: &[usize],
+    scratch: &mut WeighScratch<P::BaseField>,
+) -> Bucket<P> {
+    affine_bucket_sums::<P>(points, offsets, scratch).0
+}
+
+/// [`affine_bucket_sum`] and the plain sum `\sum_i M_i`, which is the final running sum in the
+/// `xyzz` tail since the main list's entries partition the buckets.
+pub(crate) fn affine_bucket_sums<P: SWCurveConfig>(
+    points: &[Point<P::BaseField>],
+    offsets: &[usize],
+    scratch: &mut WeighScratch<P::BaseField>,
+) -> (Bucket<P>, Bucket<P>) {
+    if offsets.len() - 1 < WEIGH_MIN_BUCKETS {
+        return running_bucket_sums::<P>(points, offsets);
+    }
+    let WeighScratch {
+        cur,
+        cur_off,
+        src,
+        src_off,
+        pending,
+    } = scratch;
+    // `cur` holds `main` groups of at most one point, the main list, then one group per tree.
+    cur.clear();
+    cur_off.clear();
+    cur_off.push(0);
+    for r in offsets.windows(2) {
+        debug_assert!(r[1] - r[0] <= 1);
+        if r[1] > r[0] {
+            let p = points[r[0]];
+            cur.push(Point {
+                x: Loose::from(p.x),
+                y: Loose::from(p.y),
+            });
+        }
+        cur_off.push(cur.len());
+    }
+    let mut main = offsets.len() - 1;
+    loop {
+        let groups = cur_off.len() - 1;
+        let split = main >= 2;
+        let tree_records: usize = (main..groups)
+            .map(|g| (cur_off[g + 1] - cur_off[g]) / 2)
+            .sum();
+        let live_main = cur_off[main];
+        let records = tree_records + if split { live_main / 2 + live_main / 4 } else { 0 };
+        if records < WEIGH_MIN_RECORDS {
+            break;
+        }
+
+        src.clear();
+        src_off.clear();
+        src_off.push(0);
+        if split {
+            for g in 0..main {
+                src.extend_from_slice(&cur[cur_off[g]..cur_off[g + 1]]);
+                if g % 2 == 1 || g + 1 == main {
+                    src_off.push(src.len());
+                }
+            }
+        } else {
+            src.extend_from_slice(&cur[..cur_off[main]]);
+            src_off.extend_from_slice(&cur_off[1..=main]);
+        }
+        for g in main..groups {
+            src.extend_from_slice(&cur[cur_off[g]..cur_off[g + 1]]);
+            src_off.push(src.len());
+        }
+        if split {
+            for g in (0..main).step_by(2) {
+                src.extend_from_slice(&cur[cur_off[g]..cur_off[g + 1]]);
+            }
+            src_off.push(src.len());
+        }
+
+        let mut retried = false;
+        loop {
+            pair_level::<P>(|i| src[i], src_off, cur, cur_off, pending, retried);
+            if batch_add::<P>(pending, cur, false).is_some() {
+                break;
+            }
+            debug_assert!(!retried);
+            retried = true;
+        }
+        if split {
+            main = main.div_ceil(2);
+        }
+    }
+
+    let affine =
+        |p: &Point<Loose<P::BaseField>>| Affine::<P>::new_unchecked(p.x.reduce(), p.y.reduce());
+    let mut running = Bucket::<P>::ZERO;
+    let mut sum = Bucket::<P>::ZERO;
+    for g in (0..main).rev() {
+        if let Some(p) = cur[cur_off[g]..cur_off[g + 1]].first() {
+            running += affine(p);
+        }
+        sum += &running;
+    }
+    for g in (main..cur_off.len() - 1).rev() {
+        let mut odd = Bucket::<P>::ZERO;
+        for p in &cur[cur_off[g]..cur_off[g + 1]] {
+            odd += affine(p);
+        }
+        sum.double_in_place();
+        sum -= &odd;
+    }
+    (sum, running)
+}
+
+/// [`affine_bucket_sum`] or [`running_bucket_sum`] over one affine point per bucket, the identity
+/// standing for an empty bucket.
+#[doc(hidden)]
+pub fn bucket_sum_for_bench<P: SWCurveConfig>(
+    buckets: &[Affine<P>],
+    affine: bool,
+) -> Projective<P> {
+    let mut points = Vec::with_capacity(buckets.len());
+    let mut offsets = Vec::with_capacity(buckets.len() + 1);
+    offsets.push(0);
+    for b in buckets {
+        if !b.is_zero() {
+            points.push(Point { x: b.x, y: b.y });
+        }
+        offsets.push(points.len());
+    }
+    if affine {
+        affine_bucket_sum::<P>(&points, &offsets, &mut WeighScratch::default()).into()
+    } else {
+        running_bucket_sum::<P>(&points, &offsets).into()
+    }
 }
 
 /// Reduces every bucket of `points`, delimited by `offsets`, to at most one point, by pairing
