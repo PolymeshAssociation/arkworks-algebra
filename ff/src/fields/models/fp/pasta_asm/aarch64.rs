@@ -1,8 +1,9 @@
 //! AArch64 inline-assembly Montgomery kernels for the Pasta modulus shape, `modulus[2] = 0` and
 //! `modulus[3] = 2^62`. Only `modulus[0]`, `modulus[1]` and `INV` enter as operands: the zero limb
-//! contributes no product and the `2^62` limb is a shift pair. Every block is register-only and
-//! branch-free under `options(pure, nomem, nostack)`, so it inlines into its caller and field
-//! values stay in registers between operations.
+//! contributes no product and the `2^62` limb is a shift pair. Every block is branch-free and,
+//! except for `sum_of_two_products`, which reads its inputs through pointers, register-only under
+//! `options(pure, nomem, nostack)`, so it inlines into its caller and field values stay in
+//! registers between operations.
 //!
 //! All inputs must be canonical, which the wrappers debug-assert. `add` drops the top carry and
 //! subtracts the modulus at most once, both valid because `2p < 2^256`. `mul` keeps a five-limb
@@ -105,408 +106,767 @@ pub(super) fn sub(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
     [r0, r1, r2, r3]
 }
 
+/// The body of [`mul`] and [`mul_loose`]. The template literals after the parameters
+/// are appended to the instruction sequence: the closing conditional subtraction for [`mul`],
+/// nothing for [`mul_loose`].
+macro_rules! mul_kernel {
+    ($lhs:expr, $rhs:expr, $params:expr $(, $tail:literal)* $(,)?) => {{
+        let (lhs, rhs, params): (&Limbs, &Limbs, &[u64; 5]) = ($lhs, $rhs, $params);
+        let (o0, o1, o2, o3): (u64, u64, u64, u64);
+        // SAFETY: straight-line register-only arithmetic; no memory access, no
+        // stack use, and outputs depend only on the declared inputs.
+        unsafe {
+            asm!(
+                // Round 0: lhs * rhs[0], then cancel the low limb.
+                // Form the five-limb product a * b[0] in r0..r4.
+                "mul {r0}, {a0}, {b0}",             // r0 = low(a[0] * b[0]).
+                "mul {r1}, {a1}, {b0}",             // r1 = low(a[1] * b[0]).
+                "mul {r2}, {a2}, {b0}",             // r2 = low(a[2] * b[0]).
+                "mul {r3}, {a3}, {b0}",             // r3 = low(a[3] * b[0]).
+
+                "umulh {t0}, {a0}, {b0}",           // t0 = high(a[0] * b[0]).
+                "umulh {t1}, {a1}, {b0}",           // t1 = high(a[1] * b[0]).
+                "mul {q}, {inv}, {r0}",             // q = r0 * inv mod 2^64.
+                "umulh {t2}, {a2}, {b0}",           // t2 = high(a[2] * b[0]).
+                "umulh {t3}, {a3}, {b0}",           // t3 = high(a[3] * b[0]).
+                "adds {r1}, {r1}, {t0}",            // Add high(a[0] * b[0]) into limb 1.
+                // low(q * p[0]) cancels r0 and is discarded by the limb shift.
+                "adcs {r2}, {r2}, {t1}",            // Add high(a[1] * b[0]) and carry.
+                "mul {t1}, {p1}, {q}",              // t1 = low(q * p[1]).
+                "adcs {r3}, {r3}, {t2}",            // Add high(a[2] * b[0]) and carry.
+                // q * p[2] is zero because p[2] = 0.
+                "adc {r4}, xzr, {t3}",              // Finish a * b[0] with its fifth limb.
+                "lsl {t3}, {q}, #62",               // t3 = low(q * p[3]).
+                // Carry from r0 + low(q*p[0]) is one exactly when r0 is nonzero.
+                "subs xzr, {r0}, #1",               // Set that carry without computing the zero sum.
+                "umulh {t0}, {p0}, {q}",            // t0 = high(q * p[0]).
+                "adcs {r1}, {r1}, {t1}",            // Add low(q * p[1]) and cancellation carry.
+                "umulh {t1}, {p1}, {q}",            // t1 = high(q * p[1]).
+                "adcs {r2}, {r2}, xzr",             // Propagate carry; p[2]'s product is zero.
+                // high(q * p[2]) is zero.
+                "adcs {r3}, {r3}, {t3}",            // Add low(q * p[3]) and carry.
+                "lsr {t3}, {q}, #2",                // t3 = high(q * p[3]).
+                "adc {r4}, {r4}, xzr",              // Propagate carry into the fifth limb.
+
+                // Drop the cancelled low limb: (a*b[0] + q*p) / 2^64.
+                "adds {r0}, {r1}, {t0}",            // New limb 0 includes high(q * p[0]).
+                "mul {t0}, {a0}, {b1}",             // t0 = low(a[0] * b[1]).
+                "adcs {r1}, {r2}, {t1}",            // New limb 1 includes high(q * p[1]).
+                "mul {t1}, {a1}, {b1}",             // t1 = low(a[1] * b[1]).
+                "adcs {r2}, {r3}, xzr",             // New limb 2; p[2] contributes zero.
+                "mul {t2}, {a2}, {b1}",             // t2 = low(a[2] * b[1]).
+                "adcs {r3}, {r4}, {t3}",            // New limb 3 includes high(q * p[3]).
+                "mul {t3}, {a3}, {b1}",             // t3 = low(a[3] * b[1]).
+                "adc {r4}, xzr, xzr",               // Capture the reduction carry as limb 4.
+
+                // Round 1: add a * b[1] to the reduced accumulator.
+                "adds {r0}, {r0}, {t0}",            // Add low(a[0] * b[1]) to limb 0.
+                "umulh {t0}, {a0}, {b1}",           // t0 = high(a[0] * b[1]).
+                "adcs {r1}, {r1}, {t1}",            // Add low(a[1] * b[1]) and carry.
+                "umulh {t1}, {a1}, {b1}",           // t1 = high(a[1] * b[1]).
+                "adcs {r2}, {r2}, {t2}",            // Add low(a[2] * b[1]) and carry.
+                "mul {q}, {inv}, {r0}",             // q = current limb 0 * inv mod 2^64.
+                "umulh {t2}, {a2}, {b1}",           // t2 = high(a[2] * b[1]).
+                "adcs {r3}, {r3}, {t3}",            // Add low(a[3] * b[1]) and carry.
+                "umulh {t3}, {a3}, {b1}",           // t3 = high(a[3] * b[1]).
+                "adc {r4}, {r4}, xzr",              // Propagate multiplication carry to limb 4.
+
+                "adds {r1}, {r1}, {t0}",            // Add high(a[0] * b[1]) to limb 1.
+                // low(q * p[0]) cancels r0.
+                "adcs {r2}, {r2}, {t1}",            // Add high(a[1] * b[1]) and carry.
+                "mul {t1}, {p1}, {q}",              // t1 = low(q * p[1]).
+                "adcs {r3}, {r3}, {t2}",            // Add high(a[2] * b[1]) and carry.
+                // low(q * p[2]) is zero.
+                "adc {r4}, {r4}, {t3}",             // Add high(a[3] * b[1]) and final carry.
+                "lsl {t3}, {q}, #62",               // t3 = low(q * p[3]).
+                "subs xzr, {r0}, #1",               // Set the low-limb cancellation carry.
+                "umulh {t0}, {p0}, {q}",            // t0 = high(q * p[0]).
+                "adcs {r1}, {r1}, {t1}",            // Add low(q * p[1]) and cancellation carry.
+                "umulh {t1}, {p1}, {q}",            // t1 = high(q * p[1]).
+                "adcs {r2}, {r2}, xzr",             // Propagate carry across zero p[2].
+                // high(q * p[2]) is zero.
+                "adcs {r3}, {r3}, {t3}",            // Add low(q * p[3]) and carry.
+                "lsr {t3}, {q}, #2",                // t3 = high(q * p[3]).
+                "adc {r4}, {r4}, xzr",              // Propagate carry to limb 4.
+
+                // Shift after round 1 while starting a * b[2].
+                "adds {r0}, {r1}, {t0}",            // New limb 0 includes high(q * p[0]).
+                "mul {t0}, {a0}, {b2}",             // t0 = low(a[0] * b[2]).
+                "adcs {r1}, {r2}, {t1}",            // New limb 1 includes high(q * p[1]).
+                "mul {t1}, {a1}, {b2}",             // t1 = low(a[1] * b[2]).
+                "adcs {r2}, {r3}, xzr",             // New limb 2; p[2] contributes zero.
+                "mul {t2}, {a2}, {b2}",             // t2 = low(a[2] * b[2]).
+                "adcs {r3}, {r4}, {t3}",            // New limb 3 includes high(q * p[3]).
+                "mul {t3}, {a3}, {b2}",             // t3 = low(a[3] * b[2]).
+                "adc {r4}, xzr, xzr",               // Capture the reduction carry as limb 4.
+
+                // Round 2: add a * b[2] and cancel the resulting low limb.
+                "adds {r0}, {r0}, {t0}",            // Add low(a[0] * b[2]) to limb 0.
+                "umulh {t0}, {a0}, {b2}",           // t0 = high(a[0] * b[2]).
+                "adcs {r1}, {r1}, {t1}",            // Add low(a[1] * b[2]) and carry.
+                "umulh {t1}, {a1}, {b2}",           // t1 = high(a[1] * b[2]).
+                "adcs {r2}, {r2}, {t2}",            // Add low(a[2] * b[2]) and carry.
+                "mul {q}, {inv}, {r0}",             // q = current limb 0 * inv mod 2^64.
+                "umulh {t2}, {a2}, {b2}",           // t2 = high(a[2] * b[2]).
+                "adcs {r3}, {r3}, {t3}",            // Add low(a[3] * b[2]) and carry.
+                "umulh {t3}, {a3}, {b2}",           // t3 = high(a[3] * b[2]).
+                "adc {r4}, {r4}, xzr",              // Propagate multiplication carry to limb 4.
+
+                "adds {r1}, {r1}, {t0}",            // Add high(a[0] * b[2]) to limb 1.
+                // low(q * p[0]) cancels r0.
+                "adcs {r2}, {r2}, {t1}",            // Add high(a[1] * b[2]) and carry.
+                "mul {t1}, {p1}, {q}",              // t1 = low(q * p[1]).
+                "adcs {r3}, {r3}, {t2}",            // Add high(a[2] * b[2]) and carry.
+                // low(q * p[2]) is zero.
+                "adc {r4}, {r4}, {t3}",             // Add high(a[3] * b[2]) and final carry.
+                "lsl {t3}, {q}, #62",               // t3 = low(q * p[3]).
+                "subs xzr, {r0}, #1",               // Set the low-limb cancellation carry.
+                "umulh {t0}, {p0}, {q}",            // t0 = high(q * p[0]).
+                "adcs {r1}, {r1}, {t1}",            // Add low(q * p[1]) and cancellation carry.
+                "umulh {t1}, {p1}, {q}",            // t1 = high(q * p[1]).
+                "adcs {r2}, {r2}, xzr",             // Propagate carry across zero p[2].
+                // high(q * p[2]) is zero.
+                "adcs {r3}, {r3}, {t3}",            // Add low(q * p[3]) and carry.
+                "lsr {t3}, {q}, #2",                // t3 = high(q * p[3]).
+                "adc {r4}, {r4}, xzr",              // Propagate carry to limb 4.
+
+                // Shift after round 2 while starting a * b[3].
+                "adds {r0}, {r1}, {t0}",            // New limb 0 includes high(q * p[0]).
+                "mul {t0}, {a0}, {b3}",             // t0 = low(a[0] * b[3]).
+                "adcs {r1}, {r2}, {t1}",            // New limb 1 includes high(q * p[1]).
+                "mul {t1}, {a1}, {b3}",             // t1 = low(a[1] * b[3]).
+                "adcs {r2}, {r3}, xzr",             // New limb 2; p[2] contributes zero.
+                "mul {t2}, {a2}, {b3}",             // t2 = low(a[2] * b[3]).
+                "adcs {r3}, {r4}, {t3}",            // New limb 3 includes high(q * p[3]).
+                "mul {t3}, {a3}, {b3}",             // t3 = low(a[3] * b[3]).
+                "adc {r4}, xzr, xzr",               // Capture the reduction carry as limb 4.
+
+                // Round 3: add a * b[3] and perform the last Montgomery cancellation.
+                "adds {r0}, {r0}, {t0}",            // Add low(a[0] * b[3]) to limb 0.
+                "umulh {t0}, {a0}, {b3}",           // t0 = high(a[0] * b[3]).
+                "adcs {r1}, {r1}, {t1}",            // Add low(a[1] * b[3]) and carry.
+                "umulh {t1}, {a1}, {b3}",           // t1 = high(a[1] * b[3]).
+                "adcs {r2}, {r2}, {t2}",            // Add low(a[2] * b[3]) and carry.
+                "mul {q}, {inv}, {r0}",             // q = current limb 0 * inv mod 2^64.
+                "umulh {t2}, {a2}, {b3}",           // t2 = high(a[2] * b[3]).
+                "adcs {r3}, {r3}, {t3}",            // Add low(a[3] * b[3]) and carry.
+                "umulh {t3}, {a3}, {b3}",           // t3 = high(a[3] * b[3]).
+                "adc {r4}, {r4}, xzr",              // Propagate multiplication carry to limb 4.
+
+                "adds {r1}, {r1}, {t0}",            // Add high(a[0] * b[3]) to limb 1.
+                // low(q * p[0]) cancels r0.
+                "adcs {r2}, {r2}, {t1}",            // Add high(a[1] * b[3]) and carry.
+                "mul {t1}, {p1}, {q}",              // t1 = low(q * p[1]).
+                "adcs {r3}, {r3}, {t2}",            // Add high(a[2] * b[3]) and carry.
+                // low(q * p[2]) is zero.
+                "adc {r4}, {r4}, {t3}",             // Add high(a[3] * b[3]) and final carry.
+                "lsl {t3}, {q}, #62",               // t3 = low(q * p[3]).
+                "subs xzr, {r0}, #1",               // Set the low-limb cancellation carry.
+                "umulh {t0}, {p0}, {q}",            // t0 = high(q * p[0]).
+                "adcs {r1}, {r1}, {t1}",            // Add low(q * p[1]) and cancellation carry.
+                "umulh {t1}, {p1}, {q}",            // t1 = high(q * p[1]).
+                "adcs {r2}, {r2}, xzr",             // Propagate carry across zero p[2].
+                // high(q * p[2]) is zero.
+                "adcs {r3}, {r3}, {t3}",            // Add low(q * p[3]) and carry.
+                "lsr {t3}, {q}, #2",                // t3 = high(q * p[3]).
+                "adc {r4}, {r4}, xzr",              // Propagate carry to limb 4.
+
+                // Shift out the fourth cancelled limb. Canonical rhs gives
+                // lhs*rhs < R*p, and m < R gives m*p < R*p. Thus the candidate
+                // (lhs*rhs + m*p)/R is below 2p < R, so no fifth limb exists.
+                // Loose inputs keep it below 2p by the closure argument cited at
+                // `mul_loose`.
+                "adds {r0}, {r1}, {t0}",            // Final candidate limb 0.
+                "adcs {r1}, {r2}, {t1}",            // Final candidate limb 1.
+                "adcs {r2}, {r3}, xzr",             // Final candidate limb 2.
+                "adcs {r3}, {r4}, {t3}",            // Final candidate limb 3.
+                $($tail,)*
+                a0 = in(reg) lhs[0],
+                a1 = in(reg) lhs[1],
+                a2 = in(reg) lhs[2],
+                a3 = in(reg) lhs[3],
+                b0 = in(reg) rhs[0],
+                b1 = in(reg) rhs[1],
+                b2 = in(reg) rhs[2],
+                b3 = in(reg) rhs[3],
+                p0 = in(reg) params[0],
+                p1 = in(reg) params[1],
+                inv = in(reg) params[4],
+                q = out(reg) _,
+                t0 = out(reg) _,
+                t1 = out(reg) _,
+                t2 = out(reg) _,
+                t3 = out(reg) _,
+                r0 = out(reg) o0,
+                r1 = out(reg) o1,
+                r2 = out(reg) o2,
+                r3 = out(reg) o3,
+                r4 = out(reg) _,
+                options(pure, nomem, nostack),
+            );
+        }
+        [o0, o1, o2, o3]
+    }};
+}
+
 /// `lhs * rhs * R^{-1} mod p`.
 #[inline(always)]
 pub(super) fn mul(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
-    let (o0, o1, o2, o3): (u64, u64, u64, u64);
-    // SAFETY: straight-line register-only arithmetic; no memory access, no
-    // stack use, and outputs depend only on the declared inputs.
-    unsafe {
-        asm!(
-            // Round 0: lhs * rhs[0], then cancel the low limb.
-            // Form the five-limb product a * b[0] in r0..r4.
-            "mul {r0}, {a0}, {b0}",             // r0 = low(a[0] * b[0]).
-            "mul {r1}, {a1}, {b0}",             // r1 = low(a[1] * b[0]).
-            "mul {r2}, {a2}, {b0}",             // r2 = low(a[2] * b[0]).
-            "mul {r3}, {a3}, {b0}",             // r3 = low(a[3] * b[0]).
+    mul_kernel!(
+        lhs, rhs, params,
+        // Subtract p = [p0,p1,0,p3].
+        "mov {q}, #0x4000000000000000",     // Materialize p3 = 2^62.
+        "subs {t0}, {r0}, {p0}",            // Tentative result limb 0 = candidate - p[0].
+        "sbcs {t1}, {r1}, {p1}",            // Tentative result limb 1 minus p[1].
+        "sbcs {t2}, {r2}, xzr",             // Tentative result limb 2; p[2] is zero.
+        "sbcs {t3}, {r3}, {q}",             // Tentative result limb 3 minus p[3].
 
-            "umulh {t0}, {a0}, {b0}",           // t0 = high(a[0] * b[0]).
-            "umulh {t1}, {a1}, {b0}",           // t1 = high(a[1] * b[0]).
-            "mul {q}, {inv}, {r0}",             // q = r0 * inv mod 2^64.
-            "umulh {t2}, {a2}, {b0}",           // t2 = high(a[2] * b[0]).
-            "umulh {t3}, {a3}, {b0}",           // t3 = high(a[3] * b[0]).
-            "adds {r1}, {r1}, {t0}",            // Add high(a[0] * b[0]) into limb 1.
-            // low(q * p[0]) cancels r0 and is discarded by the limb shift.
-            "adcs {r2}, {r2}, {t1}",            // Add high(a[1] * b[0]) and carry.
-            "mul {t1}, {p1}, {q}",              // t1 = low(q * p[1]).
-            "adcs {r3}, {r3}, {t2}",            // Add high(a[2] * b[0]) and carry.
-            // q * p[2] is zero because p[2] = 0.
-            "adc {r4}, xzr, {t3}",              // Finish a * b[0] with its fifth limb.
-            "lsl {t3}, {q}, #62",               // t3 = low(q * p[3]).
-            // Carry from r0 + low(q*p[0]) is one exactly when r0 is nonzero.
-            "subs xzr, {r0}, #1",               // Set that carry without computing the zero sum.
-            "umulh {t0}, {p0}, {q}",            // t0 = high(q * p[0]).
-            "adcs {r1}, {r1}, {t1}",            // Add low(q * p[1]) and cancellation carry.
-            "umulh {t1}, {p1}, {q}",            // t1 = high(q * p[1]).
-            "adcs {r2}, {r2}, xzr",             // Propagate carry; p[2]'s product is zero.
-            // high(q * p[2]) is zero.
-            "adcs {r3}, {r3}, {t3}",            // Add low(q * p[3]) and carry.
-            "lsr {t3}, {q}, #2",                // t3 = high(q * p[3]).
-            "adc {r4}, {r4}, xzr",              // Propagate carry into the fifth limb.
+        // `lo` means subtraction borrowed, so retain the original candidate.
+        "csel {r0}, {r0}, {t0}, lo",        // Select canonical output limb 0.
+        "csel {r1}, {r1}, {t1}, lo",        // Select canonical output limb 1.
+        "csel {r2}, {r2}, {t2}, lo",        // Select canonical output limb 2.
+        "csel {r3}, {r3}, {t3}, lo",        // Select canonical output limb 3.
+    )
+}
 
-            // Drop the cancelled low limb: (a*b[0] + q*p) / 2^64.
-            "adds {r0}, {r1}, {t0}",            // New limb 0 includes high(q * p[0]).
-            "mul {t0}, {a0}, {b1}",             // t0 = low(a[0] * b[1]).
-            "adcs {r1}, {r2}, {t1}",            // New limb 1 includes high(q * p[1]).
-            "mul {t1}, {a1}, {b1}",             // t1 = low(a[1] * b[1]).
-            "adcs {r2}, {r3}, xzr",             // New limb 2; p[2] contributes zero.
-            "mul {t2}, {a2}, {b1}",             // t2 = low(a[2] * b[1]).
-            "adcs {r3}, {r4}, {t3}",            // New limb 3 includes high(q * p[3]).
-            "mul {t3}, {a3}, {b1}",             // t3 = low(a[3] * b[1]).
-            "adc {r4}, xzr, xzr",               // Capture the reduction carry as limb 4.
+/// [`mul`] without its closing subtraction, for inputs below `2p`. The result is below `2p`, by the
+/// closure argument above Zakura Udon
+/// [`square_run`](https://github.com/zakura-core/common/blob/c4d62d2e84f0db8a19f075a8d42fb24c2f373d4a/crates/udon/src/field/pasta/montgomery.rs#L262-L272).
+/// The instructions are those of Udon's AArch64 `montgomery_multiply_loose`.
+#[inline(always)]
+pub(super) fn mul_loose(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
+    mul_kernel!(lhs, rhs, params)
+}
 
-            // Round 1: add a * b[1] to the reduced accumulator.
-            "adds {r0}, {r0}, {t0}",            // Add low(a[0] * b[1]) to limb 0.
-            "umulh {t0}, {a0}, {b1}",           // t0 = high(a[0] * b[1]).
-            "adcs {r1}, {r1}, {t1}",            // Add low(a[1] * b[1]) and carry.
-            "umulh {t1}, {a1}, {b1}",           // t1 = high(a[1] * b[1]).
-            "adcs {r2}, {r2}, {t2}",            // Add low(a[2] * b[1]) and carry.
-            "mul {q}, {inv}, {r0}",             // q = current limb 0 * inv mod 2^64.
-            "umulh {t2}, {a2}, {b1}",           // t2 = high(a[2] * b[1]).
-            "adcs {r3}, {r3}, {t3}",            // Add low(a[3] * b[1]) and carry.
-            "umulh {t3}, {a3}, {b1}",           // t3 = high(a[3] * b[1]).
-            "adc {r4}, {r4}, xzr",              // Propagate multiplication carry to limb 4.
+/// The body of [`square`] and [`square_loose`]. The template literals after the parameters
+/// are appended to the instruction sequence: the closing conditional subtraction for [`square`],
+/// nothing for [`square_loose`].
+macro_rules! square_kernel {
+    ($value:expr, $params:expr $(, $tail:literal)* $(,)?) => {{
+        let (value, params): (&Limbs, &[u64; 5]) = ($value, $params);
+        let mut a0 = value[0];
+        let mut a1 = value[1];
+        let mut a2 = value[2];
+        let mut a3 = value[3];
+        // SAFETY: straight-line register-only arithmetic; no memory access, no
+        // stack use, and outputs depend only on the declared inputs.
+        unsafe {
+            asm!(
+                // 512-bit square: cross products, doubling, diagonals.
+                // Square a (in a0..a3) exactly as in sqr_mont above; the 512-bit
+                // product limbs A0..A7 map to z0,z1,z2,z3,z4,z5,z6,z7.
 
-            "adds {r1}, {r1}, {t0}",            // Add high(a[0] * b[1]) to limb 1.
-            // low(q * p[0]) cancels r0.
-            "adcs {r2}, {r2}, {t1}",            // Add high(a[1] * b[1]) and carry.
-            "mul {t1}, {p1}, {q}",              // t1 = low(q * p[1]).
-            "adcs {r3}, {r3}, {t2}",            // Add high(a[2] * b[1]) and carry.
-            // low(q * p[2]) is zero.
-            "adc {r4}, {r4}, {t3}",             // Add high(a[3] * b[1]) and final carry.
-            "lsl {t3}, {q}, #62",               // t3 = low(q * p[3]).
-            "subs xzr, {r0}, #1",               // Set the low-limb cancellation carry.
-            "umulh {t0}, {p0}, {q}",            // t0 = high(q * p[0]).
-            "adcs {r1}, {r1}, {t1}",            // Add low(q * p[1]) and cancellation carry.
-            "umulh {t1}, {p1}, {q}",            // t1 = high(q * p[1]).
-            "adcs {r2}, {r2}, xzr",             // Propagate carry across zero p[2].
-            // high(q * p[2]) is zero.
-            "adcs {r3}, {r3}, {t3}",            // Add low(q * p[3]) and carry.
-            "lsr {t3}, {q}, #2",                // t3 = high(q * p[3]).
-            "adc {r4}, {r4}, xzr",              // Propagate carry to limb 4.
+                "mul {z1}, {a1}, {a0}",             // z1 = low(a[1] * a[0]).
+                "umulh {w1}, {a1}, {a0}",           // w1 = high(a[1] * a[0]).
+                "mul {z2}, {a2}, {a0}",             // z2 = low(a[2] * a[0]).
+                "umulh {w2}, {a2}, {a0}",           // w2 = high(a[2] * a[0]).
+                "mul {z3}, {a3}, {a0}",             // z3 = low(a[3] * a[0]).
+                "umulh {z4}, {a3}, {a0}",           // z4 = high(a[3] * a[0]).
 
-            // Shift after round 1 while starting a * b[2].
-            "adds {r0}, {r1}, {t0}",            // New limb 0 includes high(q * p[0]).
-            "mul {t0}, {a0}, {b2}",             // t0 = low(a[0] * b[2]).
-            "adcs {r1}, {r2}, {t1}",            // New limb 1 includes high(q * p[1]).
-            "mul {t1}, {a1}, {b2}",             // t1 = low(a[1] * b[2]).
-            "adcs {r2}, {r3}, xzr",             // New limb 2; p[2] contributes zero.
-            "mul {t2}, {a2}, {b2}",             // t2 = low(a[2] * b[2]).
-            "adcs {r3}, {r4}, {t3}",            // New limb 3 includes high(q * p[3]).
-            "mul {t3}, {a3}, {b2}",             // t3 = low(a[3] * b[2]).
-            "adc {r4}, xzr, xzr",               // Capture the reduction carry as limb 4.
+                "adds {z2}, {z2}, {w1}",            // Fold high(a[1] * a[0]) into product limb 2.
+                "mul {w0}, {a2}, {a1}",             // w0 = low(a[2] * a[1]).
+                "umulh {w1}, {a2}, {a1}",           // w1 = high(a[2] * a[1]).
+                "adcs {z3}, {z3}, {w2}",            // Fold high(a[2] * a[0]) into product limb 3.
+                "mul {w2}, {a3}, {a1}",             // w2 = low(a[3] * a[1]).
+                "umulh {w3}, {a3}, {a1}",           // w3 = high(a[3] * a[1]).
+                "adc {z4}, {z4}, xzr",              // Propagate carry into product limb 4.
 
-            // Round 2: add a * b[2] and cancel the resulting low limb.
-            "adds {r0}, {r0}, {t0}",            // Add low(a[0] * b[2]) to limb 0.
-            "umulh {t0}, {a0}, {b2}",           // t0 = high(a[0] * b[2]).
-            "adcs {r1}, {r1}, {t1}",            // Add low(a[1] * b[2]) and carry.
-            "umulh {t1}, {a1}, {b2}",           // t1 = high(a[1] * b[2]).
-            "adcs {r2}, {r2}, {t2}",            // Add low(a[2] * b[2]) and carry.
-            "mul {q}, {inv}, {r0}",             // q = current limb 0 * inv mod 2^64.
-            "umulh {t2}, {a2}, {b2}",           // t2 = high(a[2] * b[2]).
-            "adcs {r3}, {r3}, {t3}",            // Add low(a[3] * b[2]) and carry.
-            "umulh {t3}, {a3}, {b2}",           // t3 = high(a[3] * b[2]).
-            "adc {r4}, {r4}, xzr",              // Propagate multiplication carry to limb 4.
+                "mul {z5}, {a3}, {a2}",             // z5 = low(a[3] * a[2]).
+                "umulh {z6}, {a3}, {a2}",           // z6 = high(a[3] * a[2]).
 
-            "adds {r1}, {r1}, {t0}",            // Add high(a[0] * b[2]) to limb 1.
-            // low(q * p[0]) cancels r0.
-            "adcs {r2}, {r2}, {t1}",            // Add high(a[1] * b[2]) and carry.
-            "mul {t1}, {p1}, {q}",              // t1 = low(q * p[1]).
-            "adcs {r3}, {r3}, {t2}",            // Add high(a[2] * b[2]) and carry.
-            // low(q * p[2]) is zero.
-            "adc {r4}, {r4}, {t3}",             // Add high(a[3] * b[2]) and final carry.
-            "lsl {t3}, {q}, #62",               // t3 = low(q * p[3]).
-            "subs xzr, {r0}, #1",               // Set the low-limb cancellation carry.
-            "umulh {t0}, {p0}, {q}",            // t0 = high(q * p[0]).
-            "adcs {r1}, {r1}, {t1}",            // Add low(q * p[1]) and cancellation carry.
-            "umulh {t1}, {p1}, {q}",            // t1 = high(q * p[1]).
-            "adcs {r2}, {r2}, xzr",             // Propagate carry across zero p[2].
-            // high(q * p[2]) is zero.
-            "adcs {r3}, {r3}, {t3}",            // Add low(q * p[3]) and carry.
-            "lsr {t3}, {q}, #2",                // t3 = high(q * p[3]).
-            "adc {r4}, {r4}, xzr",              // Propagate carry to limb 4.
+                "adds {w1}, {w1}, {w2}",            // Combine terms contributing to product limb 4.
+                "mul {z0}, {a0}, {a0}",             // z0 = low(a[0]^2), product limb 0.
+                "adc {w2}, {w3}, xzr",              // Combine terms contributing to product limb 5.
 
-            // Shift after round 2 while starting a * b[3].
-            "adds {r0}, {r1}, {t0}",            // New limb 0 includes high(q * p[0]).
-            "mul {t0}, {a0}, {b3}",             // t0 = low(a[0] * b[3]).
-            "adcs {r1}, {r2}, {t1}",            // New limb 1 includes high(q * p[1]).
-            "mul {t1}, {a1}, {b3}",             // t1 = low(a[1] * b[3]).
-            "adcs {r2}, {r3}, xzr",             // New limb 2; p[2] contributes zero.
-            "mul {t2}, {a2}, {b3}",             // t2 = low(a[2] * b[3]).
-            "adcs {r3}, {r4}, {t3}",            // New limb 3 includes high(q * p[3]).
-            "mul {t3}, {a3}, {b3}",             // t3 = low(a[3] * b[3]).
-            "adc {r4}, xzr, xzr",               // Capture the reduction carry as limb 4.
+                "adds {z3}, {z3}, {w0}",            // Add low(a[2] * a[1]) into product limb 3.
+                "umulh {a0}, {a0}, {a0}",           // a0 = high(a[0]^2).
+                "adcs {z4}, {z4}, {w1}",            // Accumulate cross terms into product limb 4.
+                "mul {w1}, {a1}, {a1}",             // w1 = low(a[1]^2).
+                "adcs {z5}, {z5}, {w2}",            // Accumulate cross terms into product limb 5.
+                "umulh {a1}, {a1}, {a1}",           // a1 = high(a[1]^2).
+                "adc {z6}, {z6}, xzr",              // Propagate carry into product limb 6.
 
-            // Round 3: add a * b[3] and perform the last Montgomery cancellation.
-            "adds {r0}, {r0}, {t0}",            // Add low(a[0] * b[3]) to limb 0.
-            "umulh {t0}, {a0}, {b3}",           // t0 = high(a[0] * b[3]).
-            "adcs {r1}, {r1}, {t1}",            // Add low(a[1] * b[3]) and carry.
-            "umulh {t1}, {a1}, {b3}",           // t1 = high(a[1] * b[3]).
-            "adcs {r2}, {r2}, {t2}",            // Add low(a[2] * b[3]) and carry.
-            "mul {q}, {inv}, {r0}",             // q = current limb 0 * inv mod 2^64.
-            "umulh {t2}, {a2}, {b3}",           // t2 = high(a[2] * b[3]).
-            "adcs {r3}, {r3}, {t3}",            // Add low(a[3] * b[3]) and carry.
-            "umulh {t3}, {a3}, {b3}",           // t3 = high(a[3] * b[3]).
-            "adc {r4}, {r4}, xzr",              // Propagate multiplication carry to limb 4.
+                "adds {z1}, {z1}, {z1}",            // Double cross-term product limb 1.
+                "mul {w2}, {a2}, {a2}",             // w2 = low(a[2]^2).
+                "adcs {z2}, {z2}, {z2}",            // Double cross-term product limb 2.
+                "umulh {a2}, {a2}, {a2}",           // a2 = high(a[2]^2).
+                "adcs {z3}, {z3}, {z3}",            // Double cross-term product limb 3.
+                "mul {w3}, {a3}, {a3}",             // w3 = low(a[3]^2).
+                "adcs {z4}, {z4}, {z4}",            // Double cross-term product limb 4.
+                "umulh {a3}, {a3}, {a3}",           // a3 = high(a[3]^2).
+                "adcs {z5}, {z5}, {z5}",            // Double cross-term product limb 5.
+                "adcs {z6}, {z6}, {z6}",            // Double cross-term product limb 6.
+                "adc {z7}, xzr, xzr",               // Capture the doubled cross-term carry in limb 7.
 
-            "adds {r1}, {r1}, {t0}",            // Add high(a[0] * b[3]) to limb 1.
-            // low(q * p[0]) cancels r0.
-            "adcs {r2}, {r2}, {t1}",            // Add high(a[1] * b[3]) and carry.
-            "mul {t1}, {p1}, {q}",              // t1 = low(q * p[1]).
-            "adcs {r3}, {r3}, {t2}",            // Add high(a[2] * b[3]) and carry.
-            // low(q * p[2]) is zero.
-            "adc {r4}, {r4}, {t3}",             // Add high(a[3] * b[3]) and final carry.
-            "lsl {t3}, {q}, #62",               // t3 = low(q * p[3]).
-            "subs xzr, {r0}, #1",               // Set the low-limb cancellation carry.
-            "umulh {t0}, {p0}, {q}",            // t0 = high(q * p[0]).
-            "adcs {r1}, {r1}, {t1}",            // Add low(q * p[1]) and cancellation carry.
-            "umulh {t1}, {p1}, {q}",            // t1 = high(q * p[1]).
-            "adcs {r2}, {r2}, xzr",             // Propagate carry across zero p[2].
-            // high(q * p[2]) is zero.
-            "adcs {r3}, {r3}, {t3}",            // Add low(q * p[3]) and carry.
-            "lsr {t3}, {q}, #2",                // t3 = high(q * p[3]).
-            "adc {r4}, {r4}, xzr",              // Propagate carry to limb 4.
+                "mul {q}, {inv}, {z0}",             // q = product limb 0 * inv mod 2^64.
 
-            // Shift out the fourth cancelled limb. Canonical rhs gives
-            // lhs*rhs < R*p, and m < R gives m*p < R*p. Thus the candidate
-            // (lhs*rhs + m*p)/R is below 2p < R, so no fifth limb exists.
-            "adds {r0}, {r1}, {t0}",            // Final candidate limb 0.
-            "adcs {r1}, {r2}, {t1}",            // Final candidate limb 1.
-            "adcs {r2}, {r3}, xzr",             // Final candidate limb 2.
-            "adcs {r3}, {r4}, {t3}",            // Final candidate limb 3.
+                // Add diagonal squares to obtain a^2 in z0..z7.
+                "adds {z1}, {z1}, {a0}",            // Add high(a[0]^2) to product limb 1.
+                "adcs {z2}, {z2}, {w1}",            // Add low(a[1]^2) to product limb 2.
+                "adcs {z3}, {z3}, {a1}",            // Add high(a[1]^2) to product limb 3.
+                "adcs {z4}, {z4}, {w2}",            // Add low(a[2]^2) to product limb 4.
+                "adcs {z5}, {z5}, {a2}",            // Add high(a[2]^2) to product limb 5.
+                "adcs {z6}, {z6}, {w3}",            // Add low(a[3]^2) to product limb 6.
+                "adc {z7}, {z7}, {a3}",             // Add high(a[3]^2) to product limb 7.
 
-            // Subtract p = [p0,p1,0,p3].
-            "mov {q}, #0x4000000000000000",     // Materialize p3 = 2^62.
-            "subs {t0}, {r0}, {p0}",            // Tentative result limb 0 = candidate - p[0].
-            "sbcs {t1}, {r1}, {p1}",            // Tentative result limb 1 minus p[1].
-            "sbcs {t2}, {r2}, xzr",             // Tentative result limb 2; p[2] is zero.
-            "sbcs {t3}, {r3}, {q}",             // Tentative result limb 3 minus p[3].
+                // Montgomery cancellation 0 on the low half, as in the shared helper.
+                // low(q * p[0]) cancels z0 and is discarded by the limb shift.
+                "mul {w1}, {p1}, {q}",              // w1 = low(q * p[1]).
+                // q * p[2] is zero because p[2] = 0.
+                "lsl {w3}, {q}, #62",               // w3 = low(q * p[3]).
+                // Carry from z0 + low(q*p[0]) is one exactly when z0 is nonzero.
+                "subs xzr, {z0}, #1",               // Set that cancellation carry.
+                "umulh {w0}, {p0}, {q}",            // w0 = high(q * p[0]).
+                "adcs {z1}, {z1}, {w1}",            // Add low(q * p[1]) and cancellation carry.
+                "umulh {w1}, {p1}, {q}",            // w1 = high(q * p[1]).
+                "adcs {z2}, {z2}, xzr",             // Propagate carry across zero p[2].
+                // high(q * p[2]) is zero.
+                "adcs {z3}, {z3}, {w3}",            // Add low(q * p[3]) and carry.
+                "lsr {w3}, {q}, #2",                // w3 = high(q * p[3]).
+                "adc {cy}, xzr, xzr",               // Save the carry above limb 3.
 
-            // `lo` means subtraction borrowed, so retain the original candidate.
-            "csel {r0}, {r0}, {t0}, lo",        // Select canonical output limb 0.
-            "csel {r1}, {r1}, {t1}, lo",        // Select canonical output limb 1.
-            "csel {r2}, {r2}, {t2}, lo",        // Select canonical output limb 2.
-            "csel {r3}, {r3}, {t3}, lo",        // Select canonical output limb 3.
-            a0 = in(reg) lhs[0],
-            a1 = in(reg) lhs[1],
-            a2 = in(reg) lhs[2],
-            a3 = in(reg) lhs[3],
-            b0 = in(reg) rhs[0],
-            b1 = in(reg) rhs[1],
-            b2 = in(reg) rhs[2],
-            b3 = in(reg) rhs[3],
-            p0 = in(reg) params[0],
-            p1 = in(reg) params[1],
-            inv = in(reg) params[4],
-            q = out(reg) _,
-            t0 = out(reg) _,
-            t1 = out(reg) _,
-            t2 = out(reg) _,
-            t3 = out(reg) _,
-            r0 = out(reg) o0,
-            r1 = out(reg) o1,
-            r2 = out(reg) o2,
-            r3 = out(reg) o3,
-            r4 = out(reg) _,
-            options(pure, nomem, nostack),
-        );
-    }
-    [o0, o1, o2, o3]
+                // Shift out cancelled limb 0 and start cancellation 1.
+                "adds {z0}, {z1}, {w0}",            // New limb 0 includes high(q * p[0]).
+                "adcs {z1}, {z2}, {w1}",            // New limb 1 includes high(q * p[1]).
+                "adcs {z2}, {z3}, xzr",             // New limb 2; p[2] contributes zero.
+                "mul {q}, {inv}, {z0}",             // Next q = new limb 0 * inv mod 2^64.
+                "adc {z3}, {cy}, {w3}",             // New limb 3 includes high(q * p[3]).
+                // low(q * p[0]) cancels z0 and is discarded.
+                "mul {w1}, {p1}, {q}",              // w1 = low(next q * p[1]).
+                // next q * p[2] is zero.
+                "lsl {w3}, {q}, #62",               // w3 = low(next q * p[3]).
+                "subs xzr, {z0}, #1",               // Set the low-limb cancellation carry.
+                "umulh {w0}, {p0}, {q}",            // w0 = high(next q * p[0]).
+                "adcs {z1}, {z1}, {w1}",            // Add low(next q * p[1]) and carry.
+                "umulh {w1}, {p1}, {q}",            // w1 = high(next q * p[1]).
+                "adcs {z2}, {z2}, xzr",             // Propagate carry across zero p[2].
+                // high(next q * p[2]) is zero.
+                "adcs {z3}, {z3}, {w3}",            // Add low(next q * p[3]) and carry.
+                "lsr {w3}, {q}, #2",                // w3 = high(next q * p[3]).
+                "adc {cy}, xzr, xzr",               // Save the carry above limb 3.
+
+                // Shift out cancelled limb 1 and start cancellation 2.
+                "adds {z0}, {z1}, {w0}",            // New limb 0 includes high(q * p[0]).
+                "adcs {z1}, {z2}, {w1}",            // New limb 1 includes high(q * p[1]).
+                "adcs {z2}, {z3}, xzr",             // New limb 2; p[2] contributes zero.
+                "mul {q}, {inv}, {z0}",             // Next q = new limb 0 * inv mod 2^64.
+                "adc {z3}, {cy}, {w3}",             // New limb 3 includes high(q * p[3]).
+                // low(q * p[0]) cancels z0 and is discarded.
+                "mul {w1}, {p1}, {q}",              // w1 = low(next q * p[1]).
+                // next q * p[2] is zero.
+                "lsl {w3}, {q}, #62",               // w3 = low(next q * p[3]).
+                "subs xzr, {z0}, #1",               // Set the low-limb cancellation carry.
+                "umulh {w0}, {p0}, {q}",            // w0 = high(next q * p[0]).
+                "adcs {z1}, {z1}, {w1}",            // Add low(next q * p[1]) and carry.
+                "umulh {w1}, {p1}, {q}",            // w1 = high(next q * p[1]).
+                "adcs {z2}, {z2}, xzr",             // Propagate carry across zero p[2].
+                // high(next q * p[2]) is zero.
+                "adcs {z3}, {z3}, {w3}",            // Add low(next q * p[3]) and carry.
+                "lsr {w3}, {q}, #2",                // w3 = high(next q * p[3]).
+                "adc {cy}, xzr, xzr",               // Save the carry above limb 3.
+
+                // Shift out cancelled limb 2 and start cancellation 3.
+                "adds {z0}, {z1}, {w0}",            // New limb 0 includes high(q * p[0]).
+                "adcs {z1}, {z2}, {w1}",            // New limb 1 includes high(q * p[1]).
+                "adcs {z2}, {z3}, xzr",             // New limb 2; p[2] contributes zero.
+                "mul {q}, {inv}, {z0}",             // Final q = new limb 0 * inv mod 2^64.
+                "adc {z3}, {cy}, {w3}",             // New limb 3 includes high(q * p[3]).
+                // low(q * p[0]) cancels z0 and is discarded.
+                "mul {w1}, {p1}, {q}",              // w1 = low(final q * p[1]).
+                // final q * p[2] is zero.
+                "lsl {w3}, {q}, #62",               // w3 = low(final q * p[3]).
+                "subs xzr, {z0}, #1",               // Set the low-limb cancellation carry.
+                "umulh {w0}, {p0}, {q}",            // w0 = high(final q * p[0]).
+                "adcs {z1}, {z1}, {w1}",            // Add low(final q * p[1]) and carry.
+                "umulh {w1}, {p1}, {q}",            // w1 = high(final q * p[1]).
+                "adcs {z2}, {z2}, xzr",             // Propagate carry across zero p[2].
+                // high(final q * p[2]) is zero.
+                "adcs {z3}, {z3}, {w3}",            // Add low(final q * p[3]) and carry.
+                "lsr {w3}, {q}, #2",                // w3 = high(final q * p[3]).
+                "adc {cy}, xzr, xzr",               // Save the carry above limb 3.
+
+                // Shift out cancelled limb 3 to finish dividing the low half by R.
+                "adds {z0}, {z1}, {w0}",            // Reduced limb 0 includes high(q * p[0]).
+                "adcs {z1}, {z2}, {w1}",            // Reduced limb 1 includes high(q * p[1]).
+                "adcs {z2}, {z3}, xzr",             // Reduced limb 2; p[2] contributes zero.
+                "adc {z3}, {cy}, {w3}",             // Reduced limb 3 includes high(q * p[3]).
+                // Add the upper product half; the sum stays below 2p (see above), so no
+                // carry escapes and no conditional subtraction is needed mid-loop.
+                "adds {a0}, {z0}, {z4}",            // Next-iteration a[0].
+                "adcs {a1}, {z1}, {z5}",            // Next-iteration a[1].
+                "adcs {a2}, {z2}, {z6}",            // Next-iteration a[2].
+                "adc {a3}, {z3}, {z7}",             // Next-iteration a[3].
+                $($tail,)*
+                a0 = inout(reg) a0,
+                a1 = inout(reg) a1,
+                a2 = inout(reg) a2,
+                a3 = inout(reg) a3,
+                p0 = in(reg) params[0],
+                p1 = in(reg) params[1],
+                inv = in(reg) params[4],
+                q = out(reg) _,
+                cy = out(reg) _,
+                z0 = out(reg) _,
+                z1 = out(reg) _,
+                z2 = out(reg) _,
+                z3 = out(reg) _,
+                z4 = out(reg) _,
+                z5 = out(reg) _,
+                z6 = out(reg) _,
+                z7 = out(reg) _,
+                w0 = out(reg) _,
+                w1 = out(reg) _,
+                w2 = out(reg) _,
+                w3 = out(reg) _,
+                options(pure, nomem, nostack),
+            );
+        }
+        [a0, a1, a2, a3]
+    }};
 }
 
 /// `value^2 * R^{-1} mod p`.
 #[inline(always)]
 pub(super) fn square(value: &Limbs, params: &[u64; 5]) -> Limbs {
-    let mut a0 = value[0];
-    let mut a1 = value[1];
-    let mut a2 = value[2];
-    let mut a3 = value[3];
-    // SAFETY: straight-line register-only arithmetic; no memory access, no
-    // stack use, and outputs depend only on the declared inputs.
+    square_kernel!(
+        value, params,
+        // Conditional subtraction of p = [p0, p1, 0, 2^62]. The input is
+        // canonical, so the candidate is below 1.25p < 2^255: no bit 256
+        // exists and a four-limb comparison suffices.
+        "mov {q}, #0x4000000000000000",     // Materialize p3 = 2^62.
+        "subs {z0}, {a0}, {p0}",            // Tentative limb 0 = candidate - p0.
+        "sbcs {z1}, {a1}, {p1}",            // Tentative limb 1 minus p1.
+        "sbcs {z2}, {a2}, xzr",             // Tentative limb 2; p2 is zero.
+        "sbcs {z3}, {a3}, {q}",             // Tentative limb 3 minus p3.
+        // `lo` means the subtraction borrowed, so retain the original
+        // candidate.
+        "csel {a0}, {a0}, {z0}, lo",        // Select canonical output limb 0.
+        "csel {a1}, {a1}, {z1}, lo",        // Select canonical output limb 1.
+        "csel {a2}, {a2}, {z2}, lo",        // Select canonical output limb 2.
+        "csel {a3}, {a3}, {z3}, lo",        // Select canonical output limb 3.
+    )
+}
+
+/// [`square`] without its closing subtraction, for inputs below `2p`. The result is below `2p`, as
+/// for [`mul_loose`].
+#[inline(always)]
+pub(super) fn square_loose(value: &Limbs, params: &[u64; 5]) -> Limbs {
+    square_kernel!(value, params)
+}
+
+/// `(a * b + c * d) * R^{-1} mod p` with one interleaved Montgomery reduction. Each round adds the
+/// rows `a * b[j]` and `c * d[j]` to a five-limb accumulator, cancels the low limb and shifts it
+/// away. With `a` and `c` below `p` and `b` and `d` below `2p` the accumulator stays below
+/// `3p < 2^256` after every shift, so the fifth limb restarts at zero. The result before the
+/// closing conditional subtraction of `p` is below `(ab + cd)/R + p`: `1.5p` for canonical `b` and
+/// `d`, giving a canonical result, and `4p^2/R + p < 2p + p/2^{128}` for loose ones, giving a result
+/// below `2p`. `b` and `d` are read through pointers, since the sixteen input limbs do not fit in
+/// registers next to the accumulator.
+/// Ported from Zakura PR #447
+/// [`mul_sub_mul_nonzero_c`](https://github.com/zakura-core/common/blob/20514508059291ac65d7735d49d8c3b4ed6bcce7/crates/pasta_curves/src/fields/aarch64_asm.rs#L184-L361),
+/// which computes `a * b - c * d` with a signed accumulator. This variant drops the row negation,
+/// the sign limb and the negative fix-up.
+#[inline(always)]
+pub(super) fn sum_of_two_products(
+    a: &Limbs,
+    b: &Limbs,
+    c: &Limbs,
+    d: &Limbs,
+    params: &[u64; 5],
+) -> Limbs {
+    let (o0, o1, o2, o3): (u64, u64, u64, u64);
+    // SAFETY: reads only the four declared 32-byte inputs; no stores, no stack use and no
+    // data-dependent control flow. Each macro is purged before the block ends, so the block can
+    // be inlined more than once into one function.
     unsafe {
         asm!(
-            // 512-bit square: cross products, doubling, diagonals.
-            // Square a (in a0..a3) exactly as in sqr_mont above; the 512-bit
-            // product limbs A0..A7 map to z0,z1,z2,z3,z4,z5,z6,z7.
+            r#"
+            ldp x8, x9, [x0]
+            ldp x10, x11, [x0, #16]
+            ldp x12, x13, [x1]
+            ldp x14, x15, [x1, #16]
 
-            "mul {z1}, {a1}, {a0}",             // z1 = low(a[1] * a[0]).
-            "umulh {w1}, {a1}, {a0}",           // w1 = high(a[1] * a[0]).
-            "mul {z2}, {a2}, {a0}",             // z2 = low(a[2] * a[0]).
-            "umulh {w2}, {a2}, {a0}",           // w2 = high(a[2] * a[0]).
-            "mul {z3}, {a3}, {a0}",             // z3 = low(a[3] * a[0]).
-            "umulh {z4}, {a3}, {a0}",           // z4 = high(a[3] * a[0]).
+            .macro PASTA_ADD_ROW a0, a1, a2, a3, scalar
+        mul x0, \a0, \scalar
+        mul x1, \a1, \scalar
+        mul x3, \a2, \scalar
+        mul x5, \a3, \scalar
+        adds x20, x20, x0
+        umulh x0, \a0, \scalar
+        adcs x21, x21, x1
+        umulh x1, \a1, \scalar
+        adcs x22, x22, x3
+        umulh x3, \a2, \scalar
+        adcs x23, x23, x5
+        umulh x5, \a3, \scalar
+        adc x24, x24, xzr
+        adds x21, x21, x0
+        adcs x22, x22, x1
+        adcs x23, x23, x3
+        adc x24, x24, x5
+            .endm
 
-            "adds {z2}, {z2}, {w1}",            // Fold high(a[1] * a[0]) into product limb 2.
-            "mul {w0}, {a2}, {a1}",             // w0 = low(a[2] * a[1]).
-            "umulh {w1}, {a2}, {a1}",           // w1 = high(a[2] * a[1]).
-            "adcs {z3}, {z3}, {w2}",            // Fold high(a[2] * a[0]) into product limb 3.
-            "mul {w2}, {a3}, {a1}",             // w2 = low(a[3] * a[1]).
-            "umulh {w3}, {a3}, {a1}",           // w3 = high(a[3] * a[1]).
-            "adc {z4}, {z4}, xzr",              // Propagate carry into product limb 4.
+            .macro PASTA_CANCEL_AND_SHIFT
+        mul x3, x27, x20
+        mul x5, x26, x3
+        lsl x7, x3, #62
+        subs xzr, x20, #1
+        umulh x0, x25, x3
+        adcs x21, x21, x5
+        umulh x1, x26, x3
+        adcs x22, x22, xzr
+        adcs x23, x23, x7
+        lsr x7, x3, #2
+        adc x24, x24, xzr
 
-            "mul {z5}, {a3}, {a2}",             // z5 = low(a[3] * a[2]).
-            "umulh {z6}, {a3}, {a2}",           // z6 = high(a[3] * a[2]).
+        adds x20, x21, x0
+        adcs x21, x22, x1
+        adcs x22, x23, xzr
+        adc x23, x24, x7
+        mov x24, xzr
+            .endm
 
-            "adds {w1}, {w1}, {w2}",            // Combine terms contributing to product limb 4.
-            "mul {z0}, {a0}, {a0}",             // z0 = low(a[0]^2), product limb 0.
-            "adc {w2}, {w3}, xzr",              // Combine terms contributing to product limb 5.
+            // The first row initializes the accumulator directly.
+            ldp x16, x17, [x2]
+            mul x20, x8, x16
+            mul x21, x9, x16
+            mul x22, x10, x16
+            mul x23, x11, x16
+            umulh x0, x8, x16
+            umulh x1, x9, x16
+            umulh x3, x10, x16
+            umulh x5, x11, x16
+            adds x21, x21, x0
+            adcs x22, x22, x1
+            adcs x23, x23, x3
+            adc x24, x5, xzr
 
-            "adds {z3}, {z3}, {w0}",            // Add low(a[2] * a[1]) into product limb 3.
-            "umulh {a0}, {a0}, {a0}",           // a0 = high(a[0]^2).
-            "adcs {z4}, {z4}, {w1}",            // Accumulate cross terms into product limb 4.
-            "mul {w1}, {a1}, {a1}",             // w1 = low(a[1]^2).
-            "adcs {z5}, {z5}, {w2}",            // Accumulate cross terms into product limb 5.
-            "umulh {a1}, {a1}, {a1}",           // a1 = high(a[1]^2).
-            "adc {z6}, {z6}, xzr",              // Propagate carry into product limb 6.
+            ldr x7, [x4]
+            PASTA_ADD_ROW x12, x13, x14, x15, x7
+            PASTA_CANCEL_AND_SHIFT
 
-            "adds {z1}, {z1}, {z1}",            // Double cross-term product limb 1.
-            "mul {w2}, {a2}, {a2}",             // w2 = low(a[2]^2).
-            "adcs {z2}, {z2}, {z2}",            // Double cross-term product limb 2.
-            "umulh {a2}, {a2}, {a2}",           // a2 = high(a[2]^2).
-            "adcs {z3}, {z3}, {z3}",            // Double cross-term product limb 3.
-            "mul {w3}, {a3}, {a3}",             // w3 = low(a[3]^2).
-            "adcs {z4}, {z4}, {z4}",            // Double cross-term product limb 4.
-            "umulh {a3}, {a3}, {a3}",           // a3 = high(a[3]^2).
-            "adcs {z5}, {z5}, {z5}",            // Double cross-term product limb 5.
-            "adcs {z6}, {z6}, {z6}",            // Double cross-term product limb 6.
-            "adc {z7}, xzr, xzr",               // Capture the doubled cross-term carry in limb 7.
+            PASTA_ADD_ROW x8, x9, x10, x11, x17
+            ldr x16, [x4, #8]
+            PASTA_ADD_ROW x12, x13, x14, x15, x16
+            PASTA_CANCEL_AND_SHIFT
 
-            "mul {q}, {inv}, {z0}",             // q = product limb 0 * inv mod 2^64.
+            ldp x16, x17, [x2, #16]
+            PASTA_ADD_ROW x8, x9, x10, x11, x16
+            ldr x16, [x4, #16]
+            PASTA_ADD_ROW x12, x13, x14, x15, x16
+            PASTA_CANCEL_AND_SHIFT
 
-            // Add diagonal squares to obtain a^2 in z0..z7.
-            "adds {z1}, {z1}, {a0}",            // Add high(a[0]^2) to product limb 1.
-            "adcs {z2}, {z2}, {w1}",            // Add low(a[1]^2) to product limb 2.
-            "adcs {z3}, {z3}, {a1}",            // Add high(a[1]^2) to product limb 3.
-            "adcs {z4}, {z4}, {w2}",            // Add low(a[2]^2) to product limb 4.
-            "adcs {z5}, {z5}, {a2}",            // Add high(a[2]^2) to product limb 5.
-            "adcs {z6}, {z6}, {w3}",            // Add low(a[3]^2) to product limb 6.
-            "adc {z7}, {z7}, {a3}",             // Add high(a[3]^2) to product limb 7.
+            PASTA_ADD_ROW x8, x9, x10, x11, x17
+            ldr x16, [x4, #24]
+            PASTA_ADD_ROW x12, x13, x14, x15, x16
+            PASTA_CANCEL_AND_SHIFT
 
-            // Montgomery cancellation 0 on the low half, as in the shared helper.
-            // low(q * p[0]) cancels z0 and is discarded by the limb shift.
-            "mul {w1}, {p1}, {q}",              // w1 = low(q * p[1]).
-            // q * p[2] is zero because p[2] = 0.
-            "lsl {w3}, {q}, #62",               // w3 = low(q * p[3]).
-            // Carry from z0 + low(q*p[0]) is one exactly when z0 is nonzero.
-            "subs xzr, {z0}, #1",               // Set that cancellation carry.
-            "umulh {w0}, {p0}, {q}",            // w0 = high(q * p[0]).
-            "adcs {z1}, {z1}, {w1}",            // Add low(q * p[1]) and cancellation carry.
-            "umulh {w1}, {p1}, {q}",            // w1 = high(q * p[1]).
-            "adcs {z2}, {z2}, xzr",             // Propagate carry across zero p[2].
-            // high(q * p[2]) is zero.
-            "adcs {z3}, {z3}, {w3}",            // Add low(q * p[3]) and carry.
-            "lsr {w3}, {q}, #2",                // w3 = high(q * p[3]).
-            "adc {cy}, xzr, xzr",               // Save the carry above limb 3.
+            // Subtract p once when the result is at least p.
+            mov x7, #0x4000000000000000
+            subs x0, x20, x25
+            sbcs x1, x21, x26
+            sbcs x3, x22, xzr
+            sbcs x5, x23, x7
+            csel x20, x0, x20, cs
+            csel x21, x1, x21, cs
+            csel x22, x3, x22, cs
+            csel x23, x5, x23, cs
 
-            // Shift out cancelled limb 0 and start cancellation 1.
-            "adds {z0}, {z1}, {w0}",            // New limb 0 includes high(q * p[0]).
-            "adcs {z1}, {z2}, {w1}",            // New limb 1 includes high(q * p[1]).
-            "adcs {z2}, {z3}, xzr",             // New limb 2; p[2] contributes zero.
-            "mul {q}, {inv}, {z0}",             // Next q = new limb 0 * inv mod 2^64.
-            "adc {z3}, {cy}, {w3}",             // New limb 3 includes high(q * p[3]).
-            // low(q * p[0]) cancels z0 and is discarded.
-            "mul {w1}, {p1}, {q}",              // w1 = low(next q * p[1]).
-            // next q * p[2] is zero.
-            "lsl {w3}, {q}, #62",               // w3 = low(next q * p[3]).
-            "subs xzr, {z0}, #1",               // Set the low-limb cancellation carry.
-            "umulh {w0}, {p0}, {q}",            // w0 = high(next q * p[0]).
-            "adcs {z1}, {z1}, {w1}",            // Add low(next q * p[1]) and carry.
-            "umulh {w1}, {p1}, {q}",            // w1 = high(next q * p[1]).
-            "adcs {z2}, {z2}, xzr",             // Propagate carry across zero p[2].
-            // high(next q * p[2]) is zero.
-            "adcs {z3}, {z3}, {w3}",            // Add low(next q * p[3]) and carry.
-            "lsr {w3}, {q}, #2",                // w3 = high(next q * p[3]).
-            "adc {cy}, xzr, xzr",               // Save the carry above limb 3.
+            .purgem PASTA_CANCEL_AND_SHIFT
+            .purgem PASTA_ADD_ROW
+            "#,
+            inout("x0") a.as_ptr() => _,
+            inout("x1") c.as_ptr() => _,
+            in("x2") b.as_ptr(),
+            lateout("x3") _,
+            in("x4") d.as_ptr(),
+            lateout("x5") _,
+            lateout("x7") _,
+            lateout("x8") _,
+            lateout("x9") _,
+            lateout("x10") _,
+            lateout("x11") _,
+            lateout("x12") _,
+            lateout("x13") _,
+            lateout("x14") _,
+            lateout("x15") _,
+            lateout("x16") _,
+            lateout("x17") _,
+            lateout("x20") o0,
+            lateout("x21") o1,
+            lateout("x22") o2,
+            lateout("x23") o3,
+            lateout("x24") _,
+            in("x25") params[0],
+            in("x26") params[1],
+            in("x27") params[4],
+            options(pure, readonly, nostack),
+        );
+    }
+    [o0, o1, o2, o3]
+}
 
-            // Shift out cancelled limb 1 and start cancellation 2.
-            "adds {z0}, {z1}, {w0}",            // New limb 0 includes high(q * p[0]).
-            "adcs {z1}, {z2}, {w1}",            // New limb 1 includes high(q * p[1]).
-            "adcs {z2}, {z3}, xzr",             // New limb 2; p[2] contributes zero.
-            "mul {q}, {inv}, {z0}",             // Next q = new limb 0 * inv mod 2^64.
-            "adc {z3}, {cy}, {w3}",             // New limb 3 includes high(q * p[3]).
-            // low(q * p[0]) cancels z0 and is discarded.
-            "mul {w1}, {p1}, {q}",              // w1 = low(next q * p[1]).
-            // next q * p[2] is zero.
-            "lsl {w3}, {q}, #62",               // w3 = low(next q * p[3]).
-            "subs xzr, {z0}, #1",               // Set the low-limb cancellation carry.
-            "umulh {w0}, {p0}, {q}",            // w0 = high(next q * p[0]).
-            "adcs {z1}, {z1}, {w1}",            // Add low(next q * p[1]) and carry.
-            "umulh {w1}, {p1}, {q}",            // w1 = high(next q * p[1]).
-            "adcs {z2}, {z2}, xzr",             // Propagate carry across zero p[2].
-            // high(next q * p[2]) is zero.
-            "adcs {z3}, {z3}, {w3}",            // Add low(next q * p[3]) and carry.
-            "lsr {w3}, {q}, #2",                // w3 = high(next q * p[3]).
-            "adc {cy}, xzr, xzr",               // Save the carry above limb 3.
-
-            // Shift out cancelled limb 2 and start cancellation 3.
-            "adds {z0}, {z1}, {w0}",            // New limb 0 includes high(q * p[0]).
-            "adcs {z1}, {z2}, {w1}",            // New limb 1 includes high(q * p[1]).
-            "adcs {z2}, {z3}, xzr",             // New limb 2; p[2] contributes zero.
-            "mul {q}, {inv}, {z0}",             // Final q = new limb 0 * inv mod 2^64.
-            "adc {z3}, {cy}, {w3}",             // New limb 3 includes high(q * p[3]).
-            // low(q * p[0]) cancels z0 and is discarded.
-            "mul {w1}, {p1}, {q}",              // w1 = low(final q * p[1]).
-            // final q * p[2] is zero.
-            "lsl {w3}, {q}, #62",               // w3 = low(final q * p[3]).
-            "subs xzr, {z0}, #1",               // Set the low-limb cancellation carry.
-            "umulh {w0}, {p0}, {q}",            // w0 = high(final q * p[0]).
-            "adcs {z1}, {z1}, {w1}",            // Add low(final q * p[1]) and carry.
-            "umulh {w1}, {p1}, {q}",            // w1 = high(final q * p[1]).
-            "adcs {z2}, {z2}, xzr",             // Propagate carry across zero p[2].
-            // high(final q * p[2]) is zero.
-            "adcs {z3}, {z3}, {w3}",            // Add low(final q * p[3]) and carry.
-            "lsr {w3}, {q}, #2",                // w3 = high(final q * p[3]).
-            "adc {cy}, xzr, xzr",               // Save the carry above limb 3.
-
-            // Shift out cancelled limb 3 to finish dividing the low half by R.
-            "adds {z0}, {z1}, {w0}",            // Reduced limb 0 includes high(q * p[0]).
-            "adcs {z1}, {z2}, {w1}",            // Reduced limb 1 includes high(q * p[1]).
-            "adcs {z2}, {z3}, xzr",             // Reduced limb 2; p[2] contributes zero.
-            "adc {z3}, {cy}, {w3}",             // Reduced limb 3 includes high(q * p[3]).
-            // Add the upper product half; the sum stays below 2p (see above), so no
-            // carry escapes and no conditional subtraction is needed mid-loop.
-            "adds {a0}, {z0}, {z4}",            // Next-iteration a[0].
-            "adcs {a1}, {z1}, {z5}",            // Next-iteration a[1].
-            "adcs {a2}, {z2}, {z6}",            // Next-iteration a[2].
-            "adc {a3}, {z3}, {z7}",             // Next-iteration a[3].
-
-            // Conditional subtraction of p = [p0, p1, 0, 2^62]. The input is
-            // canonical, so the candidate is below 1.25p < 2^255: no bit 256
-            // exists and a four-limb comparison suffices.
-            "mov {q}, #0x4000000000000000",     // Materialize p3 = 2^62.
-            "subs {z0}, {a0}, {p0}",            // Tentative limb 0 = candidate - p0.
-            "sbcs {z1}, {a1}, {p1}",            // Tentative limb 1 minus p1.
-            "sbcs {z2}, {a2}, xzr",             // Tentative limb 2; p2 is zero.
-            "sbcs {z3}, {a3}, {q}",             // Tentative limb 3 minus p3.
-            // `lo` means the subtraction borrowed, so retain the original
-            // candidate.
-            "csel {a0}, {a0}, {z0}, lo",        // Select canonical output limb 0.
-            "csel {a1}, {a1}, {z1}, lo",        // Select canonical output limb 1.
-            "csel {a2}, {a2}, {z2}, lo",        // Select canonical output limb 2.
-            "csel {a3}, {a3}, {z3}, lo",        // Select canonical output limb 3.
-            a0 = inout(reg) a0,
-            a1 = inout(reg) a1,
-            a2 = inout(reg) a2,
-            a3 = inout(reg) a3,
-            p0 = in(reg) params[0],
-            p1 = in(reg) params[1],
-            inv = in(reg) params[4],
-            q = out(reg) _,
-            cy = out(reg) _,
-            z0 = out(reg) _,
-            z1 = out(reg) _,
-            z2 = out(reg) _,
-            z3 = out(reg) _,
-            z4 = out(reg) _,
-            z5 = out(reg) _,
-            z6 = out(reg) _,
-            z7 = out(reg) _,
-            w0 = out(reg) _,
-            w1 = out(reg) _,
-            w2 = out(reg) _,
-            w3 = out(reg) _,
+/// `lhs + rhs mod 2p`, below `2p`, for inputs below `2p`. `twice_modulus` is `2p`, of the shape
+/// `[t0, t1, 0, 2^63]`. The sum can exceed `2^256`, so the top carry joins the one conditional
+/// subtraction of `2p`.
+/// Zakura Udon
+/// [`add_loose`](https://github.com/zakura-core/common/blob/c4d62d2e84f0db8a19f075a8d42fb24c2f373d4a/crates/udon/src/field/aarch64_asm/mod.rs#L251-L300)
+/// with the zero limb of `2p` read from `xzr`.
+#[inline(always)]
+pub(super) fn add_loose(lhs: &Limbs, rhs: &Limbs, twice_modulus: &Limbs) -> Limbs {
+    let [mut r0, mut r1, mut r2, mut r3] = *lhs;
+    // SAFETY: register-only arithmetic with declared inputs and outputs;
+    // no memory or stack access and no data-dependent control flow.
+    unsafe {
+        asm!(
+            "adds {r0}, {r0}, {b0}",
+            "adcs {r1}, {r1}, {b1}",
+            "adcs {r2}, {r2}, {b2}",
+            "adcs {r3}, {r3}, {b3}",
+            "cset {c}, cs",
+            "subs {t0}, {r0}, {m0}",
+            "sbcs {t1}, {r1}, {m1}",
+            "sbcs {t2}, {r2}, xzr",
+            "sbcs {t3}, {r3}, {m3}",
+            "adcs {c}, {c}, xzr",
+            "csel {r0}, {t0}, {r0}, ne",
+            "csel {r1}, {t1}, {r1}, ne",
+            "csel {r2}, {t2}, {r2}, ne",
+            "csel {r3}, {t3}, {r3}, ne",
+            r0 = inout(reg) r0,
+            r1 = inout(reg) r1,
+            r2 = inout(reg) r2,
+            r3 = inout(reg) r3,
+            b0 = in(reg) rhs[0],
+            b1 = in(reg) rhs[1],
+            b2 = in(reg) rhs[2],
+            b3 = in(reg) rhs[3],
+            m0 = in(reg) twice_modulus[0],
+            m1 = in(reg) twice_modulus[1],
+            m3 = in(reg) twice_modulus[3],
+            t0 = out(reg) _,
+            t1 = out(reg) _,
+            t2 = out(reg) _,
+            t3 = out(reg) _,
+            c = out(reg) _,
             options(pure, nomem, nostack),
         );
     }
-    [a0, a1, a2, a3]
+    [r0, r1, r2, r3]
+}
+
+/// `lhs - rhs mod 2p`, below `2p`, for inputs below `2p`, adding `2p` back exactly when the
+/// subtraction borrows. `twice_modulus` as for [`add_loose`].
+/// Zakura Udon
+/// [`sub_loose`](https://github.com/zakura-core/common/blob/c4d62d2e84f0db8a19f075a8d42fb24c2f373d4a/crates/udon/src/field/aarch64_asm/mod.rs#L302-L346)
+/// with the zero limb of `2p` read from `xzr`.
+#[inline(always)]
+pub(super) fn sub_loose(lhs: &Limbs, rhs: &Limbs, twice_modulus: &Limbs) -> Limbs {
+    let [mut r0, mut r1, mut r2, mut r3] = *lhs;
+    // SAFETY: register-only arithmetic with declared inputs and outputs;
+    // no memory or stack access and no data-dependent control flow.
+    unsafe {
+        asm!(
+            "subs {r0}, {r0}, {b0}",
+            "sbcs {r1}, {r1}, {b1}",
+            "sbcs {r2}, {r2}, {b2}",
+            "sbcs {r3}, {r3}, {b3}",
+            "csel {t0}, {m0}, xzr, cc",
+            "csel {t1}, {m1}, xzr, cc",
+            "csel {t3}, {m3}, xzr, cc",
+            "adds {r0}, {r0}, {t0}",
+            "adcs {r1}, {r1}, {t1}",
+            "adcs {r2}, {r2}, xzr",
+            "adc {r3}, {r3}, {t3}",
+            r0 = inout(reg) r0,
+            r1 = inout(reg) r1,
+            r2 = inout(reg) r2,
+            r3 = inout(reg) r3,
+            b0 = in(reg) rhs[0],
+            b1 = in(reg) rhs[1],
+            b2 = in(reg) rhs[2],
+            b3 = in(reg) rhs[3],
+            m0 = in(reg) twice_modulus[0],
+            m1 = in(reg) twice_modulus[1],
+            m3 = in(reg) twice_modulus[3],
+            t0 = out(reg) _,
+            t1 = out(reg) _,
+            t3 = out(reg) _,
+            options(pure, nomem, nostack),
+        );
+    }
+    [r0, r1, r2, r3]
+}
+
+/// `-value mod 2p`, below `2p`, for an input below `2p`: [`sub_loose`] from zero.
+#[inline(always)]
+pub(super) fn neg_loose(value: &Limbs, twice_modulus: &Limbs) -> Limbs {
+    let (r0, r1, r2, r3): (u64, u64, u64, u64);
+    // SAFETY: register-only arithmetic with declared inputs and outputs;
+    // no memory or stack access and no data-dependent control flow.
+    unsafe {
+        asm!(
+            "subs {r0}, xzr, {b0}",
+            "sbcs {r1}, xzr, {b1}",
+            "sbcs {r2}, xzr, {b2}",
+            "sbcs {r3}, xzr, {b3}",
+            "csel {t0}, {m0}, xzr, cc",
+            "csel {t1}, {m1}, xzr, cc",
+            "csel {t3}, {m3}, xzr, cc",
+            "adds {r0}, {r0}, {t0}",
+            "adcs {r1}, {r1}, {t1}",
+            "adcs {r2}, {r2}, xzr",
+            "adc {r3}, {r3}, {t3}",
+            b0 = in(reg) value[0],
+            b1 = in(reg) value[1],
+            b2 = in(reg) value[2],
+            b3 = in(reg) value[3],
+            m0 = in(reg) twice_modulus[0],
+            m1 = in(reg) twice_modulus[1],
+            m3 = in(reg) twice_modulus[3],
+            r0 = out(reg) r0,
+            r1 = out(reg) r1,
+            r2 = out(reg) r2,
+            r3 = out(reg) r3,
+            t0 = out(reg) _,
+            t1 = out(reg) _,
+            t3 = out(reg) _,
+            options(pure, nomem, nostack),
+        );
+    }
+    [r0, r1, r2, r3]
+}
+
+/// The canonical representative of a value below `2p`: one conditional subtraction of `p`, the
+/// closing instructions of [`mul`].
+#[inline(always)]
+pub(super) fn reduce_loose(value: &Limbs, params: &[u64; 5]) -> Limbs {
+    let [mut r0, mut r1, mut r2, mut r3] = *value;
+    // SAFETY: register-only arithmetic with declared inputs and outputs;
+    // no memory or stack access and no data-dependent control flow.
+    unsafe {
+        asm!(
+            "subs {t0}, {r0}, {p0}",
+            "sbcs {t1}, {r1}, {p1}",
+            "sbcs {t2}, {r2}, xzr",
+            "sbcs {t3}, {r3}, {p3}",
+            "csel {r0}, {r0}, {t0}, lo",
+            "csel {r1}, {r1}, {t1}, lo",
+            "csel {r2}, {r2}, {t2}, lo",
+            "csel {r3}, {r3}, {t3}, lo",
+            r0 = inout(reg) r0,
+            r1 = inout(reg) r1,
+            r2 = inout(reg) r2,
+            r3 = inout(reg) r3,
+            p0 = in(reg) params[0],
+            p1 = in(reg) params[1],
+            p3 = in(reg) params[3],
+            t0 = out(reg) _,
+            t1 = out(reg) _,
+            t2 = out(reg) _,
+            t3 = out(reg) _,
+            options(pure, nomem, nostack),
+        );
+    }
+    [r0, r1, r2, r3]
 }

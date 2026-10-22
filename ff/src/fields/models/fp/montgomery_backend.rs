@@ -1,4 +1,4 @@
-use super::{deferred, modinv62, Fp, FpConfig};
+use super::{deferred, modinv62, pasta_asm::loose, Fp, FpConfig};
 use crate::{
     biginteger::arithmetic as fa, BigInt, BigInteger, PrimeField, SqrtPrecomputation, Zero,
 };
@@ -781,6 +781,87 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     #[inline]
     fn square_in_place(a: &mut Fp<Self, N>) {
         T::square_in_place(a)
+    }
+
+    #[inline(always)]
+    fn loose_add_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
+        if loose::applies::<T, N>() && loose::active() {
+            *a = loose::add(a, b);
+        } else {
+            T::add_assign(a, b);
+        }
+    }
+
+    #[inline(always)]
+    fn loose_sub_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
+        if loose::applies::<T, N>() && loose::active() {
+            *a = loose::sub(a, b);
+        } else {
+            T::sub_assign(a, b);
+        }
+    }
+
+    #[inline(always)]
+    fn loose_double_in_place(a: &mut Fp<Self, N>) {
+        if loose::applies::<T, N>() && loose::active() {
+            *a = loose::double(a);
+        } else {
+            T::double_in_place(a);
+        }
+    }
+
+    #[inline(always)]
+    fn loose_neg_in_place(a: &mut Fp<Self, N>) {
+        if loose::applies::<T, N>() && loose::active() {
+            *a = loose::neg(a);
+        } else {
+            T::neg_in_place(a);
+        }
+    }
+
+    #[inline(always)]
+    fn loose_mul_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
+        if loose::applies::<T, N>() && loose::active() {
+            *a = loose::mul(a, b);
+        } else {
+            T::mul_assign(a, b);
+        }
+    }
+
+    #[inline(always)]
+    fn loose_square_in_place(a: &mut Fp<Self, N>) {
+        if loose::applies::<T, N>() && loose::active() {
+            *a = loose::square(a);
+        } else {
+            T::square_in_place(a);
+        }
+    }
+
+    #[inline(always)]
+    fn loose_reduce(a: &Fp<Self, N>) -> Fp<Self, N> {
+        if loose::applies::<T, N>() && loose::active() {
+            loose::reduce(a)
+        } else {
+            *a
+        }
+    }
+
+    #[inline(always)]
+    fn loose_is_zero(a: &Fp<Self, N>) -> bool {
+        if loose::applies::<T, N>() && loose::active() {
+            loose::is_zero(a)
+        } else {
+            a.is_zero()
+        }
+    }
+
+    #[inline(always)]
+    fn loose_sum_of_two_products(a: &[Fp<Self, N>; 2], b: &[Fp<Self, N>; 2]) -> Fp<Self, N> {
+        if loose::applies::<T, N>() && loose::active() {
+            loose::sum_of_two_products(a, b)
+        } else {
+            T::sum_of_products(a, b)
+        }
     }
 
     fn inverse(a: &Fp<Self, N>) -> Option<Fp<Self, N>> {

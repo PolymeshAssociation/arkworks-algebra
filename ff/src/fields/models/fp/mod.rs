@@ -32,7 +32,8 @@ mod cpu;
 mod pasta_asm;
 pub use pasta_asm::{
     is_pasta_shape, pasta_add_assign, pasta_asm_available, pasta_asm_compiled,
-    pasta_double_in_place, pasta_mul_assign, pasta_square_in_place, pasta_sub_assign,
+    pasta_double_in_place, pasta_fused_available, pasta_mul_assign, pasta_square_in_place,
+    pasta_sub_assign, pasta_sum_of_two_products,
 };
 
 /// A trait that specifies the configuration of a prime field.
@@ -109,6 +110,62 @@ pub trait FpConfig<const N: usize>: Send + Sync + 'static + Sized {
 
     /// Set a *= a.
     fn square_in_place(a: &mut Fp<Self, N>);
+
+    /// The loose-arithmetic hooks behind [`Field::loose_add_assign`] and its siblings. The
+    /// defaults keep every value canonical.
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_add_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
+        Self::add_assign(a, b)
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_sub_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
+        Self::sub_assign(a, b)
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_double_in_place(a: &mut Fp<Self, N>) {
+        Self::double_in_place(a)
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_neg_in_place(a: &mut Fp<Self, N>) {
+        Self::neg_in_place(a)
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_mul_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
+        Self::mul_assign(a, b)
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_square_in_place(a: &mut Fp<Self, N>) {
+        Self::square_in_place(a)
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_reduce(a: &Fp<Self, N>) -> Fp<Self, N> {
+        *a
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_is_zero(a: &Fp<Self, N>) -> bool {
+        a.is_zero()
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_sum_of_two_products(a: &[Fp<Self, N>; 2], b: &[Fp<Self, N>; 2]) -> Fp<Self, N> {
+        Self::sum_of_products(a, b)
+    }
 
     /// Compute a^{-1} if `a` is not zero.
     fn inverse(a: &Fp<Self, N>) -> Option<Fp<Self, N>>;
@@ -291,6 +348,51 @@ impl<P: FpConfig<N>, const N: usize> Field for Fp<P, N> {
     #[inline]
     fn sum_of_products<const T: usize>(a: &[Self; T], b: &[Self; T]) -> Self {
         P::sum_of_products(a, b)
+    }
+
+    #[inline(always)]
+    fn loose_add_assign(&mut self, other: &Self) {
+        P::loose_add_assign(self, other)
+    }
+
+    #[inline(always)]
+    fn loose_sub_assign(&mut self, other: &Self) {
+        P::loose_sub_assign(self, other)
+    }
+
+    #[inline(always)]
+    fn loose_double_in_place(&mut self) {
+        P::loose_double_in_place(self)
+    }
+
+    #[inline(always)]
+    fn loose_neg_in_place(&mut self) {
+        P::loose_neg_in_place(self)
+    }
+
+    #[inline(always)]
+    fn loose_mul_assign(&mut self, other: &Self) {
+        P::loose_mul_assign(self, other)
+    }
+
+    #[inline(always)]
+    fn loose_square_in_place(&mut self) {
+        P::loose_square_in_place(self)
+    }
+
+    #[inline(always)]
+    fn loose_reduce(&self) -> Self {
+        P::loose_reduce(self)
+    }
+
+    #[inline(always)]
+    fn loose_is_zero(&self) -> bool {
+        P::loose_is_zero(self)
+    }
+
+    #[inline(always)]
+    fn loose_sum_of_two_products(a: &[Self; 2], b: &[Self; 2]) -> Self {
+        P::loose_sum_of_two_products(a, b)
     }
 
     #[inline]

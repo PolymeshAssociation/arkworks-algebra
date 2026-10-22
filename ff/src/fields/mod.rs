@@ -38,6 +38,9 @@ pub use cyclotomic::*;
 mod sqrt;
 pub use sqrt::*;
 
+mod loose;
+pub use loose::Loose;
+
 #[cfg(feature = "parallel")]
 use ark_std::cmp::max;
 #[cfg(feature = "parallel")]
@@ -301,6 +304,66 @@ pub trait Field:
             sum += a[i] * b[i];
         }
         sum
+    }
+
+    /// `self += other` in the loose representation behind [`Loose`]: an integer congruent to the
+    /// value but bounded by twice the modulus instead of the modulus. The defaults keep every value
+    /// canonical, which the bound admits. Prime fields of the Pasta shape override the `loose_*`
+    /// methods. Loose values reach them only through [`Loose`].
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_add_assign(&mut self, other: &Self) {
+        *self += other;
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_sub_assign(&mut self, other: &Self) {
+        *self -= other;
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_double_in_place(&mut self) {
+        self.double_in_place();
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_neg_in_place(&mut self) {
+        self.neg_in_place();
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_mul_assign(&mut self, other: &Self) {
+        *self *= other;
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_square_in_place(&mut self) {
+        self.square_in_place();
+    }
+
+    /// The canonical representative of a loose value.
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_reduce(&self) -> Self {
+        *self
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_is_zero(&self) -> bool {
+        self.is_zero()
+    }
+
+    /// `a[0] * b[0] + a[1] * b[1]` for canonical `a` and loose `b`, loose.
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_sum_of_two_products(a: &[Self; 2], b: &[Self; 2]) -> Self {
+        Self::sum_of_products(a, b)
     }
 
     /// Returns `sum([a_i * b_i])` for slices of equal length. Unlike [`Self::sum_of_products`],
