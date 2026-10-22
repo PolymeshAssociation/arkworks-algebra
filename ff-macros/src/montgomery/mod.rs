@@ -147,7 +147,8 @@ pub(crate) fn mont_config_helper(
     };
 
     // Pasta-shape moduli take ark-ff's `pasta_*` assembly kernels when they are compiled in, and
-    // for multiply and square also usable on the CPU.
+    // for multiply and square also usable on the CPU, and two-term sums of products take the fused
+    // kernel where it exists.
     let pasta_shape = limbs == 4 && modulus_limbs[2] == 0 && modulus_limbs[3] == 1 << 62;
     let pasta = |gate: proc_macro2::TokenStream, call: proc_macro2::TokenStream| {
         if pasta_shape {
@@ -183,6 +184,15 @@ pub(crate) fn mont_config_helper(
         available,
         quote::quote! { ark_ff::fields::pasta_square_in_place::<Self>(a) },
     );
+    let pasta_sum_of_products = if pasta_shape {
+        quote::quote! {
+            if M == 2 && ark_ff::fields::pasta_fused_available() {
+                return ark_ff::fields::pasta_sum_of_two_products::<Self>(&a[..], &b[..]);
+            }
+        }
+    } else {
+        quote::quote! {}
+    };
 
     let mixed_radix = if let Some(large_subgroup_generator) = large_subgroup_generator {
         quote::quote! {
@@ -280,6 +290,7 @@ pub(crate) fn mont_config_helper(
                     a: &[F; M],
                     b: &[F; M],
                 ) -> F {
+                    #pasta_sum_of_products
                     #sum_of_products
                 }
             }

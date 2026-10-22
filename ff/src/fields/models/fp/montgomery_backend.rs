@@ -1,4 +1,4 @@
-use super::{deferred, loose, modinv62, Fp, FpConfig};
+use super::{deferred, modinv62, pasta_asm::loose, Fp, FpConfig};
 use crate::{
     biginteger::arithmetic as fa, BigInt, BigInteger, LooseToken, PrimeField, SqrtPrecomputation,
     Zero,

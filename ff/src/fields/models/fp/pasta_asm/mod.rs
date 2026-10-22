@@ -3,7 +3,9 @@
 //! `add_assign`, `sub_assign` and `double_in_place` of such a field here whenever
 //! [`pasta_asm_compiled`] holds, the `asm` feature on AArch64 or x86-64, and `mul_assign` and
 //! `square_in_place` whenever [`pasta_asm_available`] holds, which on x86-64 also needs a CPU with
-//! BMI2 and ADX. Every kernel requires canonical inputs and returns
+//! BMI2 and ADX. Two-term `sum_of_products` takes a fused kernel with one Montgomery reduction
+//! whenever [`pasta_fused_available`] holds, on AArch64 only. Every kernel requires canonical inputs
+//! and returns
 //! the same canonical element as the portable path. On an Apple M3 Max the AArch64 kernels make
 //! Pallas mixed addition 1.3x, a GLV scalar multiplication 1.45x and MSMs of `2^8` to `2^16`
 //! points 1.35-1.4x faster than the portable path.
@@ -42,6 +44,16 @@ mod kernel {
     pub(super) fn square(_: &Limbs, _: &[u64; 5]) -> Limbs {
         unreachable!("{ABSENT}")
     }
+}
+
+pub(super) mod loose;
+
+#[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
+use kernel::sum_of_two_products as fused_kernel;
+
+#[cfg(not(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64"))))]
+fn fused_kernel(_: &[u64; 4], _: &[u64; 4], _: &[u64; 4], _: &[u64; 4], _: &[u64; 5]) -> [u64; 4] {
+    unreachable!("the fused Pasta kernel is not compiled in")
 }
 
 /// Whether a 4-limb modulus has the shape the kernels hardcode.
@@ -93,6 +105,13 @@ pub fn pasta_asm_available() -> bool {
     {
         false
     }
+}
+
+/// Whether the fused two-product kernel is compiled in. AArch64 only.
+#[doc(hidden)]
+#[inline(always)]
+pub const fn pasta_fused_available() -> bool {
+    cfg!(all(feature = "asm", target_arch = "aarch64"))
 }
 
 type F<T> = Fp<MontBackend<T, 4>, 4>;
@@ -164,6 +183,29 @@ pub fn pasta_square_in_place<T: MontConfig<4>>(a: &mut F<T>) {
     (a.0).0 = kernel::square(&(a.0).0, params::<T>());
 }
 
+/// `a[0] * b[0] + a[1] * b[1]` by the fused Pasta-shape kernel, one Montgomery reduction for
+/// both products. Both slices hold exactly two elements. Emitted by the `MontConfig` derive for
+/// two-term `sum_of_products` behind [`pasta_fused_available`].
+#[doc(hidden)]
+#[inline(always)]
+pub fn pasta_sum_of_two_products<T: MontConfig<4>>(a: &[F<T>], b: &[F<T>]) -> F<T> {
+    debug_assert!(a.len() == 2 && b.len() == 2);
+    debug_check::<T>(&[&a[0], &a[1], &b[0], &b[1]]);
+    debug_assert!(
+        pasta_fused_available(),
+        "fused Pasta kernel is not compiled in"
+    );
+    let mut r = a[0];
+    (r.0).0 = fused_kernel(
+        &(a[0].0).0,
+        &(b[0].0).0,
+        &(a[1].0).0,
+        &(b[1].0).0,
+        params::<T>(),
+    );
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,7 +225,7 @@ mod tests {
 
     /// Canonical Montgomery representations that stress the carry and borrow chains and the
     /// final conditional subtraction.
-    fn edge_values<T: MontConfig<4>>() -> Vec<F<T>> {
+    pub(super) fn edge_values<T: MontConfig<4>>() -> Vec<F<T>> {
         let p = T::MODULUS;
         let mut raw = ark_std::vec![
             BigInt::<4>::zero(),
@@ -268,6 +310,43 @@ mod tests {
                 }
             }
         }
+        // The x86-64 kernel serves only loose arithmetic, but returns canonical results for
+        // canonical inputs like the AArch64 one.
+        let x86_fused = cfg!(all(feature = "asm", target_arch = "x86_64")) && multiplicative;
+        if !(pasta_fused_available() || x86_fused) {
+            return;
+        }
+        let fused = |a: &[F<T>; 2], b: &[F<T>; 2]| {
+            let mut r = a[0];
+            (r.0).0 = fused_kernel(
+                &(a[0].0).0,
+                &(b[0].0).0,
+                &(a[1].0).0,
+                &(b[1].0).0,
+                params::<T>(),
+            );
+            r
+        };
+        let n = values.len();
+        for (i, a) in values.iter().enumerate() {
+            for (j, b) in values.iter().enumerate() {
+                for c in [values[(i + j + 1) % n], values[(i * 7 + j * 3) % n], *a, *b] {
+                    let d = values[(i + 3 * j + 5) % n];
+                    let r = fused(&[*a, c], &[*b, d]);
+                    canonical(&r);
+                    let expected = (big(a) * big(b) + big(&c) * big(&d)) * &r_inv % &p;
+                    assert_eq!(big(&r), expected, "{a} * {b} + {c} * {d}");
+                }
+            }
+        }
+        let top = F::<T>::new_unchecked({
+            let mut v = T::MODULUS;
+            v.sub_with_borrow(&BigInt::one());
+            v
+        });
+        let r = fused(&[top, top], &[top, top]);
+        canonical(&r);
+        assert_eq!(big(&r), (big(&top) * big(&top) * 2u8) * &r_inv % &p);
     }
 
     #[test]
@@ -290,6 +369,8 @@ mod tests {
                 assert_eq!((a + b) - b, a);
                 assert_eq!(a.double(), a + a);
                 assert_eq!(F::<T>::from_bigint(a.into_bigint()), Some(a));
+                let (c, d) = (F::<T>::rand(&mut rng), F::<T>::rand(&mut rng));
+                assert_eq!(F::<T>::sum_of_products(&[a, c], &[b, d]), a * b + c * d);
             }
         }
         run::<PallasBase>();

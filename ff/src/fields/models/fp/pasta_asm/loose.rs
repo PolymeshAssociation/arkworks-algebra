@@ -3,14 +3,14 @@
 //! and squaring skip their closing conditional subtraction; addition and subtraction work modulo
 //! `2p`. Products of inputs below `2p` stay below `2p` by the closure argument above Zakura Udon
 //! [`square_run`](https://github.com/zakura-core/common/blob/c4d62d2e84f0db8a19f075a8d42fb24c2f373d4a/crates/udon/src/field/pasta/montgomery.rs#L262-L272).
-//! The kernels are Udon's
+//! The portable kernels are Udon's
 //! [`montgomery.rs`](https://github.com/zakura-core/common/blob/c4d62d2e84f0db8a19f075a8d42fb24c2f373d4a/crates/udon/src/field/pasta/montgomery.rs)
 //! and `square_wide` from
 //! [`word.rs`](https://github.com/zakura-core/common/blob/c4d62d2e84f0db8a19f075a8d42fb24c2f373d4a/crates/udon/src/field/pasta/word.rs#L126-L158).
 //! The functions take the limbs of an `N`-limb element and apply only when [`applies`] holds, which
 //! the callers check first.
 
-use super::{Fp, MontBackend, MontConfig};
+use super::super::{Fp, MontBackend, MontConfig};
 use crate::BigInt;
 
 type Limbs = [u64; 4];
@@ -24,11 +24,25 @@ pub const fn applies<T: MontConfig<N>, const N: usize>() -> bool {
     N == 4 && T::MODULUS.0[1] >> 62 == 0 && T::MODULUS.0[2] == 0 && T::MODULUS.0[3] == 1 << 62
 }
 
-/// Whether the loose kernels serve [`applies`] moduli on this target. On wasm the canonical
-/// radix-`2^29` products are faster than these 64-bit ones, so it keeps canonical arithmetic.
+/// Whether the loose kernels serve [`applies`] moduli on this target and CPU. On wasm the
+/// canonical radix-`2^29` products are faster than these 64-bit ones, and on x86-64 with the
+/// MULX/ADX kernels in use the x86-64 loose kernels are unmeasured against them, so both keep
+/// canonical arithmetic. The x86-64 answer comes from a cached CPUID check, so it is fixed for the
+/// process.
 #[inline(always)]
-pub const fn active() -> bool {
-    !cfg!(target_family = "wasm")
+pub fn active() -> bool {
+    #[cfg(target_family = "wasm")]
+    {
+        false
+    }
+    #[cfg(all(feature = "asm", target_arch = "x86_64"))]
+    {
+        !super::pasta_asm_available()
+    }
+    #[cfg(not(any(target_family = "wasm", all(feature = "asm", target_arch = "x86_64"))))]
+    {
+        true
+    }
 }
 
 /// The kernel constants of a Pasta-shape modulus, zero for every other modulus.
@@ -45,12 +59,7 @@ trait LooseParams<const N: usize>: MontConfig<N> {
     } else {
         [0; 5]
     };
-    const MODULUS_LIMBS: Limbs = [
-        Self::PARAMS[0],
-        Self::PARAMS[1],
-        Self::PARAMS[2],
-        Self::PARAMS[3],
-    ];
+    const MODULUS_LIMBS: Limbs = [Self::PARAMS[0], Self::PARAMS[1], Self::PARAMS[2], Self::PARAMS[3]];
     /// `2 * modulus`, of the shape `[t0, t1, 0, 2^63]`.
     const TWICE_MODULUS: Limbs = {
         let m = Self::MODULUS_LIMBS;
@@ -109,7 +118,7 @@ const fn sbb(a: u64, b: u64, borrow: u64) -> (u64, u64) {
 
 /// `a - b` modulo `2^256` and the borrow.
 #[inline(always)]
-const fn sub_with_borrow(a: &Limbs, b: &Limbs) -> (Limbs, u64) {
+const fn sub_limbs(a: &Limbs, b: &Limbs) -> (Limbs, u64) {
     let (r0, c) = sbb(a[0], b[0], 0);
     let (r1, c) = sbb(a[1], b[1], c);
     let (r2, c) = sbb(a[2], b[2], c);
@@ -119,7 +128,7 @@ const fn sub_with_borrow(a: &Limbs, b: &Limbs) -> (Limbs, u64) {
 
 /// `a + b` modulo `2^256` and the carry.
 #[inline(always)]
-const fn add_with_carry(a: &Limbs, b: &Limbs) -> (Limbs, u64) {
+const fn add_limbs(a: &Limbs, b: &Limbs) -> (Limbs, u64) {
     let (r0, c) = adc(a[0], b[0], 0);
     let (r1, c) = adc(a[1], b[1], c);
     let (r2, c) = adc(a[2], b[2], c);
@@ -133,29 +142,39 @@ fn select(a: &Limbs, b: &Limbs, mask: u64) -> Limbs {
     core::array::from_fn(|i| a[i] ^ ((a[i] ^ b[i]) & mask))
 }
 
+#[cfg_attr(
+    all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")),
+    allow(dead_code)
+)]
 #[inline(always)]
-fn reduce_limbs(a: &Limbs, params: &[u64; 5]) -> Limbs {
-    let (reduced, borrow) = sub_with_borrow(a, &[params[0], params[1], params[2], params[3]]);
+fn reduce_portable(a: &Limbs, params: &[u64; 5]) -> Limbs {
+    let (reduced, borrow) = sub_limbs(a, &[params[0], params[1], params[2], params[3]]);
     select(a, &reduced, (borrow ^ 1).wrapping_neg())
 }
 
+#[cfg_attr(all(feature = "asm", target_arch = "aarch64"), allow(dead_code))]
 #[inline(always)]
-fn add_limbs(a: &Limbs, b: &Limbs, twice: &Limbs) -> Limbs {
-    let (sum, carry) = add_with_carry(a, b);
-    let (reduced, borrow) = sub_with_borrow(&sum, twice);
+fn add_portable(a: &Limbs, b: &Limbs, twice: &Limbs) -> Limbs {
+    let (sum, carry) = add_limbs(a, b);
+    let (reduced, borrow) = sub_limbs(&sum, twice);
     select(&sum, &reduced, (carry | (borrow ^ 1)).wrapping_neg())
 }
 
+#[cfg_attr(
+    all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")),
+    allow(dead_code)
+)]
 #[inline(always)]
-fn sub_limbs(a: &Limbs, b: &Limbs, twice: &Limbs) -> Limbs {
-    let (diff, borrow) = sub_with_borrow(a, b);
+fn sub_portable(a: &Limbs, b: &Limbs, twice: &Limbs) -> Limbs {
+    let (diff, borrow) = sub_limbs(a, b);
     let mask = borrow.wrapping_neg();
-    add_with_carry(&diff, &core::array::from_fn(|i| twice[i] & mask)).0
+    add_limbs(&diff, &core::array::from_fn(|i| twice[i] & mask)).0
 }
 
 /// Udon `montgomery_multiply_loose_rust`.
+#[cfg_attr(all(feature = "asm", target_arch = "aarch64"), allow(dead_code))]
 #[inline(always)]
-fn mul_limbs(a: &Limbs, b: &Limbs, params: &[u64; 5]) -> Limbs {
+fn mul_portable(a: &Limbs, b: &Limbs, params: &[u64; 5]) -> Limbs {
     let [a0, a1, a2, a3] = *a;
     let (mut r0, mut r1, mut r2, mut r3) = (0u64, 0u64, 0u64, 0u64);
     for &bj in b {
@@ -176,8 +195,9 @@ fn mul_limbs(a: &Limbs, b: &Limbs, params: &[u64; 5]) -> Limbs {
 }
 
 /// Udon `square_wide` followed by `montgomery_reduce_unreduced`.
+#[cfg_attr(all(feature = "asm", target_arch = "aarch64"), allow(dead_code))]
 #[inline(always)]
-fn square_limbs(a: &Limbs, params: &[u64; 5]) -> Limbs {
+fn square_portable(a: &Limbs, params: &[u64; 5]) -> Limbs {
     let (r1, c) = mac(0, a[0], a[1], 0);
     let (r2, c) = mac(0, a[0], a[2], c);
     let (r3, r4) = mac(0, a[0], a[3], c);
@@ -219,8 +239,9 @@ fn square_limbs(a: &Limbs, params: &[u64; 5]) -> Limbs {
 }
 
 /// `(a * b + c * d) * R^{-1}` below `2p` by two products and one addition.
+#[cfg_attr(all(feature = "asm", target_arch = "aarch64"), allow(dead_code))]
 #[inline(always)]
-fn sum_of_two_products_limbs(
+fn sum_of_two_products_portable(
     a: &Limbs,
     b: &Limbs,
     c: &Limbs,
@@ -228,21 +249,62 @@ fn sum_of_two_products_limbs(
     params: &[u64; 5],
     twice: &Limbs,
 ) -> Limbs {
-    add_limbs(&mul_limbs(a, b, params), &mul_limbs(c, d, params), twice)
+    add_portable(
+        &mul_portable(a, b, params),
+        &mul_portable(c, d, params),
+        twice,
+    )
+}
+
+/// The assembly kernel where one is compiled in, the portable function otherwise.
+macro_rules! kernel {
+    ($asm:ident ($($arg:expr),*), $portable:ident ($($parg:expr),*)) => {{
+        #[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
+        {
+            super::kernel::$asm($($arg),*)
+        }
+        #[cfg(not(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64"))))]
+        {
+            $portable($($parg),*)
+        }
+    }};
+}
+
+/// [`kernel`] for the kernels that use MULX and ADCX/ADOX on x86-64, which take the portable
+/// function on CPUs without BMI2 and ADX.
+macro_rules! mulx_kernel {
+    ($asm:ident ($($arg:expr),*), $portable:ident ($($parg:expr),*)) => {{
+        #[cfg(all(feature = "asm", target_arch = "aarch64"))]
+        {
+            super::kernel::$asm($($arg),*)
+        }
+        #[cfg(all(feature = "asm", target_arch = "x86_64"))]
+        {
+            if super::pasta_asm_available() {
+                super::kernel::$asm($($arg),*)
+            } else {
+                $portable($($parg),*)
+            }
+        }
+        #[cfg(not(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64"))))]
+        {
+            $portable($($parg),*)
+        }
+    }};
 }
 
 /// `a + b` below `2p`.
 #[inline(always)]
 pub fn add<T: MontConfig<N>, const N: usize>(a: &F<T, N>, b: &F<T, N>) -> F<T, N> {
     let (a, b, t) = (limbs(a), limbs(b), &<T as LooseParams<N>>::TWICE_MODULUS);
-    element(add_limbs(&a, &b, t))
+    element(kernel!(add_loose(&a, &b, t), add_portable(&a, &b, t)))
 }
 
 /// `a - b` below `2p`.
 #[inline(always)]
 pub fn sub<T: MontConfig<N>, const N: usize>(a: &F<T, N>, b: &F<T, N>) -> F<T, N> {
     let (a, b, t) = (limbs(a), limbs(b), &<T as LooseParams<N>>::TWICE_MODULUS);
-    element(sub_limbs(&a, &b, t))
+    element(kernel!(sub_loose(&a, &b, t), sub_portable(&a, &b, t)))
 }
 
 /// `2a` below `2p`.
@@ -255,24 +317,25 @@ pub fn double<T: MontConfig<N>, const N: usize>(a: &F<T, N>) -> F<T, N> {
 #[inline(always)]
 pub fn neg<T: MontConfig<N>, const N: usize>(a: &F<T, N>) -> F<T, N> {
     let (a, t) = (limbs(a), &<T as LooseParams<N>>::TWICE_MODULUS);
-    element(sub_limbs(&[0; 4], &a, t))
+    element(kernel!(neg_loose(&a, t), sub_portable(&[0; 4], &a, t)))
 }
 
 /// `a * b * R^{-1}` below `2p`.
 #[inline(always)]
 pub fn mul<T: MontConfig<N>, const N: usize>(a: &F<T, N>, b: &F<T, N>) -> F<T, N> {
     let (a, b, p) = (limbs(a), limbs(b), &<T as LooseParams<N>>::PARAMS);
-    element(mul_limbs(&a, &b, p))
+    element(mulx_kernel!(mul_loose(&a, &b, p), mul_portable(&a, &b, p)))
 }
 
 /// `a^2 * R^{-1}` below `2p`.
 #[inline(always)]
 pub fn square<T: MontConfig<N>, const N: usize>(a: &F<T, N>) -> F<T, N> {
     let (a, p) = (limbs(a), &<T as LooseParams<N>>::PARAMS);
-    element(square_limbs(&a, p))
+    element(mulx_kernel!(square_loose(&a, p), square_portable(&a, p)))
 }
 
-/// `a[0] * b[0] + a[1] * b[1]` below `2p` for `a` below `p` and `b` below `2p`.
+/// `a[0] * b[0] + a[1] * b[1]` below `2p` for `a` below `p` and `b` below `2p`, by the fused
+/// kernel where it exists.
 #[inline(always)]
 pub fn sum_of_two_products<T: MontConfig<N>, const N: usize>(
     a: &[F<T, N>; 2],
@@ -282,13 +345,9 @@ pub fn sum_of_two_products<T: MontConfig<N>, const N: usize>(
     let p = &<T as LooseParams<N>>::PARAMS;
     debug_assert!(lt(&a0, &<T as LooseParams<N>>::MODULUS_LIMBS));
     debug_assert!(lt(&a1, &<T as LooseParams<N>>::MODULUS_LIMBS));
-    element(sum_of_two_products_limbs(
-        &a0,
-        &b0,
-        &a1,
-        &b1,
-        p,
-        &<T as LooseParams<N>>::TWICE_MODULUS,
+    element(mulx_kernel!(
+        sum_of_two_products(&a0, &b0, &a1, &b1, p),
+        sum_of_two_products_portable(&a0, &b0, &a1, &b1, p, &<T as LooseParams<N>>::TWICE_MODULUS)
     ))
 }
 
@@ -296,7 +355,7 @@ pub fn sum_of_two_products<T: MontConfig<N>, const N: usize>(
 #[inline(always)]
 pub fn reduce<T: MontConfig<N>, const N: usize>(a: &F<T, N>) -> F<T, N> {
     let (a, p) = (limbs(a), &<T as LooseParams<N>>::PARAMS);
-    let r = reduce_limbs(&a, p);
+    let r = kernel!(reduce_loose(&a, p), reduce_portable(&a, p));
     F::new_unchecked(BigInt(core::array::from_fn(|i| r[i])))
 }
 
@@ -309,63 +368,13 @@ pub fn is_zero<T: MontConfig<N>, const N: usize>(a: &F<T, N>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::tests::*, *};
     use crate::{BigInteger, UniformRand};
     use ark_std::{test_rng, vec::Vec};
     use num_bigint::BigUint;
 
-    #[derive(crate::MontConfig)]
-    #[modulus = "28948022309329048855892746252171976963363056481941560715954676764349967630337"]
-    #[generator = "5"]
-    pub struct PallasBase;
-
-    #[derive(crate::MontConfig)]
-    #[modulus = "28948022309329048855892746252171976963363056481941647379679742748393362948097"]
-    #[generator = "5"]
-    pub struct VestaBase;
-
-    /// Canonical Montgomery representations that stress the carry and borrow chains and the
-    /// final conditional subtraction.
-    fn edge_values<T: MontConfig<4>>() -> Vec<F<T, 4>> {
-        let p = T::MODULUS;
-        let mut raw = ark_std::vec![
-            BigInt::<4>::zero(),
-            BigInt::one(),
-            BigInt::from(2u64),
-            T::R,
-            T::R2,
-            BigInt([u64::MAX, 0, 0, 0]),
-            BigInt([u64::MAX, u64::MAX, 0, 0]),
-            BigInt([u64::MAX, u64::MAX, u64::MAX, 0]),
-            BigInt([0, 0, 0, p.0[3] - 1]),
-            BigInt([0, 0, u64::MAX, p.0[3] - 1]),
-            BigInt([u64::MAX, u64::MAX, u64::MAX, p.0[3] - 1]),
-        ];
-        for k in 1..=4u64 {
-            let mut v = p;
-            v.sub_with_borrow(&BigInt::from(k));
-            raw.push(v);
-        }
-        let half = {
-            let mut h = p;
-            h.div2();
-            h
-        };
-        for d in [0u64, 1] {
-            let mut v = half;
-            v.add_with_carry(&BigInt::from(d));
-            raw.push(v);
-        }
-        raw.into_iter()
-            .inspect(|v| assert!(*v < p))
-            .map(F::<T, 4>::new_unchecked)
-            .collect()
-    }
-
     fn big(l: &Limbs) -> BigUint {
-        l.iter()
-            .rev()
-            .fold(BigUint::from(0u8), |acc, &x| (acc << 64) | BigUint::from(x))
+        l.iter().rev().fold(BigUint::from(0u8), |acc, &x| (acc << 64) | BigUint::from(x))
     }
 
     fn loose_values<T: MontConfig<4>>() -> Vec<F<T, 4>> {
@@ -375,23 +384,23 @@ mod tests {
         let mut rng = test_rng();
         for v in edge_values::<T>() {
             out.push(v);
-            let (s, c) = add_with_carry(&(v.0).0, &p.0);
+            let (s, c) = add_limbs(&(v.0).0, &p.0);
             assert_eq!(c, 0);
             out.push(F::new_unchecked(BigInt(s)));
         }
         for k in 1..=4u64 {
-            let (v, _) = sub_with_borrow(&twice, &[k, 0, 0, 0]);
+            let (v, _) = sub_limbs(&twice, &[k, 0, 0, 0]);
             out.push(F::new_unchecked(BigInt(v)));
         }
         out.push(F::new_unchecked(p));
         for _ in 0..48 {
             let v = F::<T, 4>::rand(&mut rng);
             out.push(v);
-            out.push(F::new_unchecked(BigInt(add_with_carry(&(v.0).0, &p.0).0)));
+            out.push(F::new_unchecked(BigInt(add_limbs(&(v.0).0, &p.0).0)));
         }
         let mut half = p;
         half.div2();
-        out.push(F::new_unchecked(BigInt(add_with_carry(&half.0, &p.0).0)));
+        out.push(F::new_unchecked(BigInt(add_limbs(&half.0, &p.0).0)));
         out
     }
 
@@ -410,6 +419,7 @@ mod tests {
             assert_eq!(loose(&double(a), "double"), (&ab << 1) % &twice);
             assert_eq!(loose(&neg(a), "neg") % &p, (&twice - &ab) % &p);
             assert_eq!(loose(&square(a), "square") % &p, &ab * &ab * &r_inv % &p);
+            assert_eq!(square_portable(&(a.0).0, &<T as LooseParams<4>>::PARAMS), (square(a).0).0);
             let r = reduce(a);
             assert!(r.0 < T::MODULUS);
             assert_eq!(big(&(r.0).0), &ab % &p);
@@ -418,7 +428,13 @@ mod tests {
                 let bb = big(&(b.0).0);
                 assert_eq!(loose(&add(a, b), "add"), (&ab + &bb) % &twice);
                 assert_eq!(loose(&sub(a, b), "sub"), (&ab + &twice - &bb) % &twice);
-                assert_eq!(loose(&mul(a, b), "mul") % &p, &ab * &bb * &r_inv % &p);
+                let m = mul(a, b);
+                assert_eq!(loose(&m, "mul") % &p, &ab * &bb * &r_inv % &p);
+                let params = &<T as LooseParams<4>>::PARAMS;
+                assert_eq!(mul_portable(&(a.0).0, &(b.0).0, params), (m.0).0);
+                let twice_l = &<T as LooseParams<4>>::TWICE_MODULUS;
+                assert_eq!(add_portable(&(a.0).0, &(b.0).0, twice_l), (add(a, b).0).0);
+                assert_eq!(sub_portable(&(a.0).0, &(b.0).0, twice_l), (sub(a, b).0).0);
             }
         }
     }
@@ -428,11 +444,7 @@ mod tests {
         let twice = &p * 2u8;
         let r_inv = (BigUint::from(1u8) << 256u32).modpow(&(&p - 2u8), &p);
         let values = loose_values::<T>();
-        let canonical: Vec<_> = values
-            .iter()
-            .filter(|v| v.0 < T::MODULUS)
-            .copied()
-            .collect();
+        let canonical: Vec<_> = values.iter().filter(|v| v.0 < T::MODULUS).copied().collect();
         let (n, m) = (values.len(), canonical.len());
         for (i, a0) in canonical.iter().enumerate() {
             for (j, b0) in values.iter().enumerate() {
@@ -441,8 +453,7 @@ mod tests {
                     let r = sum_of_two_products(&[*a0, a1], &[*b0, b1]);
                     let rb = big(&(r.0).0);
                     assert!(rb < twice);
-                    let expected = (big(&(a0.0).0) * big(&(b0.0).0)
-                        + big(&(a1.0).0) * big(&(b1.0).0))
+                    let expected = (big(&(a0.0).0) * big(&(b0.0).0) + big(&(a1.0).0) * big(&(b1.0).0))
                         * &r_inv
                         % &p;
                     assert_eq!(rb % &p, expected);
@@ -472,18 +483,13 @@ mod tests {
             let mut rng = test_rng();
             for _ in 0..2_000 {
                 let v = F::<T, 4>::rand(&mut rng);
-                let top = F::<T, 4>::new_unchecked(BigInt(add_with_carry(&(v.0).0, &p.0).0));
+                let top = F::<T, 4>::new_unchecked(BigInt(add_limbs(&(v.0).0, &p.0).0));
                 let mut x = top;
                 for i in 0..64 {
-                    x = if i % 3 == 0 {
-                        square(&x)
-                    } else {
-                        mul(&x, &top)
-                    };
+                    x = if i % 3 == 0 { square(&x) } else { mul(&x, &top) };
                     assert!(lt(&(x.0).0, &twice));
                 }
-                let canonical =
-                    (0..64).fold(v, |acc, i| if i % 3 == 0 { acc * acc } else { acc * v });
+                let canonical = (0..64).fold(v, |acc, i| if i % 3 == 0 { acc * acc } else { acc * v });
                 assert_eq!(reduce(&x), canonical);
             }
         }
@@ -504,10 +510,7 @@ mod tests {
     #[test]
     fn twice_modulus() {
         let p = BigUint::from(PallasBase::MODULUS);
-        assert_eq!(
-            big(&<PallasBase as LooseParams<4>>::TWICE_MODULUS),
-            &p * 2u8
-        );
+        assert_eq!(big(&<PallasBase as LooseParams<4>>::TWICE_MODULUS), &p * 2u8);
         let p = BigUint::from(VestaBase::MODULUS);
         assert_eq!(big(&<VestaBase as LooseParams<4>>::TWICE_MODULUS), &p * 2u8);
         assert!(!applies::<Bn254Base, 4>());
