@@ -690,6 +690,12 @@ impl<P: SWCurveConfig> VariableBaseMSM for Projective<P> {
         if bases.len().min(bigints.len()) >= sw_pippenger::BATCH_AFFINE_MIN_POINTS {
             return sw_pippenger::msm_batch_affine_bigint_given_bits::<P>(bases, bigints, num_bits);
         }
+        // Below the batch-affine size, a GLV split's batch-affine MSM beats 128-bit windows.
+        if num_bits > 64 {
+            if let Some(res) = P::try_msm_bigint_full_width(bases, bigints) {
+                return res;
+            }
+        }
         msm_bigint_wnaf_given_bits(bases, bigints, num_bits)
     }
 }

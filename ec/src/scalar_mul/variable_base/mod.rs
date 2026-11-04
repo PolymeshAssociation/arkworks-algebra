@@ -123,7 +123,7 @@ pub trait VariableBaseMSM: ScalarMul + for<'a> AddAssign<&'a Self::Bucket> {
     }
 
     /// The partitions of `msm_signed` whose scalars are below `2^num_bits`, for `num_bits` at
-    /// most 64. Signed windows over the low `num_bits` bits.
+    /// most 128. Signed windows over the low `num_bits` bits.
     fn msm_bigint_narrow(
         bases: &[Self::MulBase],
         bigints: &[<Self::ScalarField as PrimeField>::BigInt],
@@ -273,16 +273,40 @@ fn small_value_unzip<A: Send + Sync, B: Send + Sync>(
     grouped.iter().map(|&i| f(i.index(), i.value())).unzip()
 }
 
-/// Whether `msm_signed` puts `scalar` in the full-width group: more than 64 bits, and so is its
-/// negation mod `MODULUS`.
+/// The nonzero scalars of 1 to 64 bits, 65 to 128 bits and more than 128 bits, each measured as
+/// the smaller of the scalar and its negation mod `MODULUS`.
 #[inline]
-fn is_full_width<F: PrimeField>(scalar: &F::BigInt) -> bool {
-    if scalar.num_bits() <= 64 {
-        return false;
+fn width_counts<F: PrimeField>(scalar: &F::BigInt) -> [usize; 3] {
+    let bits = scalar.num_bits();
+    let bits = if bits <= 64 {
+        bits
+    } else {
+        let mut negated = F::MODULUS;
+        negated.sub_with_borrow(scalar);
+        bits.min(negated.num_bits())
+    };
+    match bits {
+        0 => [0, 0, 0],
+        1..=64 => [1, 0, 0],
+        65..=128 => [0, 1, 0],
+        _ => [0, 0, 1],
     }
-    let mut negated = F::MODULUS;
-    negated.sub_with_borrow(scalar);
-    negated.num_bits() > 64
+}
+
+/// Whether `msm_signed` runs the `num_128` scalars of 65 to 128 bits as their own MSM beside
+/// `num_full` full-width ones: when there are no full-width ones, or at least
+/// `max(SPLIT_128_MIN_SCALARS, SPLIT_128_MIN_SCALARS_PER_THREAD * threads)` of them and at most a
+/// sixteenth as many full-width ones.
+#[inline]
+fn splits_128<V: VariableBaseMSM>(num_128: usize, num_full: usize) -> bool {
+    #[cfg(feature = "parallel")]
+    let threads = rayon::current_num_threads();
+    #[cfg(not(feature = "parallel"))]
+    let threads = 1;
+    let min_128 = SPLIT_128_MIN_SCALARS.max(SPLIT_128_MIN_SCALARS_PER_THREAD * threads);
+    V::NEGATION_IS_CHEAP
+        && num_128 > 0
+        && (num_full == 0 || (num_128 >= min_128 && 16 * num_full <= num_128))
 }
 
 #[inline(always)]
@@ -315,8 +339,10 @@ enum ScalarSize {
     NegU32 = 7,
     U64 = 8,
     NegU64 = 9,
-    /// scalars in the range `[2^64, M-2^64)` where `M` is the modulus
-    BigInt = 10,
+    U128 = 10,
+    NegU128 = 11,
+    /// scalars in the range `[2^128, M-2^128)` where `M` is the modulus
+    BigInt = 12,
 }
 
 impl ScalarSize {
@@ -359,6 +385,15 @@ impl PackedIndex {
     }
 }
 
+/// Fewest 65 to 128 bit scalars `msm_signed` runs as their own MSM beside full-width ones. Apple
+/// M3 Max, Pallas, `n` scalars of which 95% are below `2^128`, serial: 0.95x at `n = 2^9`, 1.09x
+/// at `2^10`.
+const SPLIT_128_MIN_SCALARS: usize = 1 << 10;
+
+/// [`SPLIT_128_MIN_SCALARS`] per thread. Same setup, 4 threads: 1.06x at `n = 2^11`; 16 threads:
+/// 0.96x at `2^13`, 1.10x at `2^14`.
+const SPLIT_128_MIN_SCALARS_PER_THREAD: usize = 1 << 9;
+
 /// Computes multi-scalar multiplication where the scalars
 /// can be negative, zero, or positive.
 /// Tries to convert large scalars to negative (modulus - scalar) so that their bit size is small.
@@ -372,29 +407,37 @@ fn msm_signed<V: VariableBaseMSM>(
     let bases = &bases[..size];
     let scalars = &scalars[..size];
 
-    // Random scalars are all full width, which needs no partition. Below the floor the scan and
-    // the partition run serially; their per-scalar work is lighter than `into_bigint`'s.
-    let full_width = |s: &<V::ScalarField as PrimeField>::BigInt| {
-        s.is_zero() || is_full_width::<V::ScalarField>(s)
+    // Random scalars are all full width, which needs no partition, nor do scalars above 64 bits
+    // whose 65 to 128 bit ones stay in the full-width MSM. Below the floor the scan and the
+    // partition run serially; their per-scalar work is lighter than `into_bigint`'s.
+    let add = |a: [usize; 3], b: [usize; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    let counts = |s: &[<V::ScalarField as PrimeField>::BigInt]| {
+        s.iter().map(width_counts::<V::ScalarField>).fold([0; 3], add)
     };
     #[cfg(feature = "parallel")]
     let parallel = size >= MIN_PARALLEL_SCALARS;
     #[cfg(feature = "parallel")]
-    let all_full_width = if parallel {
-        scalars.par_iter().all(full_width)
+    let [num_narrow, num_128, num_full] = if parallel {
+        scalars
+            .par_iter()
+            .map(width_counts::<V::ScalarField>)
+            .reduce(|| [0; 3], add)
     } else {
-        scalars.iter().all(full_width)
+        counts(scalars)
     };
     #[cfg(not(feature = "parallel"))]
-    let all_full_width = scalars.iter().all(full_width);
-    if all_full_width {
+    let [num_narrow, num_128, num_full] = counts(scalars);
+    let split_128 = splits_128::<V>(num_128, num_full);
+    if num_narrow == 0 && !split_128 {
         return V::msm_bigint_full_width(bases, scalars);
     }
 
     // Partition scalars according to their size. For scalars (or -scalar) that fit in 16 bits,
     // store the value, rest wont fit in 64-bit PackedIndex.
     let classify = |(i, scalar): (usize, &<V::ScalarField as PrimeField>::BigInt)| {
-        use ScalarSize::{U1, U8, U16, U32, U64, NegU1, NegU8, NegU16, NegU32, NegU64};
+        use ScalarSize::{
+            U1, U8, U16, U32, U64, U128, NegU1, NegU8, NegU16, NegU32, NegU64, NegU128,
+        };
         let mut value = 0;
         let group = match scalar.num_bits() {
             0..=1 => U1,
@@ -402,6 +445,7 @@ fn msm_signed<V: VariableBaseMSM>(
             9..=16 => U16,
             17..=32 => U32,
             33..=64 => U64,
+            65..=128 => U128,
             _ => {
                 // take bit size of -scalar
                 let mut p_minus_scalar = V::ScalarField::MODULUS;
@@ -412,6 +456,7 @@ fn msm_signed<V: VariableBaseMSM>(
                     9..=16 => NegU16,
                     17..=32 => NegU32,
                     33..=64 => NegU64,
+                    65..=128 => NegU128,
                     _ => ScalarSize::BigInt,
                 };
                 if matches!(group, NegU1 | NegU8 | NegU16) {
@@ -459,8 +504,12 @@ fn msm_signed<V: VariableBaseMSM>(
     let (i32s, rest) = rest.split_at(ScalarSize::NegU32.partition_point(rest));
     let (u64s, rest) = rest.split_at(ScalarSize::U64.partition_point(rest));
     let (i64s, rest) = rest.split_at(ScalarSize::NegU64.partition_point(rest));
-    // bigints are scalars in the range `[2^64, M-2^64)` where `M` is the modulus
-    let (bigints, _) = rest.split_at(ScalarSize::BigInt.partition_point(rest));
+    // above_64 are the scalars in the range `[2^64, M-2^64)` where `M` is the modulus: the 65 to
+    // 128 bit scalars and negations, then bigints in the range `[2^128, M-2^128)`
+    let (above_64, _) = rest.split_at(ScalarSize::BigInt.partition_point(rest));
+    let (u128s, rest) = above_64.split_at(ScalarSize::U128.partition_point(above_64));
+    let (i128s, bigints) = rest.split_at(ScalarSize::NegU128.partition_point(rest));
+    let split_128 = splits_128::<V>(u128s.len() + i128s.len(), bigints.len());
 
     let m = V::ScalarField::MODULUS;
     // MSM contribution of positive scalars
@@ -510,6 +559,15 @@ fn msm_signed<V: VariableBaseMSM>(
             64
         };
         add_result += V::msm_bigint_narrow(&nb, &ns, num_bits);
+
+        // The 65 to 128 bit scalars and negations as one signed-window MSM over 128 bits.
+        if split_128 {
+            let (mut wb, mut ws) = large_value_unzip(u128s, |i| narrow(i, false));
+            let (b, s) = large_value_unzip(i128s, |i| narrow(i, true));
+            wb.extend(b);
+            ws.extend(s);
+            add_result += V::msm_bigint_narrow(&wb, &ws, 128);
+        }
     } else {
         // 32 and 64 bit negative scalars are not stored in PackedIndex so calculate them again
         // Handle positive and negative u32 scalars.
@@ -525,8 +583,13 @@ fn msm_signed<V: VariableBaseMSM>(
         sub_result += msm_u64::<V>(&ib, &is);
     }
 
-    // Handle the rest of the scalars.
-    let (bf, sf) = large_value_unzip(bigints, |i| (bases[i], scalars[i]));
+    // Handle the rest of the scalars, with the 65 to 128 bit ones unless split off.
+    let wide = if split_128 {
+        bigints
+    } else {
+        above_64
+    };
+    let (bf, sf) = large_value_unzip(wide, |i| (bases[i], scalars[i]));
     add_result += V::msm_bigint_full_width(&bf, &sf);
 
     add_result - sub_result
