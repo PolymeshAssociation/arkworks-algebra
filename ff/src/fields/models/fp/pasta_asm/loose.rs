@@ -24,25 +24,11 @@ pub const fn applies<T: MontConfig<N>, const N: usize>() -> bool {
     N == 4 && T::MODULUS.0[1] >> 62 == 0 && T::MODULUS.0[2] == 0 && T::MODULUS.0[3] == 1 << 62
 }
 
-/// Whether the loose kernels serve [`applies`] moduli on this target and CPU. On wasm the
-/// canonical radix-`2^29` products are faster than these 64-bit ones, and on x86-64 with the
-/// MULX/ADX kernels in use the x86-64 loose kernels are unmeasured against them, so both keep
-/// canonical arithmetic. The x86-64 answer comes from a cached CPUID check, so it is fixed for the
-/// process.
+/// Whether the loose kernels serve [`applies`] moduli on this target. On wasm the canonical
+/// radix-`2^29` products are faster than these 64-bit ones, so it keeps canonical arithmetic.
 #[inline(always)]
-pub fn active() -> bool {
-    #[cfg(target_family = "wasm")]
-    {
-        false
-    }
-    #[cfg(all(feature = "asm", target_arch = "x86_64"))]
-    {
-        !super::pasta_asm_available()
-    }
-    #[cfg(not(any(target_family = "wasm", all(feature = "asm", target_arch = "x86_64"))))]
-    {
-        true
-    }
+pub const fn active() -> bool {
+    !cfg!(target_family = "wasm")
 }
 
 /// The kernel constants of a Pasta-shape modulus, zero for every other modulus.
@@ -142,10 +128,7 @@ fn select(a: &Limbs, b: &Limbs, mask: u64) -> Limbs {
     core::array::from_fn(|i| a[i] ^ ((a[i] ^ b[i]) & mask))
 }
 
-#[cfg_attr(
-    all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")),
-    allow(dead_code)
-)]
+#[cfg_attr(all(feature = "asm", target_arch = "aarch64"), allow(dead_code))]
 #[inline(always)]
 fn reduce_portable(a: &Limbs, params: &[u64; 5]) -> Limbs {
     let (reduced, borrow) = sub_limbs(a, &[params[0], params[1], params[2], params[3]]);
@@ -160,10 +143,7 @@ fn add_portable(a: &Limbs, b: &Limbs, twice: &Limbs) -> Limbs {
     select(&sum, &reduced, (carry | (borrow ^ 1)).wrapping_neg())
 }
 
-#[cfg_attr(
-    all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")),
-    allow(dead_code)
-)]
+#[cfg_attr(all(feature = "asm", target_arch = "aarch64"), allow(dead_code))]
 #[inline(always)]
 fn sub_portable(a: &Limbs, b: &Limbs, twice: &Limbs) -> Limbs {
     let (diff, borrow) = sub_limbs(a, b);
@@ -259,34 +239,11 @@ fn sum_of_two_products_portable(
 /// The assembly kernel where one is compiled in, the portable function otherwise.
 macro_rules! kernel {
     ($asm:ident ($($arg:expr),*), $portable:ident ($($parg:expr),*)) => {{
-        #[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
-        {
-            super::kernel::$asm($($arg),*)
-        }
-        #[cfg(not(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64"))))]
-        {
-            $portable($($parg),*)
-        }
-    }};
-}
-
-/// [`kernel`] for the kernels that use MULX and ADCX/ADOX on x86-64, which take the portable
-/// function on CPUs without BMI2 and ADX.
-macro_rules! mulx_kernel {
-    ($asm:ident ($($arg:expr),*), $portable:ident ($($parg:expr),*)) => {{
         #[cfg(all(feature = "asm", target_arch = "aarch64"))]
         {
             super::kernel::$asm($($arg),*)
         }
-        #[cfg(all(feature = "asm", target_arch = "x86_64"))]
-        {
-            if super::pasta_asm_available() {
-                super::kernel::$asm($($arg),*)
-            } else {
-                $portable($($parg),*)
-            }
-        }
-        #[cfg(not(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64"))))]
+        #[cfg(not(all(feature = "asm", target_arch = "aarch64")))]
         {
             $portable($($parg),*)
         }
@@ -324,14 +281,14 @@ pub fn neg<T: MontConfig<N>, const N: usize>(a: &F<T, N>) -> F<T, N> {
 #[inline(always)]
 pub fn mul<T: MontConfig<N>, const N: usize>(a: &F<T, N>, b: &F<T, N>) -> F<T, N> {
     let (a, b, p) = (limbs(a), limbs(b), &<T as LooseParams<N>>::PARAMS);
-    element(mulx_kernel!(mul_loose(&a, &b, p), mul_portable(&a, &b, p)))
+    element(kernel!(mul_loose(&a, &b, p), mul_portable(&a, &b, p)))
 }
 
 /// `a^2 * R^{-1}` below `2p`.
 #[inline(always)]
 pub fn square<T: MontConfig<N>, const N: usize>(a: &F<T, N>) -> F<T, N> {
     let (a, p) = (limbs(a), &<T as LooseParams<N>>::PARAMS);
-    element(mulx_kernel!(square_loose(&a, p), square_portable(&a, p)))
+    element(kernel!(square_loose(&a, p), square_portable(&a, p)))
 }
 
 /// `a[0] * b[0] + a[1] * b[1]` below `2p` for `a` below `p` and `b` below `2p`, by the fused
@@ -345,7 +302,7 @@ pub fn sum_of_two_products<T: MontConfig<N>, const N: usize>(
     let p = &<T as LooseParams<N>>::PARAMS;
     debug_assert!(lt(&a0, &<T as LooseParams<N>>::MODULUS_LIMBS));
     debug_assert!(lt(&a1, &<T as LooseParams<N>>::MODULUS_LIMBS));
-    element(mulx_kernel!(
+    element(kernel!(
         sum_of_two_products(&a0, &b0, &a1, &b1, p),
         sum_of_two_products_portable(&a0, &b0, &a1, &b1, p, &<T as LooseParams<N>>::TWICE_MODULUS)
     ))

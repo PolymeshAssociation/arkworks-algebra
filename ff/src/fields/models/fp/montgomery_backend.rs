@@ -222,8 +222,14 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
             mont29_mul_assign::<Self, N>(a, b);
             return;
         }
-        // No-carry optimisation applied to CIOS. `N == 1` tentatively avoids the assembly.
-        if Self::CAN_USE_NO_CARRY_MUL_OPT && N <= 6 && N > 1 && asm_backend_active() {
+        // No-carry optimisation applied to CIOS. `N == 1` tentatively avoids the assembly, and
+        // moduli served by loose arithmetic take the portable path.
+        if Self::CAN_USE_NO_CARRY_MUL_OPT
+            && N <= 6
+            && N > 1
+            && !loose::applies::<Self, N>()
+            && asm_backend_active()
+        {
             Self::asm_mul_assign(a, b);
         } else {
             Self::mul_assign_portable(a, b);
@@ -341,7 +347,11 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
             *a *= *a;
             return;
         }
-        if Self::CAN_USE_NO_CARRY_SQUARE_OPT && (2..=6).contains(&N) && asm_backend_active() {
+        if Self::CAN_USE_NO_CARRY_SQUARE_OPT
+            && (2..=6).contains(&N)
+            && !loose::applies::<Self, N>()
+            && asm_backend_active()
+        {
             Self::asm_square_in_place(a);
             return;
         }
@@ -1196,27 +1206,32 @@ mod test {
 #[cfg(test)]
 mod asm_backend_tests {
     extern crate std;
-    use super::{super::pasta_asm_available, asm_backend_active};
+    use super::{super::pasta_asm_compiled, asm_backend_active};
 
     /// Fails a build that meant to run the assembly kernels and does not. Asserts only when
     /// `ARK_FF_REQUIRE_ASM=1`, which CI sets.
     #[test]
     fn asm_backend_is_active() {
         std::println!(
-            "target_arch={} asm_feature={} asm_backend_active={} pasta_asm_available={}",
+            "target_arch={} asm_feature={} asm_backend_active={} pasta_asm_compiled={}",
             std::env::consts::ARCH,
             cfg!(feature = "asm"),
             asm_backend_active(),
-            pasta_asm_available(),
+            pasta_asm_compiled(),
         );
         if std::env::var("ARK_FF_REQUIRE_ASM").as_deref() == Ok("1") {
-            assert!(
-                pasta_asm_available(),
-                "ARK_FF_REQUIRE_ASM=1 but the Pasta kernels are off: the `asm` feature is off, the \
-                 target is neither AArch64 nor x86-64, or the x86-64 CPU lacks BMI2 or ADX"
-            );
             if cfg!(target_arch = "x86_64") {
-                assert!(asm_backend_active(), "ARK_FF_REQUIRE_ASM=1 but the MULX/ADX kernel is off");
+                assert!(
+                    asm_backend_active(),
+                    "ARK_FF_REQUIRE_ASM=1 but the MULX/ADX kernel is off: the `asm` feature is \
+                     off or the CPU lacks BMI2 or ADX"
+                );
+            } else {
+                assert!(
+                    pasta_asm_compiled(),
+                    "ARK_FF_REQUIRE_ASM=1 but the Pasta kernels are off: the `asm` feature is off \
+                     or the target is not AArch64"
+                );
             }
         }
     }

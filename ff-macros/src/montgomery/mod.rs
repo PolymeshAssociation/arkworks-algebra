@@ -68,25 +68,28 @@ pub(crate) fn mont_config_helper(
         }
     };
     let modulus = quote::quote! { BigInt([ #( #modulus_limbs ),* ]) };
+    let pasta_shape = limbs == 4 && modulus_limbs[2] == 0 && modulus_limbs[3] == 1 << 62;
 
     let add_with_carry = add_with_carry_impl(limbs);
     let sub_with_borrow = sub_with_borrow_impl(limbs);
     let subtract_modulus = subtract_modulus_impl(&modulus, limbs);
     let add_assign = add_assign_impl(modulus_has_spare_bit);
     let double_in_place = double_in_place_impl(modulus_has_spare_bit);
+    // Pasta-shape fields skip the x86-64 MULX/ADX kernel: the portable path with loose arithmetic
+    // is faster for them.
     let mul_assign = mul_assign_impl(
         can_use_no_carry_mul_opt,
         limbs,
         &modulus_limbs,
         modulus_has_spare_bit,
-        true,
+        !pasta_shape,
     );
     let square_in_place = square_in_place_impl(
         can_use_no_carry_mul_opt,
         limbs,
         &modulus_limbs,
         modulus_has_spare_bit,
-        true,
+        !pasta_shape,
     );
     let mul_assign_portable = mul_assign_impl(
         can_use_no_carry_mul_opt,
@@ -146,10 +149,8 @@ pub(crate) fn mont_config_helper(
         (quote::quote! {}, quote::quote! {})
     };
 
-    // Pasta-shape moduli take ark-ff's `pasta_*` assembly kernels when they are compiled in, and
-    // for multiply and square also usable on the CPU, and two-term sums of products take the fused
-    // kernel where it exists.
-    let pasta_shape = limbs == 4 && modulus_limbs[2] == 0 && modulus_limbs[3] == 1 << 62;
+    // Pasta-shape moduli take ark-ff's `pasta_*` assembly kernels when they are compiled in,
+    // including the fused kernel for two-term sums of products.
     let pasta = |gate: proc_macro2::TokenStream, call: proc_macro2::TokenStream| {
         if pasta_shape {
             quote::quote! {
@@ -163,7 +164,6 @@ pub(crate) fn mont_config_helper(
         }
     };
     let compiled = quote::quote! { ark_ff::fields::pasta_asm_compiled() };
-    let available = quote::quote! { ark_ff::fields::pasta_asm_available() };
     let pasta_add = pasta(
         compiled.clone(),
         quote::quote! { ark_ff::fields::pasta_add_assign::<Self>(a, b) },
@@ -173,20 +173,20 @@ pub(crate) fn mont_config_helper(
         quote::quote! { ark_ff::fields::pasta_sub_assign::<Self>(a, b) },
     );
     let pasta_double = pasta(
-        compiled,
+        compiled.clone(),
         quote::quote! { ark_ff::fields::pasta_double_in_place::<Self>(a) },
     );
     let pasta_mul = pasta(
-        available.clone(),
+        compiled.clone(),
         quote::quote! { ark_ff::fields::pasta_mul_assign::<Self>(a, b) },
     );
     let pasta_square = pasta(
-        available,
+        compiled,
         quote::quote! { ark_ff::fields::pasta_square_in_place::<Self>(a) },
     );
     let pasta_sum_of_products = if pasta_shape {
         quote::quote! {
-            if M == 2 && ark_ff::fields::pasta_fused_available() {
+            if M == 2 && ark_ff::fields::pasta_asm_compiled() {
                 return ark_ff::fields::pasta_sum_of_two_products::<Self>(&a[..], &b[..]);
             }
         }

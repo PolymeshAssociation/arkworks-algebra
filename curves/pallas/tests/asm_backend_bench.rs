@@ -33,7 +33,7 @@ fn asm_vs_portable() {
         "target_arch {} | asm feature {} | pasta kernels {} | x86-64 generic kernel {} | debug_assertions {}",
         std::env::consts::ARCH,
         cfg!(feature = "asm"),
-        ark_ff::pasta_asm_available(),
+        ark_ff::pasta_asm_compiled(),
         ark_ff::asm_backend_active(),
         cfg!(debug_assertions),
     );

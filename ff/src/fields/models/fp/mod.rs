@@ -31,9 +31,8 @@ mod cpu;
 
 mod pasta_asm;
 pub use pasta_asm::{
-    is_pasta_shape, pasta_add_assign, pasta_asm_available, pasta_asm_compiled,
-    pasta_double_in_place, pasta_fused_available, pasta_mul_assign, pasta_square_in_place,
-    pasta_sub_assign, pasta_sum_of_two_products,
+    is_pasta_shape, pasta_add_assign, pasta_asm_compiled, pasta_double_in_place, pasta_mul_assign,
+    pasta_square_in_place, pasta_sub_assign, pasta_sum_of_two_products,
 };
 
 /// A trait that specifies the configuration of a prime field.
