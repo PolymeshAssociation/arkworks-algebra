@@ -7,7 +7,7 @@ use ark_ec::{
         CurveConfig,
     },
 };
-use ark_ff::{AdditiveGroup, Field, MontFp, Zero};
+use ark_ff::{AdditiveGroup, Field, MontFp, One, Zero};
 
 type G2Affine = Affine<SwuIsoConfig>;
 
@@ -91,11 +91,12 @@ impl SWUConfig for SwuIsoConfig {
     /// its norm is a QR in `Fq`, so a single `norm^((p+1)/4)` decides the branch; when
     /// `gx1` is not a QR,
     /// `sqrt(norm(ZETA*gx1)) = N(ZETA)^((p+1)/4) * norm(gx1)^((p+1)/4)` avoids a
-    /// second full `Fq2` root. The inner root takes `d = delta^((p+1)/4)` once. When
-    /// `d^2 = -delta`, the other candidate `delta - sqrt(norm)` has root `c1 / (2d)`, so
-    /// the result is `(c1 / (2d), d)`. A `target` in `Fq` has root `(d, 0)` or `(0, d)`
-    /// for `d = target^((p+1)/4)`. Two `Fq` exponentiations and at most one `Fq` inversion
-    /// on every path, against three exponentiations per generic `Fq2` root. Complex-method
+    /// second full `Fq2` root. The inner root takes `s = delta^((p-3)/4)` and `d = s delta`,
+    /// so `s d = delta^((p-1)/2)`. When `s d = 1`, `d^2 = delta`, `s = 1 / d` and the root
+    /// is `(d, t1 s / 2)`. Otherwise `d^2 = -delta`, the other candidate
+    /// `delta - sqrt(norm)` has root `d`, `s = -1 / d` and the root is `(-t1 s / 2, d)`. A
+    /// `target` in `Fq` has root `(d, 0)` or `(0, d)` for `d = target^((p+1)/4)`. Two `Fq`
+    /// exponentiations and no inversion on every path. Complex-method
     /// `Fp2` square root: Adj, Rodriguez-Henriquez, "Square Root Computation over Even
     /// Extension Fields", <https://eprint.iacr.org/2012/685> (algorithm for `q = 3 mod 4`);
     /// the surrounding `sqrt_ratio` is RFC 9380 appendix F.2 / G.2.3
@@ -104,6 +105,15 @@ impl SWUConfig for SwuIsoConfig {
         // (p + 1) / 4, little-endian.
         const EXP: [u64; 6] = [
             0xee7fbfffffffeaab,
+            0x07aaffffac54ffff,
+            0xd9cc34a83dac3d89,
+            0xd91dd2e13ce144af,
+            0x92c6e9ed90d2eb35,
+            0x0680447a8e5ff9a6,
+        ];
+        // (p - 3) / 4, little-endian.
+        const EXP_MINUS: [u64; 6] = [
+            0xee7fbfffffffeaaa,
             0x07aaffffac54ffff,
             0xd9cc34a83dac3d89,
             0xd91dd2e13ce144af,
@@ -140,12 +150,13 @@ impl SWUConfig for SwuIsoConfig {
         // Complete the complex-method sqrt of `target` from sqrt(norm(target)).
         // `delta * (delta - sqrt_norm) = -t1^2 / 4` is non-zero, so `d` is non-zero.
         let delta = (sqrt_norm + t0) * TWO_INV;
-        let d = delta.pow(EXP);
-        let e = t1 * TWO_INV * d.inverse().unwrap();
-        let y = if d.square() == delta {
+        let s = delta.pow(EXP_MINUS);
+        let d = s * delta;
+        let e = t1 * s * TWO_INV;
+        let y = if (s * d).is_one() {
             Fq2::new(d, e)
         } else {
-            Fq2::new(e, d)
+            Fq2::new(-e, d)
         };
         (is_qr, y)
     }
