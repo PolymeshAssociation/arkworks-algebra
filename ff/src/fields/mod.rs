@@ -309,7 +309,8 @@ pub trait Field:
     /// `self += other` in the loose representation behind [`Loose`]: an integer congruent to the
     /// value but bounded by twice the modulus instead of the modulus. The defaults keep every value
     /// canonical, which the bound admits. Prime fields of the Pasta shape override the `loose_*`
-    /// methods. Loose values reach them only through [`Loose`].
+    /// methods. Loose values reach them through [`Loose`] and the squaring chains of
+    /// [`pow_binary`], [`pow_windowed`] and the Sarkar square root, which reduce before returning.
     #[doc(hidden)]
     #[inline(always)]
     fn loose_add_assign(&mut self, other: &Self) {
@@ -473,19 +474,20 @@ fn digit(exp: &[u64], start: usize, len: usize) -> usize {
     ((exp[start / 64] >> (start % 64)) as usize) & ((1 << len) - 1)
 }
 
-/// `base^exp` by binary square-and-multiply.
+/// `base^exp` by binary square-and-multiply, with loose intermediate values.
 pub fn pow_binary<F: Field>(base: &F, exp: &[u64]) -> F {
     let mut res = F::one();
     for i in crate::BitIteratorBE::without_leading_zeros(exp) {
-        res.square_in_place();
+        res.loose_square_in_place();
         if i {
-            res *= base;
+            res.loose_mul_assign(base);
         }
     }
-    res
+    res.loose_reduce()
 }
 
-/// `base^exp` by a 4-bit fixed window, most significant window first.
+/// `base^exp` by a 4-bit fixed window, most significant window first, with loose intermediate
+/// values.
 /// [Handbook of Applied Cryptography](https://cacr.uwaterloo.ca/hac/about/chap14.pdf),
 /// Algorithm 14.82, left-to-right k-ary exponentiation,
 pub fn pow_windowed<F: Field>(base: &F, exp: &[u64]) -> F {
@@ -514,14 +516,14 @@ pub fn pow_windowed<F: Field>(base: &F, exp: &[u64]) -> F {
     while i > 0 {
         i -= W;
         for _ in 0..W {
-            res.square_in_place();
+            res.loose_square_in_place();
         }
         let digit = digit(exp, i, W);
         if digit != 0 {
-            res *= &table[digit];
+            res.loose_mul_assign(&table[digit]);
         }
     }
-    res
+    res.loose_reduce()
 }
 
 // Given a vector of field elements {v_i}, compute the vector {v_i^(-1)}

@@ -363,9 +363,9 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
         };
         let sqr = |mut x: F, i: u32| {
             for _ in 0..i {
-                x.square_in_place();
+                x.loose_square_in_place();
             }
-            x
+            x.loose_reduce()
         };
 
         // v = elem^((T-1)/2), uv = elem * v. The exponentiation is the dominant
