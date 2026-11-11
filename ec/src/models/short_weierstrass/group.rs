@@ -340,7 +340,7 @@ impl<P: SWCurveConfig> Neg for Projective<P> {
 }
 
 impl<P: SWCurveConfig, T: Borrow<Affine<P>>> AddAssign<T> for Projective<P> {
-    /// Using <http://www.hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-0.html#addition-madd-2007-bl>
+    /// Using <https://www.hyperelliptic.org/EFD/g1p/auto-shortw-jacobian.html#addition-madd-2004-hmv>
     fn add_assign(&mut self, other: T) {
         let other = other.borrow();
 
@@ -385,38 +385,30 @@ impl<P: SWCurveConfig, T: Borrow<Affine<P>>> AddAssign<T> for Projective<P> {
                 let mut hh = h;
                 hh.square_in_place();
 
-                // I = 4*HH
-                let mut i = hh;
-                i.double_in_place().double_in_place();
-
-                // J = -H*I
+                // J = -H*HH
                 let mut j = h;
                 j.neg_in_place();
-                j *= &i;
+                j *= &hh;
 
-                // r = 2*(S2-Y1)
+                // r = S2-Y1
                 let mut r = s2;
                 r -= &self.y;
-                r.double_in_place();
 
-                // V = X1*I
+                // V = X1*HH
                 let mut v = self.x;
-                v *= &i;
+                v *= &hh;
 
                 // X3 = r^2 + J - 2*V
                 self.x = r.square();
                 self.x += &j;
                 self.x -= &v.double();
 
-                // Y3 = r*(V-X3) + 2*Y1*J
+                // Y3 = r*(V-X3) + Y1*J
                 v -= &self.x;
-                self.y.double_in_place();
                 self.y = P::BaseField::sum_of_products(&[r, self.y], &[v, j]);
 
-                // Z3 = 2 * Z1 * H;
-                // Can alternatively be computed as (Z1+H)^2-Z1Z1-HH, but the latter is slower.
+                // Z3 = Z1*H
                 self.z *= &h;
-                self.z.double_in_place();
             }
         }
     }
@@ -468,7 +460,7 @@ impl<'a, P: SWCurveConfig> AddAssign<&'a Self> for Projective<P> {
             return;
         }
 
-        // http://www.hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-0.html#addition-add-2007-bl
+        // https://www.hyperelliptic.org/EFD/g1p/auto-shortw-jacobian.html#addition-add-1998-cmo-2
         // Works for all curves.
 
         // Z1Z1 = Z1^2
@@ -508,23 +500,21 @@ impl<'a, P: SWCurveConfig> AddAssign<&'a Self> for Projective<P> {
             let mut h = u2;
             h -= &u1;
 
-            // I = (2*H)^2
-            let mut i = h;
-            i.double_in_place().square_in_place();
+            // HH = H^2
+            let hh = h.square();
 
-            // J = -H*I
+            // J = -H*HH
             let mut j = h;
             j.neg_in_place();
-            j *= &i;
+            j *= &hh;
 
-            // r = 2*(S2-S1)
+            // r = S2-S1
             let mut r = s2;
             r -= &s1;
-            r.double_in_place();
 
-            // V = U1*I
+            // V = U1*HH
             let mut v = u1;
-            v *= &i;
+            v *= &hh;
 
             // X3 = r^2 + J - 2*V
             self.x = r;
@@ -532,16 +522,12 @@ impl<'a, P: SWCurveConfig> AddAssign<&'a Self> for Projective<P> {
             self.x += &j;
             self.x -= &(v.double());
 
-            // Y3 = r*(V - X3) + 2*S1*J
+            // Y3 = r*(V - X3) + S1*J
             v -= &self.x;
-            self.y = s1;
-            self.y.double_in_place();
-            self.y = P::BaseField::sum_of_products(&[r, self.y], &[v, j]);
+            self.y = P::BaseField::sum_of_products(&[r, s1], &[v, j]);
 
-            // Z3 = ((Z1+Z2)^2 - Z1Z1 - Z2Z2)*H
-            // This is equal to Z3 = 2 * Z1 * Z2 * H, and computing it this way is faster.
+            // Z3 = Z1*Z2*H
             self.z *= other.z;
-            self.z.double_in_place();
             self.z *= &h;
         }
     }
