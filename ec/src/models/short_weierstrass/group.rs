@@ -7,7 +7,7 @@ use crate::{
     },
     AffineRepr, CurveGroup, PrimeGroup,
 };
-use ark_ff::{fields::Field, AdditiveGroup, PrimeField, ToConstraintField, UniformRand};
+use ark_ff::{fields::Field, AdditiveGroup, Loose, PrimeField, ToConstraintField, UniformRand};
 use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
 };
@@ -183,12 +183,15 @@ impl<P: SWCurveConfig> AdditiveGroup for Projective<P> {
         }
 
         if P::COEFF_A == P::BaseField::ZERO {
+            // In `Loose` arithmetic.
+            let (x1, y1) = (Loose::from(self.x), Loose::from(self.y));
+
             // A = X1^2
-            let mut a = self.x;
+            let mut a = x1;
             a.square_in_place();
 
             // B = Y1^2
-            let mut b = self.y;
+            let mut b = y1;
             b.square_in_place();
 
             // C = B^2
@@ -198,7 +201,7 @@ impl<P: SWCurveConfig> AdditiveGroup for Projective<P> {
             // D = 2*((X1+B)^2-A-C)
             //   = 2 * (X1 + Y1^2)^2 - A - C
             //   = 2 * 2 * X1 * Y1^2
-            let mut d = self.x;
+            let mut d = x1;
             if [1, 2].contains(&P::BaseField::extension_degree()) {
                 d *= &b;
                 d.double_in_place().double_in_place();
@@ -214,20 +217,24 @@ impl<P: SWCurveConfig> AdditiveGroup for Projective<P> {
             let e = a + &*a.double_in_place();
 
             // Z3 = 2*Y1*Z1
-            self.z *= &self.y;
-            self.z.double_in_place();
+            let mut z = Loose::from(self.z);
+            z *= &y1;
+            z.double_in_place();
+            self.z = z.reduce();
 
             // F = E^2
             // X3 = F-2*D
-            self.x = e;
-            self.x.square_in_place();
-            self.x -= &d.double();
+            let mut x = e;
+            x.square_in_place();
+            x -= &d.double();
+            self.x = x.reduce();
 
             // Y3 = E*(D-X3)-8*C
-            self.y = d;
-            self.y -= &self.x;
-            self.y *= &e;
-            self.y -= c.double_in_place().double_in_place().double_in_place();
+            let mut y = d;
+            y -= &x;
+            y *= &e;
+            y -= &*c.double_in_place().double_in_place().double_in_place();
+            self.y = y.reduce();
         } else {
             // http://www.hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-0.html#doubling-dbl-2009-l
             // XX = X1^2
@@ -461,34 +468,43 @@ impl<'a, P: SWCurveConfig> AddAssign<&'a Self> for Projective<P> {
         }
 
         // https://www.hyperelliptic.org/EFD/g1p/auto-shortw-jacobian.html#addition-add-1998-cmo-2
-        // Works for all curves.
+        // in `Loose` arithmetic. Works for all curves.
+        let (z1, z2) = (Loose::from(self.z), Loose::from(other.z));
 
         // Z1Z1 = Z1^2
-        let z1z1 = self.z.square();
+        let z1z1 = z1.square();
 
         // Z2Z2 = Z2^2
-        let z2z2 = other.z.square();
+        let z2z2 = z2.square();
 
         // U1 = X1*Z2Z2
-        let mut u1 = self.x;
+        let mut u1 = Loose::from(self.x);
         u1 *= &z2z2;
 
         // U2 = X2*Z1Z1
-        let mut u2 = other.x;
+        let mut u2 = Loose::from(other.x);
         u2 *= &z1z1;
 
         // S1 = Y1*Z2*Z2Z2
-        let mut s1 = self.y;
-        s1 *= &other.z;
+        let mut s1 = Loose::from(self.y);
+        s1 *= &z2;
         s1 *= &z2z2;
 
         // S2 = Y2*Z1*Z1Z1
-        let mut s2 = other.y;
-        s2 *= &self.z;
+        let mut s2 = Loose::from(other.y);
+        s2 *= &z1;
         s2 *= &z1z1;
 
-        if u1 == u2 {
-            if s1 == s2 {
+        // H = U2-U1
+        let mut h = u2;
+        h -= &u1;
+
+        // r = S2-S1
+        let mut r = s2;
+        r -= &s1;
+
+        if h.is_zero() {
+            if r.is_zero() {
                 // The two points are equal, so we double.
                 self.double_in_place();
             } else {
@@ -496,10 +512,6 @@ impl<'a, P: SWCurveConfig> AddAssign<&'a Self> for Projective<P> {
                 *self = Self::zero();
             }
         } else {
-            // H = U2-U1
-            let mut h = u2;
-            h -= &u1;
-
             // HH = H^2
             let hh = h.square();
 
@@ -508,27 +520,25 @@ impl<'a, P: SWCurveConfig> AddAssign<&'a Self> for Projective<P> {
             j.neg_in_place();
             j *= &hh;
 
-            // r = S2-S1
-            let mut r = s2;
-            r -= &s1;
-
             // V = U1*HH
             let mut v = u1;
             v *= &hh;
 
             // X3 = r^2 + J - 2*V
-            self.x = r;
-            self.x.square_in_place();
-            self.x += &j;
-            self.x -= &(v.double());
+            let mut x = r.square();
+            x += &j;
+            x -= &v.double();
+            self.x = x.reduce();
 
             // Y3 = r*(V - X3) + S1*J
-            v -= &self.x;
-            self.y = P::BaseField::sum_of_products(&[r, s1], &[v, j]);
+            v -= &x;
+            self.y = Loose::sum_of_two_products(&[r.reduce(), s1.reduce()], &[v, j]).reduce();
 
             // Z3 = Z1*Z2*H
-            self.z *= other.z;
-            self.z *= &h;
+            let mut z = z1;
+            z *= &z2;
+            z *= &h;
+            self.z = z.reduce();
         }
     }
 }

@@ -29,9 +29,9 @@ use crate::{
         },
     },
     short_weierstrass::{Affine, Bucket, Projective, SWCurveConfig},
-    AdditiveGroup, AffineRepr,
+    AffineRepr,
 };
-use ark_ff::{BigInteger, Field, PrimeField, Zero};
+use ark_ff::{BigInteger, Field, Loose, PrimeField, Zero};
 use ark_std::{vec, vec::Vec};
 use itertools::Either;
 
@@ -45,14 +45,14 @@ use rayon::prelude::*;
 pub const BATCH_AFFINE_MIN_POINTS: usize = 1 << 8;
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct Point<F: Zero> {
+pub(crate) struct Point<F> {
     pub(crate) x: F,
     pub(crate) y: F,
 }
 
 /// One level's pending affine additions, as parallel arrays.
 #[derive(Default)]
-struct Pending<F: Zero> {
+struct Pending<F> {
     /// Slot in the output level holding the left operand, which the result replaces.
     out: Vec<usize>,
     /// Sum of x-coords of pairwise point addition
@@ -63,7 +63,7 @@ struct Pending<F: Zero> {
     den: Vec<F>,
 }
 
-impl<F: Field> Pending<F> {
+impl<F> Pending<F> {
     fn clear(&mut self) {
         self.out.clear();
         self.x_sum.clear();
@@ -87,15 +87,17 @@ impl<F: Field> Pending<F> {
 }
 
 /// Two level buffers and the pending records, kept so reducing many bucket ranges allocates once.
+/// The levels and records hold [`Loose`] values; `reduced` holds the last level's canonical copy.
 #[derive(Default)]
-pub(crate) struct ReduceScratch<F: Zero> {
+pub(crate) struct ReduceScratch<F: Field> {
     /// Store the points for the current level
-    a: Vec<Point<F>>,
+    a: Vec<Point<Loose<F>>>,
     a_off: Vec<usize>,
     /// Store the points for the next level
-    b: Vec<Point<F>>,
+    b: Vec<Point<Loose<F>>>,
     b_off: Vec<usize>,
-    pending: Pending<F>,
+    pending: Pending<Loose<F>>,
+    reduced: Vec<Point<F>>,
 }
 
 /// Most window scratch the parallel windows hold at once. A window holds about two and a half
@@ -108,7 +110,7 @@ const WINDOW_SCRATCH_BUDGET: usize = 2 << 30;
 /// Buffers for one [`window_sum`], reused across the windows a worker runs: the counting sort's
 /// output and the reduction levels.
 #[derive(Default)]
-struct WindowScratch<F: Zero> {
+struct WindowScratch<F: Field> {
     offsets: Vec<usize>,
     positions: Vec<usize>,
     points: Vec<Point<F>>,
@@ -341,14 +343,23 @@ pub(crate) fn reduce_tree<P: SWCurveConfig>(
     match reduce_levels::<P>(points, offsets, parallelize, &mut scratch) {
         0 => {}
         1 => {
-            ark_std::mem::swap(points, &mut scratch.a);
+            reduce_level(&scratch.a, points);
             ark_std::mem::swap(offsets, &mut scratch.a_off);
         }
         _ => {
-            ark_std::mem::swap(points, &mut scratch.b);
+            reduce_level(&scratch.b, points);
             ark_std::mem::swap(offsets, &mut scratch.b_off);
         }
     }
+}
+
+/// The canonical copy of a reduced level.
+fn reduce_level<F: Field>(level: &[Point<Loose<F>>], out: &mut Vec<Point<F>>) {
+    out.clear();
+    out.extend(level.iter().map(|p| Point {
+        x: p.x.reduce(),
+        y: p.y.reduce(),
+    }));
 }
 
 /// The level loop. The first level reads the caller's slices and later levels alternate between
@@ -374,53 +385,44 @@ fn reduce_levels<P: SWCurveConfig>(
             b,
             b_off,
             pending,
+            ..
         } = &mut *scratch;
-        let (src, src_off, dest, dest_off): (&[Point<_>], &[usize], &mut Vec<Point<_>>, &mut Vec<usize>) =
-            match cur {
-                0 => (points, offsets, a, a_off),   // only during the first iteration
-                1 => (&a[..], &a_off[..], b, b_off),
-                _ => (&b[..], &b_off[..], a, a_off),
-            };
+        let src_off: &[usize] = match cur {
+            0 => offsets,
+            1 => a_off,
+            _ => b_off,
+        };
 
         // Done if no bucket has a size greater than 1
         if !src_off.windows(2).any(|r| r[1] - r[0] > 1) {
             break;
         }
 
-        dest.clear();
-        dest.reserve(src.len().div_ceil(2) + src_off.len());
-        dest_off.clear();
-        dest_off.reserve(src_off.len());
-        dest_off.push(0);
-        pending.clear();
-        pending.reserve(src.len().div_ceil(2));
-
-        for range in src_off.windows(2) {
-            // Take each bucket and take pairs of points from each bucket
-            let bucket = &src[range[0]..range[1]];
-            for pair in bucket.chunks_exact(2) {
-                let (l, r) = (pair[0], pair[1]);
-                let (num, den) = if current_level_retried && l.x == r.x {
-                    if l.y != r.y || l.y.is_zero() {
-                        // If inverses or 2-torsion, then sum is the 0, so ignore both.
-                        continue;
-                    }
-                    let l_x_sqr = l.x.square();
-                    // (3*l_x^2 + a, 2*y)
-                    (l_x_sqr.double() + l_x_sqr + P::COEFF_A, l.y.double())
-                } else {
-                    (r.y - l.y, r.x - l.x)
-                };
-                let slot = dest.len();
-                dest.push(l);
-                pending.push(slot, l.x + r.x, num, den);
+        // The first level reads the caller's canonical points, later ones the loose scratch.
+        let dest = match cur {
+            0 => {
+                pair_level::<P>(
+                    |i| Point {
+                        x: Loose::from(points[i].x),
+                        y: Loose::from(points[i].y),
+                    },
+                    offsets,
+                    a,
+                    a_off,
+                    pending,
+                    current_level_retried,
+                );
+                a
             }
-            // If bucket has odd number of point, process the last point in next iteration
-            if bucket.len() % 2 == 1 {
-                dest.push(bucket[bucket.len() - 1]);
+            1 => {
+                pair_level::<P>(|i| a[i], a_off, b, b_off, pending, current_level_retried);
+                b
             }
-            dest_off.push(dest.len());
-        }
+            _ => {
+                pair_level::<P>(|i| b[i], b_off, a, a_off, pending, current_level_retried);
+                a
+            }
+        };
 
         // Add the current level pending points
         if batch_add::<P>(pending, dest, parallelize).is_none() {
@@ -432,6 +434,60 @@ fn reduce_levels<P: SWCurveConfig>(
         cur = if cur == 1 { 2 } else { 1 };
     }
     cur
+}
+
+/// Pairs neighbors within every bucket of the source level, read through `src`: the left operand
+/// goes to `dest` and the pair's addition to `pending`, and a bucket's odd last point is carried
+/// over. With `retried`, equal x-coordinates become a doubling or drop out as an inverse pair.
+fn pair_level<P: SWCurveConfig>(
+    src: impl Fn(usize) -> Point<Loose<P::BaseField>>,
+    src_off: &[usize],
+    dest: &mut Vec<Point<Loose<P::BaseField>>>,
+    dest_off: &mut Vec<usize>,
+    pending: &mut Pending<Loose<P::BaseField>>,
+    retried: bool,
+) {
+    let len = src_off[src_off.len() - 1] - src_off[0];
+    dest.clear();
+    dest.reserve(len.div_ceil(2) + src_off.len());
+    dest_off.clear();
+    dest_off.reserve(src_off.len());
+    dest_off.push(0);
+    pending.clear();
+    pending.reserve(len.div_ceil(2));
+
+    for range in src_off.windows(2) {
+        // Take each bucket and take pairs of points from each bucket
+        let (lo, hi) = (range[0], range[1]);
+        let mut k = lo;
+        while k + 1 < hi {
+            let (l, r) = (src(k), src(k + 1));
+            k += 2;
+            let dx = r.x - &l.x;
+            let (num, den) = if retried && dx.is_zero() {
+                if !(r.y - &l.y).is_zero() || l.y.is_zero() {
+                    // If inverses or 2-torsion, then sum is the 0, so ignore both.
+                    continue;
+                }
+                let l_x_sqr = l.x.square();
+                // (3*l_x^2 + a, 2*y)
+                (
+                    l_x_sqr.double() + &l_x_sqr + &Loose::from(P::COEFF_A),
+                    l.y.double(),
+                )
+            } else {
+                (r.y - &l.y, dx)
+            };
+            let slot = dest.len();
+            dest.push(l);
+            pending.push(slot, l.x + &r.x, num, den);
+        }
+        // If bucket has odd number of point, process the last point in next iteration
+        if (hi - lo) % 2 == 1 {
+            dest.push(src(hi - 1));
+        }
+        dest_off.push(dest.len());
+    }
 }
 
 /// Records per parallel batch, so a level of `k` records becomes at most `k / PAR_CHUNK` tasks,
@@ -447,20 +503,21 @@ const PAR_CHUNK: usize = 512;
 /// unwritten, when a denominator is zero.
 fn add_pending<F: Field>(
     slots: &[usize],
-    x_sum: &[F],
-    num: &mut [F],
-    den: &[F],
-    out: &mut [Point<F>],
+    x_sum: &[Loose<F>],
+    num: &mut [Loose<F>],
+    den: &[Loose<F>],
+    out: &mut [Point<Loose<F>>],
     start: usize,
 ) -> Option<()> {
     const LANES: usize = ark_ff::BATCH_INVERSION_LANES;
     let n = slots.len();
+    let one = Loose::from(F::one());
     // Each lane starts from its own first denominator, which drops a multiply by one.
-    let mut acc = [F::one(); LANES];
+    let mut acc = [one; LANES];
     acc[..n.min(LANES)].copy_from_slice(&den[..n.min(LANES)]);
     for k in LANES..n {
-        num[k] *= acc[k % LANES];
-        acc[k % LANES] *= den[k];
+        num[k] *= &acc[k % LANES];
+        acc[k % LANES] *= &den[k];
     }
     // `lane_inv[l] = 1 / acc[l]`, from `prefix[l] = product of acc[..l]` and a suffix walked
     // downward.
@@ -468,26 +525,31 @@ fn add_pending<F: Field>(
     for a in &acc[1..] {
         total *= a;
     }
-    let mut suffix = total.inverse()?;
-    let mut prefix = [F::one(); LANES];
+    let mut suffix = Loose::from(total.reduce().inverse()?);
+    let mut prefix = [one; LANES];
     for l in 1..LANES {
-        prefix[l] = prefix[l - 1] * acc[l - 1];
+        prefix[l] = prefix[l - 1] * &acc[l - 1];
     }
-    let mut lane_inv = [F::one(); LANES];
+    let mut lane_inv = [one; LANES];
     for l in (1..LANES).rev() {
-        lane_inv[l] = prefix[l] * suffix;
-        suffix *= acc[l];
+        lane_inv[l] = prefix[l] * &suffix;
+        suffix *= &acc[l];
     }
     lane_inv[0] = suffix;
 
     for k in (0..n).rev() {
         let l = k % LANES;
-        let lambda = num[k] * lane_inv[l];
-        lane_inv[l] *= den[k];
+        let mut lambda = num[k];
+        lambda *= &lane_inv[l];
+        lane_inv[l] *= &den[k];
         let i = slots[k] - start;
         let left = out[i];
-        let x = lambda.square() - x_sum[k];
-        let y = lambda * (left.x - x) - left.y;
+        let mut x = lambda.square();
+        x -= &x_sum[k];
+        let mut y = left.x;
+        y -= &x;
+        y *= &lambda;
+        y -= &left.y;
         out[i] = Point { x, y };
     }
     Some(())
@@ -558,8 +620,8 @@ fn counting_sort_into<P: SWCurveConfig>(
 /// nothing written, when any denominator is zero, which tells the caller to redo the level with
 /// the exceptional cases handled.
 fn batch_add<P: SWCurveConfig>(
-    pending: &mut Pending<P::BaseField>,
-    out: &mut [Point<P::BaseField>],
+    pending: &mut Pending<Loose<P::BaseField>>,
+    out: &mut [Point<Loose<P::BaseField>>],
     parallelize: bool,
 ) -> Option<()> {
     #[cfg(not(feature = "parallel"))]
@@ -568,7 +630,7 @@ fn batch_add<P: SWCurveConfig>(
     #[cfg(feature = "parallel")]
     if parallelize && pending.out.len() >= 2 * PAR_CHUNK {
         // Checked up front, since a chunk that finds a zero cannot undo the others' writes.
-        if pending.den.iter().any(Zero::is_zero) {
+        if pending.den.iter().any(Loose::is_zero) {
             return None;
         }
         par_batch_add::<P>(pending, out);
@@ -588,8 +650,8 @@ fn batch_add<P: SWCurveConfig>(
 /// every other chunk's, and the left operand each record reads is the slot it writes.
 #[cfg(feature = "parallel")]
 fn par_batch_add<P: SWCurveConfig>(
-    pending: &mut Pending<P::BaseField>,
-    out: &mut [Point<P::BaseField>],
+    pending: &mut Pending<Loose<P::BaseField>>,
+    out: &mut [Point<Loose<P::BaseField>>],
 ) {
     let n = pending.out.len();
     // At least `PAR_CHUNK` records per chunk, and no more chunks than threads, which bounds the
@@ -645,8 +707,14 @@ pub(crate) fn reduce_tree_with<'a, P: SWCurveConfig>(
 ) -> (&'a [Point<P::BaseField>], &'a [usize]) {
     match reduce_levels::<P>(points, offsets, parallelize, scratch) {
         0 => (points, offsets),
-        1 => (&scratch.a[..], &scratch.a_off[..]),
-        _ => (&scratch.b[..], &scratch.b_off[..]),
+        1 => {
+            reduce_level(&scratch.a, &mut scratch.reduced);
+            (&scratch.reduced[..], &scratch.a_off[..])
+        }
+        _ => {
+            reduce_level(&scratch.b, &mut scratch.reduced);
+            (&scratch.reduced[..], &scratch.b_off[..])
+        }
     }
 }
 
