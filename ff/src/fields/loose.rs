@@ -4,9 +4,9 @@ use ark_std::{
     ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
-/// A field element in loose representation: for prime fields of the Pasta shape, on targets other
-/// than wasm32, an integer below twice the modulus instead of below the modulus, so multiplication
-/// and squaring skip their closing conditional subtraction. Every other field and target keeps its
+/// A field element in loose representation. For prime fields of the Pasta shape, on targets other
+/// than wasm, it is an integer below twice the modulus instead of below the modulus, so
+/// multiplication and squaring skip their closing conditional subtraction. Every other field and target keeps its
 /// canonical representation and the operations below are the ordinary ones. Comparison needs the
 /// canonical representative, so `Loose` has no `PartialEq`. [`Self::reduce`] returns it.
 #[derive(Clone, Copy)]

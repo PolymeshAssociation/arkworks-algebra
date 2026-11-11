@@ -1,9 +1,8 @@
 //! Point-addition timings, compared across builds by running this test from each and taking
-//! per-row medians across interleaved runs.
-//!
+//! per-row medians across interleaved runs. Run with
 //! `cargo test --release --manifest-path curves/pallas/Cargo.toml [--features asm] --test point_add_bench -- --ignored --nocapture`
 
-use ark_ec::{scalar_mul::glv::GLVConfig, AdditiveGroup, CurveGroup, VariableBaseMSM};
+use ark_ec::{AdditiveGroup, CurveGroup, VariableBaseMSM, scalar_mul::glv::GLVConfig};
 use ark_ff::UniformRand;
 use ark_pallas::{Affine, Fr, PallasConfig, Projective};
 use ark_std::test_rng;
@@ -47,7 +46,7 @@ fn point_add() {
         for i in 0..inner {
             acc += &aff[i & (SAMPLES - 1)];
         }
-        black_box(acc);
+        let _ = black_box(acc);
     });
     row("madd_throughput_ns", inner, || {
         let mut acc = [proj[0], proj[1], proj[2], proj[3]];
@@ -56,14 +55,14 @@ fn point_add() {
                 acc[l] += &aff[(i + l) & (SAMPLES - 1)];
             }
         }
-        black_box(acc);
+        let _ = black_box(acc);
     });
     row("add_latency_ns", inner, || {
         let mut acc = proj[0];
         for i in 0..inner {
             acc += &proj[i & (SAMPLES - 1)];
         }
-        black_box(acc);
+        let _ = black_box(acc);
     });
     row("add_throughput_ns", inner, || {
         let mut acc = [proj[0], proj[1], proj[2], proj[3]];
@@ -72,26 +71,26 @@ fn point_add() {
                 acc[l] += &proj[(i + l) & (SAMPLES - 1)];
             }
         }
-        black_box(acc);
+        let _ = black_box(acc);
     });
     row("double_latency_ns", inner, || {
         let mut acc = proj[0];
         for _ in 0..inner {
             acc.double_in_place();
         }
-        black_box(acc);
+        let _ = black_box(acc);
     });
     let muls = 2048;
     row("glv_mul_projective_ns", muls, || {
         for i in 0..muls {
             let j = i & (SAMPLES - 1);
-            black_box(PallasConfig::glv_mul_projective(proj[j], scalars[j]));
+            let _ = black_box(PallasConfig::glv_mul_projective(proj[j], scalars[j]));
         }
     });
     row("glv_mul_affine_ns", muls, || {
         for i in 0..muls {
             let j = i & (SAMPLES - 1);
-            black_box(PallasConfig::glv_mul_affine_projective(aff[j], scalars[j]));
+            let _ = black_box(PallasConfig::glv_mul_affine_projective(aff[j], scalars[j]));
         }
     });
     let big: Vec<Affine> = (0..1 << 12).map(|i| aff[i % SAMPLES]).collect();
@@ -102,7 +101,7 @@ fn point_add() {
         row(&format!("msm_2^{log_n}_ns_per_point"), rounds * n, || {
             for r in 0..rounds {
                 let off = (r * 7) % (big.len() - n + 1);
-                black_box(Projective::msm_unchecked(
+                let _ = black_box(Projective::msm_unchecked(
                     &big[off..off + n],
                     &big_s[off..off + n],
                 ));

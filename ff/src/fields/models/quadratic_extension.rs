@@ -394,16 +394,17 @@ impl<P: QuadExtConfig> Field for QuadExtField<P> {
 impl<P: QuadExtConfig> QuadExtField<P> {
     /// Square root over a prime base field with `p = 3 mod 4` and `u^2 = -1`, in two base-field
     /// exponentiations and no inversion. For `self = a0 + a1 u` the root `x0 + x1 u` satisfies
-    /// `x0^2 - x1^2 = a0` and `2 x0 x1 = a1`. With `t^2 = a0^2 + a1^2` and `z = (a0 + t) / 2`,
-    /// exactly one of `z` and `(a0 - t) / 2` is a square when `a1 != 0`, since their product
-    /// `-a1^2 / 4` is not. `s = z^((p - 3) / 4)` and `c = s z` give `s c = z^((p - 1) / 2)`. If
+    /// `x0^2 - x1^2 = a0` and `2 x0 x1 = a1`. `t = (a0^2 + a1^2)^((p + 1) / 4)` is a square root
+    /// of the norm exactly when `self` is a square, and the derivation below assumes that. With
+    /// `z = (a0 + t) / 2`, exactly one of `z` and `(a0 - t) / 2` is a square when `a1 != 0`, since
+    /// their product `-a1^2 / 4` is not. `s = z^((p - 3) / 4)` and `c = s z` give `s c = z^((p - 1) / 2)`. If
     /// `s c = 1` then `c^2 = z`, `s = 1 / c` and the root is `(c, a1 s / 2)`. Otherwise
     /// `c^2 = -z = x1^2` for the other root of the norm, `s = -1 / c` and the root is
     /// `(-a1 s / 2, c)`. When `a1 = 0`, `z = a0` gives `c` or `\pm c u`, the same root as
-    /// [`Self::sqrt_complex_method`]; otherwise the two may differ in sign. A non-square input fails
-    /// the final check. Complex method for `q = 3 mod 4` of Adj, Rodriguez-Henriquez,
+    /// [`Self::sqrt_complex_method`]; otherwise the two may differ in sign. A non-square input,
+    /// whose `t` squares to minus the norm, fails the final check. Algorithm 8, the complex method, of Adj, Rodriguez-Henriquez,
     /// "Square Root Computation over Even Extension Fields" (<https://eprint.iacr.org/2012/685>),
-    /// arranged without the inversion as in Zakura
+    /// for `q = 3 mod 4`, arranged without the inversion as in Zakura
     /// [`Fp2::sqrt`](https://github.com/zakura-core/common/blob/ef8c5415/crates/bls12_381/src/fp2.rs#L275-L321).
     fn sqrt_minus_one_nonresidue(&self) -> Option<Self> {
         // (p - 3) / 4 = floor(p / 4) and (p + 1) / 4 = floor(p / 4) + 1.
@@ -436,7 +437,6 @@ impl<P: QuadExtConfig> QuadExtField<P> {
 
     /// Square root by the complex method for any quadratic extension. See
     /// <https://eprint.iacr.org/2012/685.pdf> (page 15, algorithm 8).
-    #[doc(hidden)]
     pub fn sqrt_complex_method(&self) -> Option<Self> {
         if self.c1.is_zero() {
             // for c = c0 + c1 * x, we have c1 = 0

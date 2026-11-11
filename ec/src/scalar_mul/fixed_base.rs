@@ -40,8 +40,7 @@
 use crate::{
     scalar_mul::{
         sw_pippenger::{
-            affine_bucket_sum, counting_sort, reduce_tree, running_bucket_sum, WeighScratch,
-            AFFINE_WEIGHTING,
+            affine_bucket_sums, counting_sort, reduce_tree_with, ReduceScratch, WeighScratch,
         },
         variable_base::{make_digits, VariableBaseMSM},
     },
@@ -54,10 +53,7 @@ use itertools::Either;
 
 #[cfg(feature = "parallel")]
 use crate::{
-    scalar_mul::sw_pippenger::{
-        affine_bucket_sums, reduce_tree_with, running_bucket_sums, signed_point, Point,
-        ReduceScratch,
-    },
+    scalar_mul::sw_pippenger::{signed_point, Point},
     short_weierstrass::Bucket,
 };
 #[cfg(feature = "parallel")]
@@ -186,7 +182,7 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
     }
 
     /// One counting sort of every nonzero entry into the shared buckets, keyed by digit magnitude,
-    /// then one tree reduction and one running sum.
+    /// then one tree reduction and one bucket weighting.
     fn serial_eval(
         &self,
         scalars: &[<P::ScalarField as PrimeField>::BigInt],
@@ -207,15 +203,14 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
         let digits = self.drop_identity_multiples(digits);
 
         // A digit's index is its table index: both are base-major with `W` per base.
-        let (mut offsets, mut points) =
+        let (offsets, points) =
             counting_sort::<P>(m, digits.len(), |idx| (digits[idx], self.table[idx]));
 
-        reduce_tree::<P>(&mut points, &mut offsets, false);
-        if AFFINE_WEIGHTING.load(core::sync::atomic::Ordering::Relaxed) {
-            affine_bucket_sum::<P>(&points, &offsets, &mut WeighScratch::default()).into()
-        } else {
-            running_bucket_sum::<P>(&points, &offsets).into()
-        }
+        let mut scratch = ReduceScratch::default();
+        let (level, offsets) = reduce_tree_with::<P>(&points, &offsets, false, &mut scratch);
+        affine_bucket_sums::<P>(level, offsets, &mut WeighScratch::default())
+            .0
+            .into()
     }
 
     /// The bucket array split into `k` equal ranges of `L` buckets. Segment `s` covers buckets
@@ -333,13 +328,9 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
                 |(scratch, weigh), &(lo, hi)| {
                     let base = offsets[lo];
                     let local: Vec<usize> = offsets[lo..=hi].iter().map(|o| o - base).collect();
-                    let (pts, offs) =
+                    let (level, offs) =
                         reduce_tree_with::<P>(&points[base..offsets[hi]], &local, false, scratch);
-                    if AFFINE_WEIGHTING.load(core::sync::atomic::Ordering::Relaxed) {
-                        affine_bucket_sums::<P>(pts, offs, weigh)
-                    } else {
-                        running_bucket_sums::<P>(pts, offs)
-                    }
+                    affine_bucket_sums::<P>(level, offs, weigh)
                 },
             )
             .collect();

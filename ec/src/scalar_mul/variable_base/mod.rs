@@ -273,28 +273,22 @@ fn small_value_unzip<A: Send + Sync, B: Send + Sync>(
     grouped.iter().map(|&i| f(i.index(), i.value())).unzip()
 }
 
-/// The nonzero scalars of 1 to 64 bits, 65 to 128 bits and more than 128 bits, each measured as
-/// the smaller of the scalar and its negation mod `MODULUS`.
+/// Whether `scalar` is a nonzero scalar of a [`ScalarSize`] class up to 64 bits, of 65 to 128
+/// bits, or wider, as counts.
 #[inline]
 fn width_counts<F: PrimeField>(scalar: &F::BigInt) -> [usize; 3] {
-    let bits = scalar.num_bits();
-    let bits = if bits <= 64 {
-        bits
-    } else {
-        let mut negated = F::MODULUS;
-        negated.sub_with_borrow(scalar);
-        bits.min(negated.num_bits())
-    };
-    match bits {
-        0 => [0, 0, 0],
-        1..=64 => [1, 0, 0],
-        65..=128 => [0, 1, 0],
-        _ => [0, 0, 1],
+    if scalar.is_zero() {
+        return [0; 3];
+    }
+    match ScalarSize::of_scalar::<F>(scalar).0 {
+        ScalarSize::U128 | ScalarSize::NegU128 => [0, 1, 0],
+        ScalarSize::BigInt => [0, 0, 1],
+        _ => [1, 0, 0],
     }
 }
 
 /// Whether `msm_signed` runs the `num_128` scalars of 65 to 128 bits as their own MSM beside
-/// `num_full` full-width ones: when there are no full-width ones, or at least
+/// `num_full` full-width ones. It does when there are no full-width ones, or at least
 /// `max(SPLIT_128_MIN_SCALARS, SPLIT_128_MIN_SCALARS_PER_THREAD * threads)` of them and at most a
 /// sixteenth as many full-width ones.
 #[inline]
@@ -349,6 +343,41 @@ impl ScalarSize {
     #[inline]
     fn partition_point(self, v: &[PackedIndex]) -> usize {
         v.partition_point(|i| i.group() < self as u8 + 1)
+    }
+
+    /// The class of `scalar`, measured as is when it has at most 128 bits and else by its negation
+    /// mod `MODULUS`, and for the classes up to 16 bits the low 16 bits of the measured value.
+    #[inline]
+    fn of_scalar<F: PrimeField>(scalar: &F::BigInt) -> (Self, u16) {
+        use ScalarSize::*;
+        let low = |group, value: &F::BigInt| {
+            let small = matches!(group, U1 | U8 | U16 | NegU1 | NegU8 | NegU16);
+            (group, if small { value.as_ref()[0] as u16 } else { 0 })
+        };
+        let bits = scalar.num_bits();
+        if bits <= 128 {
+            let group = match bits {
+                0..=1 => U1,
+                2..=8 => U8,
+                9..=16 => U16,
+                17..=32 => U32,
+                33..=64 => U64,
+                _ => U128,
+            };
+            return low(group, scalar);
+        }
+        let mut negated = F::MODULUS;
+        negated.sub_with_borrow(scalar);
+        let group = match negated.num_bits() {
+            0..=1 => NegU1,
+            2..=8 => NegU8,
+            9..=16 => NegU16,
+            17..=32 => NegU32,
+            33..=64 => NegU64,
+            65..=128 => NegU128,
+            _ => BigInt,
+        };
+        low(group, &negated)
     }
 }
 
@@ -435,39 +464,7 @@ fn msm_signed<V: VariableBaseMSM>(
     // Partition scalars according to their size. For scalars (or -scalar) that fit in 16 bits,
     // store the value, rest wont fit in 64-bit PackedIndex.
     let classify = |(i, scalar): (usize, &<V::ScalarField as PrimeField>::BigInt)| {
-        use ScalarSize::{
-            U1, U8, U16, U32, U64, U128, NegU1, NegU8, NegU16, NegU32, NegU64, NegU128,
-        };
-        let mut value = 0;
-        let group = match scalar.num_bits() {
-            0..=1 => U1,
-            2..=8 => U8,
-            9..=16 => U16,
-            17..=32 => U32,
-            33..=64 => U64,
-            65..=128 => U128,
-            _ => {
-                // take bit size of -scalar
-                let mut p_minus_scalar = V::ScalarField::MODULUS;
-                p_minus_scalar.sub_with_borrow(scalar);
-                let group = match p_minus_scalar.num_bits() {
-                    0..=1 => NegU1,
-                    2..=8 => NegU8,
-                    9..=16 => NegU16,
-                    17..=32 => NegU32,
-                    33..=64 => NegU64,
-                    65..=128 => NegU128,
-                    _ => ScalarSize::BigInt,
-                };
-                if matches!(group, NegU1 | NegU8 | NegU16) {
-                    value = p_minus_scalar.as_ref()[0] as u16
-                }
-                group
-            },
-        };
-        if matches!(group, U1 | U8 | U16) {
-            value = (scalar.as_ref()[0]) as u16;
-        };
+        let (group, value) = ScalarSize::of_scalar::<V::ScalarField>(scalar);
         PackedIndex::new(i, group, value)
     };
     let nonzero = |(_, scalar): &(usize, &<V::ScalarField as PrimeField>::BigInt)| !scalar.is_zero();
@@ -504,8 +501,8 @@ fn msm_signed<V: VariableBaseMSM>(
     let (i32s, rest) = rest.split_at(ScalarSize::NegU32.partition_point(rest));
     let (u64s, rest) = rest.split_at(ScalarSize::U64.partition_point(rest));
     let (i64s, rest) = rest.split_at(ScalarSize::NegU64.partition_point(rest));
-    // above_64 are the scalars in the range `[2^64, M-2^64)` where `M` is the modulus: the 65 to
-    // 128 bit scalars and negations, then bigints in the range `[2^128, M-2^128)`
+    // above_64 are the scalars in the range `[2^64, M-2^64)` where `M` is the modulus. They are
+    // the 65 to 128 bit scalars and negations, then bigints in the range `[2^128, M-2^128)`.
     let (above_64, _) = rest.split_at(ScalarSize::BigInt.partition_point(rest));
     let (u128s, rest) = above_64.split_at(ScalarSize::U128.partition_point(above_64));
     let (i128s, bigints) = rest.split_at(ScalarSize::NegU128.partition_point(rest));

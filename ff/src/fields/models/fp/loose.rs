@@ -1,4 +1,4 @@
-//! Loose arithmetic for Pasta-shape moduli: every result is an integer below `2p` congruent to the
+//! Loose arithmetic for Pasta-shape moduli. Every result is an integer below `2p` congruent to the
 //! field value, and only [`reduce`] restores the canonical representative below `p`. Multiplication
 //! and squaring skip their closing conditional subtraction; addition and subtraction work modulo
 //! `2p`. Products of inputs below `2p` stay below `2p` by the closure argument above Zakura Udon
@@ -16,14 +16,15 @@ use crate::BigInt;
 type Limbs = [u64; 4];
 type F<T, const N: usize> = Fp<MontBackend<T, N>, N>;
 
-/// Whether `T` is a 4-limb modulus of the Pasta shape, `modulus[2] = 0` and `modulus[3] = 2^62`,
-/// with `modulus[1] < 2^63`, so that `2 * modulus` has the shape `[t0, t1, 0, 2^63]`.
+/// Whether `T` is a 4-limb modulus of the Pasta shape, `modulus[2] = 0`, `modulus[3] = 2^62` and
+/// `modulus[1] < 2^62`. Then `p = 2^254 + c` with `16 c^2 < 2^256`, the bound under which loose
+/// products stay below `2p`, and `2 * modulus` has the shape `[t0, t1, 0, 2^63]`.
 #[inline(always)]
 pub const fn applies<T: MontConfig<N>, const N: usize>() -> bool {
-    N == 4 && T::MODULUS.0[1] >> 63 == 0 && T::MODULUS.0[2] == 0 && T::MODULUS.0[3] == 1 << 62
+    N == 4 && T::MODULUS.0[1] >> 62 == 0 && T::MODULUS.0[2] == 0 && T::MODULUS.0[3] == 1 << 62
 }
 
-/// Whether the loose kernels serve [`applies`] moduli on this target. On wasm32 the canonical
+/// Whether the loose kernels serve [`applies`] moduli on this target. On wasm the canonical
 /// radix-`2^29` products are faster than these 64-bit ones, so it keeps canonical arithmetic.
 #[inline(always)]
 pub const fn active() -> bool {
@@ -510,6 +511,20 @@ mod tests {
         let p = BigUint::from(VestaBase::MODULUS);
         assert_eq!(big(&<VestaBase as LooseParams<4>>::TWICE_MODULUS), &p * 2u8);
         assert!(!applies::<Bn254Base, 4>());
+    }
+
+    /// A Pasta-shape prime with `modulus[1] >= 2^62`, where loose products can reach `2p`.
+    #[derive(crate::MontConfig)]
+    #[modulus = "28948022309329048855892746252171976963485983806739240135032529380372239780937"]
+    #[generator = "3"]
+    pub struct WideMiddleLimb;
+
+    #[test]
+    fn rejects_wide_middle_limb() {
+        let m = WideMiddleLimb::MODULUS.0;
+        assert_eq!((m[2], m[3]), (0, 1 << 62));
+        assert_eq!(m[1] >> 62, 1);
+        assert!(!applies::<WideMiddleLimb, 4>());
     }
 
     #[derive(crate::MontConfig)]

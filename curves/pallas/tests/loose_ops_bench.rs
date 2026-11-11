@@ -1,5 +1,4 @@
-//! Canonical against loose field operations on Pallas `Fq`.
-//!
+//! Canonical against loose field operations on Pallas `Fq`. Run with
 //! `cargo test --release --manifest-path curves/pallas/Cargo.toml [--features asm] --test loose_ops_bench -- --ignored --nocapture`
 
 use ark_ff::{AdditiveGroup, Field, Loose, UniformRand};
@@ -18,7 +17,7 @@ fn median(mut v: Vec<f64>) -> f64 {
 fn pair(label: &str, mut canonical: impl FnMut(), mut loose: impl FnMut()) {
     let (mut c, mut l) = (Vec::new(), Vec::new());
     for r in 0..REPS {
-        let mut time = |f: &mut dyn FnMut()| {
+        let time = |f: &mut dyn FnMut()| {
             let s = Instant::now();
             f();
             s.elapsed().as_secs_f64() * 1e9 / INNER as f64
@@ -32,7 +31,10 @@ fn pair(label: &str, mut canonical: impl FnMut(), mut loose: impl FnMut()) {
         }
     }
     let (c, l) = (median(c), median(l));
-    println!("{label:<22} canonical {c:6.2} ns  loose {l:6.2} ns  {:.3}x", c / l);
+    println!(
+        "{label:<22} canonical {c:6.2} ns  loose {l:6.2} ns  {:.3}x",
+        c / l
+    );
 }
 
 #[test]

@@ -306,8 +306,8 @@ pub trait Field:
         sum
     }
 
-    /// `self += other` in the loose representation behind [`Loose`]: an integer congruent to the
-    /// value but bounded by twice the modulus instead of the modulus. The defaults keep every value
+    /// `self += other` in the loose representation behind [`Loose`]. A loose value is an integer
+    /// congruent to the value but bounded by twice the modulus instead of the modulus. The defaults keep every value
     /// canonical, which the bound admits. Prime fields of the Pasta shape override the `loose_*`
     /// methods. Loose values reach them through [`Loose`] and the squaring chains of
     /// [`pow_binary`], [`pow_windowed`] and the Sarkar square root, which reduce before returning.
