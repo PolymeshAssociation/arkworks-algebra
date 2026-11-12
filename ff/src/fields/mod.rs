@@ -39,7 +39,7 @@ mod sqrt;
 pub use sqrt::*;
 
 mod loose;
-pub use loose::Loose;
+pub use loose::{Loose, LooseToken};
 
 #[cfg(feature = "parallel")]
 use ark_std::cmp::max;
@@ -309,61 +309,61 @@ pub trait Field:
     /// `self += other` in the loose representation behind [`Loose`]. A loose value is an integer
     /// congruent to the value but bounded by twice the modulus instead of the modulus. The defaults keep every value
     /// canonical, which the bound admits. Prime fields of the Pasta shape override the `loose_*`
-    /// methods. Loose values reach them through [`Loose`] and the squaring chains of
-    /// [`pow_binary`], [`pow_windowed`] and the Sarkar square root, which reduce before returning.
+    /// methods. Only [`Loose`] constructs the [`LooseToken`] the hooks take, so loose values reach
+    /// them through [`Loose`] alone.
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_add_assign(&mut self, other: &Self) {
+    fn loose_add_assign(&mut self, other: &Self, _: LooseToken) {
         *self += other;
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_sub_assign(&mut self, other: &Self) {
+    fn loose_sub_assign(&mut self, other: &Self, _: LooseToken) {
         *self -= other;
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_double_in_place(&mut self) {
+    fn loose_double_in_place(&mut self, _: LooseToken) {
         self.double_in_place();
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_neg_in_place(&mut self) {
+    fn loose_neg_in_place(&mut self, _: LooseToken) {
         self.neg_in_place();
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_mul_assign(&mut self, other: &Self) {
+    fn loose_mul_assign(&mut self, other: &Self, _: LooseToken) {
         *self *= other;
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_square_in_place(&mut self) {
+    fn loose_square_in_place(&mut self, _: LooseToken) {
         self.square_in_place();
     }
 
     /// The canonical representative of a loose value.
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_reduce(&self) -> Self {
+    fn loose_reduce(&self, _: LooseToken) -> Self {
         *self
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_is_zero(&self) -> bool {
+    fn loose_is_zero(&self, _: LooseToken) -> bool {
         self.is_zero()
     }
 
     /// `a[0] * b[0] + a[1] * b[1]` for canonical `a` and loose `b`, loose.
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_sum_of_two_products(a: &[Self; 2], b: &[Self; 2]) -> Self {
+    fn loose_sum_of_two_products(a: &[Self; 2], b: &[Self; 2], _: LooseToken) -> Self {
         Self::sum_of_products(a, b)
     }
 
@@ -476,14 +476,15 @@ fn digit(exp: &[u64], start: usize, len: usize) -> usize {
 
 /// `base^exp` by binary square-and-multiply, with loose intermediate values.
 pub fn pow_binary<F: Field>(base: &F, exp: &[u64]) -> F {
-    let mut res = F::one();
+    let base = Loose::from(*base);
+    let mut res = Loose::from(F::one());
     for i in crate::BitIteratorBE::without_leading_zeros(exp) {
-        res.loose_square_in_place();
+        res.square_in_place();
         if i {
-            res.loose_mul_assign(base);
+            res *= &base;
         }
     }
-    res.loose_reduce()
+    res.reduce()
 }
 
 /// `base^exp` by a 4-bit fixed window, most significant window first, with loose intermediate
@@ -512,18 +513,18 @@ pub fn pow_windowed<F: Field>(base: &F, exp: &[u64]) -> F {
         r => r,
     };
     let mut i = bits - top;
-    let mut res = table[digit(exp, i, top)];
+    let mut res = Loose::from(table[digit(exp, i, top)]);
     while i > 0 {
         i -= W;
         for _ in 0..W {
-            res.loose_square_in_place();
+            res.square_in_place();
         }
         let digit = digit(exp, i, W);
         if digit != 0 {
-            res.loose_mul_assign(&table[digit]);
+            res *= &Loose::from(table[digit]);
         }
     }
-    res.loose_reduce()
+    res.reduce()
 }
 
 // Given a vector of field elements {v_i}, compute the vector {v_i^(-1)}

@@ -1,6 +1,6 @@
 use crate::{
-    AdditiveGroup, BigInt, BigInteger, FftField, Field, LegendreSymbol, One, PrimeField,
-    SqrtPrecomputation, Zero,
+    AdditiveGroup, BigInt, BigInteger, FftField, Field, LegendreSymbol, LooseToken, One,
+    PrimeField, SqrtPrecomputation, Zero,
 };
 use ark_serialize::{
     buffer_byte_size, CanonicalDeserialize, CanonicalDeserializeWithFlags, CanonicalSerialize,
@@ -106,55 +106,59 @@ pub trait FpConfig<const N: usize>: Send + Sync + 'static + Sized {
     /// defaults keep every value canonical.
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_add_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
+    fn loose_add_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>, _: LooseToken) {
         Self::add_assign(a, b)
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_sub_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
+    fn loose_sub_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>, _: LooseToken) {
         Self::sub_assign(a, b)
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_double_in_place(a: &mut Fp<Self, N>) {
+    fn loose_double_in_place(a: &mut Fp<Self, N>, _: LooseToken) {
         Self::double_in_place(a)
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_neg_in_place(a: &mut Fp<Self, N>) {
+    fn loose_neg_in_place(a: &mut Fp<Self, N>, _: LooseToken) {
         Self::neg_in_place(a)
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_mul_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
+    fn loose_mul_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>, _: LooseToken) {
         Self::mul_assign(a, b)
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_square_in_place(a: &mut Fp<Self, N>) {
+    fn loose_square_in_place(a: &mut Fp<Self, N>, _: LooseToken) {
         Self::square_in_place(a)
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_reduce(a: &Fp<Self, N>) -> Fp<Self, N> {
+    fn loose_reduce(a: &Fp<Self, N>, _: LooseToken) -> Fp<Self, N> {
         *a
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_is_zero(a: &Fp<Self, N>) -> bool {
+    fn loose_is_zero(a: &Fp<Self, N>, _: LooseToken) -> bool {
         a.is_zero()
     }
 
     #[doc(hidden)]
     #[inline(always)]
-    fn loose_sum_of_two_products(a: &[Fp<Self, N>; 2], b: &[Fp<Self, N>; 2]) -> Fp<Self, N> {
+    fn loose_sum_of_two_products(
+        a: &[Fp<Self, N>; 2],
+        b: &[Fp<Self, N>; 2],
+        _: LooseToken,
+    ) -> Fp<Self, N> {
         Self::sum_of_products(a, b)
     }
 
@@ -342,48 +346,48 @@ impl<P: FpConfig<N>, const N: usize> Field for Fp<P, N> {
     }
 
     #[inline(always)]
-    fn loose_add_assign(&mut self, other: &Self) {
-        P::loose_add_assign(self, other)
+    fn loose_add_assign(&mut self, other: &Self, t: LooseToken) {
+        P::loose_add_assign(self, other, t)
     }
 
     #[inline(always)]
-    fn loose_sub_assign(&mut self, other: &Self) {
-        P::loose_sub_assign(self, other)
+    fn loose_sub_assign(&mut self, other: &Self, t: LooseToken) {
+        P::loose_sub_assign(self, other, t)
     }
 
     #[inline(always)]
-    fn loose_double_in_place(&mut self) {
-        P::loose_double_in_place(self)
+    fn loose_double_in_place(&mut self, t: LooseToken) {
+        P::loose_double_in_place(self, t)
     }
 
     #[inline(always)]
-    fn loose_neg_in_place(&mut self) {
-        P::loose_neg_in_place(self)
+    fn loose_neg_in_place(&mut self, t: LooseToken) {
+        P::loose_neg_in_place(self, t)
     }
 
     #[inline(always)]
-    fn loose_mul_assign(&mut self, other: &Self) {
-        P::loose_mul_assign(self, other)
+    fn loose_mul_assign(&mut self, other: &Self, t: LooseToken) {
+        P::loose_mul_assign(self, other, t)
     }
 
     #[inline(always)]
-    fn loose_square_in_place(&mut self) {
-        P::loose_square_in_place(self)
+    fn loose_square_in_place(&mut self, t: LooseToken) {
+        P::loose_square_in_place(self, t)
     }
 
     #[inline(always)]
-    fn loose_reduce(&self) -> Self {
-        P::loose_reduce(self)
+    fn loose_reduce(&self, t: LooseToken) -> Self {
+        P::loose_reduce(self, t)
     }
 
     #[inline(always)]
-    fn loose_is_zero(&self) -> bool {
-        P::loose_is_zero(self)
+    fn loose_is_zero(&self, t: LooseToken) -> bool {
+        P::loose_is_zero(self, t)
     }
 
     #[inline(always)]
-    fn loose_sum_of_two_products(a: &[Self; 2], b: &[Self; 2]) -> Self {
-        P::loose_sum_of_two_products(a, b)
+    fn loose_sum_of_two_products(a: &[Self; 2], b: &[Self; 2], t: LooseToken) -> Self {
+        P::loose_sum_of_two_products(a, b, t)
     }
 
     #[inline]

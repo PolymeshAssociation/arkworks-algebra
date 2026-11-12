@@ -13,6 +13,14 @@ use ark_std::{
 #[repr(transparent)]
 pub struct Loose<F: Field>(F);
 
+/// The argument every `loose_*` hook of [`Field`] takes. Only this module constructs it, so the
+/// hooks are reachable only through [`Loose`].
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct LooseToken(());
+
+const TOKEN: LooseToken = LooseToken(());
+
 impl<F: Field> Loose<F> {
     /// The loose zero.
     pub const ZERO: Self = Self(F::ZERO);
@@ -20,29 +28,29 @@ impl<F: Field> Loose<F> {
     /// The canonical field element.
     #[inline(always)]
     pub fn reduce(&self) -> F {
-        self.0.loose_reduce()
+        self.0.loose_reduce(TOKEN)
     }
 
     #[inline(always)]
     pub fn is_zero(&self) -> bool {
-        self.0.loose_is_zero()
+        self.0.loose_is_zero(TOKEN)
     }
 
     #[inline(always)]
     pub fn square_in_place(&mut self) -> &mut Self {
-        self.0.loose_square_in_place();
+        self.0.loose_square_in_place(TOKEN);
         self
     }
 
     #[inline(always)]
     pub fn double_in_place(&mut self) -> &mut Self {
-        self.0.loose_double_in_place();
+        self.0.loose_double_in_place(TOKEN);
         self
     }
 
     #[inline(always)]
     pub fn neg_in_place(&mut self) -> &mut Self {
-        self.0.loose_neg_in_place();
+        self.0.loose_neg_in_place(TOKEN);
         self
     }
 
@@ -63,7 +71,7 @@ impl<F: Field> Loose<F> {
     /// `a[0] * b[0] + a[1] * b[1]` for canonical `a`.
     #[inline(always)]
     pub fn sum_of_two_products(a: &[F; 2], b: &[Self; 2]) -> Self {
-        Self(F::loose_sum_of_two_products(a, &[b[0].0, b[1].0]))
+        Self(F::loose_sum_of_two_products(a, &[b[0].0, b[1].0], TOKEN))
     }
 }
 
@@ -102,14 +110,14 @@ macro_rules! loose_binop {
         impl<F: Field> $assign_trait<&Loose<F>> for Loose<F> {
             #[inline(always)]
             fn $assign_method(&mut self, other: &Self) {
-                self.0.$hook(&other.0);
+                self.0.$hook(&other.0, TOKEN);
             }
         }
 
         impl<F: Field> $assign_trait for Loose<F> {
             #[inline(always)]
             fn $assign_method(&mut self, other: Self) {
-                self.0.$hook(&other.0);
+                self.0.$hook(&other.0, TOKEN);
             }
         }
 
@@ -118,7 +126,7 @@ macro_rules! loose_binop {
 
             #[inline(always)]
             fn $method(mut self, other: &Self) -> Self {
-                self.0.$hook(&other.0);
+                self.0.$hook(&other.0, TOKEN);
                 self
             }
         }
@@ -128,7 +136,7 @@ macro_rules! loose_binop {
 
             #[inline(always)]
             fn $method(mut self, other: Self) -> Self {
-                self.0.$hook(&other.0);
+                self.0.$hook(&other.0, TOKEN);
                 self
             }
         }

@@ -93,8 +93,8 @@ impl SWUConfig for SwuIsoConfig {
     /// `sqrt(norm(ZETA*gx1)) = N(ZETA)^((p+1)/4) * norm(gx1)^((p+1)/4)` avoids a
     /// second full `Fq2` root. The inner root takes `s = delta^((p-3)/4)` and `d = s delta`,
     /// so `s d = delta^((p-1)/2)`. When `s d = 1`, `d^2 = delta`, `s = 1 / d` and the root
-    /// is `(d, t1 s / 2)`. Otherwise `d^2 = -delta`, the other candidate
-    /// `delta - sqrt(norm)` has root `d`, `s = -1 / d` and the root is `(-t1 s / 2, d)`. A
+    /// is `(d, t1 s / 2)`. Otherwise `d^2 = -delta`, `s = -1 / d`, the other candidate
+    /// `delta - sqrt(norm)` has root `t1 / (2 d) = -t1 s / 2` and the root is `(-t1 s / 2, d)`. A
     /// `target` in `Fq` has root `(d, 0)` or `(0, d)` for `d = target^((p+1)/4)`. Two `Fq`
     /// exponentiations and no inversion on every path. Complex-method
     /// `Fp2` square root: Adj, Rodriguez-Henriquez, "Square Root Computation over Even

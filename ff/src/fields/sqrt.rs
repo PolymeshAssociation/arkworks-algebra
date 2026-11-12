@@ -359,11 +359,12 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
             let h = (low32(x) ^ (*hash_xor as usize)) % (*hash_mod as usize);
             inv[h] as usize
         };
-        let sqr = |mut x: F, i: u32| {
+        let sqr = |x: F, i: u32| {
+            let mut x = super::Loose::from(x);
             for _ in 0..i {
-                x.loose_square_in_place();
+                x.square_in_place();
             }
-            x.loose_reduce()
+            x.reduce()
         };
 
         // v = elem^((T-1)/2), uv = elem * v. The exponentiation is the dominant

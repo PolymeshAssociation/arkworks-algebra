@@ -1,6 +1,7 @@
 use super::{deferred, loose, modinv62, Fp, FpConfig};
 use crate::{
-    biginteger::arithmetic as fa, BigInt, BigInteger, PrimeField, SqrtPrecomputation, Zero,
+    biginteger::arithmetic as fa, BigInt, BigInteger, LooseToken, PrimeField, SqrtPrecomputation,
+    Zero,
 };
 use ark_ff_macros::unroll_for_loops;
 use ark_std::marker::PhantomData;
@@ -733,7 +734,7 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     }
 
     #[inline(always)]
-    fn loose_add_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
+    fn loose_add_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>, _: LooseToken) {
         if loose::applies::<T, N>() && loose::active() {
             *a = loose::add(a, b);
         } else {
@@ -742,7 +743,7 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     }
 
     #[inline(always)]
-    fn loose_sub_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
+    fn loose_sub_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>, _: LooseToken) {
         if loose::applies::<T, N>() && loose::active() {
             *a = loose::sub(a, b);
         } else {
@@ -751,7 +752,7 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     }
 
     #[inline(always)]
-    fn loose_double_in_place(a: &mut Fp<Self, N>) {
+    fn loose_double_in_place(a: &mut Fp<Self, N>, _: LooseToken) {
         if loose::applies::<T, N>() && loose::active() {
             *a = loose::double(a);
         } else {
@@ -760,7 +761,7 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     }
 
     #[inline(always)]
-    fn loose_neg_in_place(a: &mut Fp<Self, N>) {
+    fn loose_neg_in_place(a: &mut Fp<Self, N>, _: LooseToken) {
         if loose::applies::<T, N>() && loose::active() {
             *a = loose::neg(a);
         } else {
@@ -769,7 +770,7 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     }
 
     #[inline(always)]
-    fn loose_mul_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
+    fn loose_mul_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>, _: LooseToken) {
         if loose::applies::<T, N>() && loose::active() {
             *a = loose::mul(a, b);
         } else {
@@ -778,7 +779,7 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     }
 
     #[inline(always)]
-    fn loose_square_in_place(a: &mut Fp<Self, N>) {
+    fn loose_square_in_place(a: &mut Fp<Self, N>, _: LooseToken) {
         if loose::applies::<T, N>() && loose::active() {
             *a = loose::square(a);
         } else {
@@ -787,7 +788,7 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     }
 
     #[inline(always)]
-    fn loose_reduce(a: &Fp<Self, N>) -> Fp<Self, N> {
+    fn loose_reduce(a: &Fp<Self, N>, _: LooseToken) -> Fp<Self, N> {
         if loose::applies::<T, N>() && loose::active() {
             loose::reduce(a)
         } else {
@@ -796,7 +797,7 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     }
 
     #[inline(always)]
-    fn loose_is_zero(a: &Fp<Self, N>) -> bool {
+    fn loose_is_zero(a: &Fp<Self, N>, _: LooseToken) -> bool {
         if loose::applies::<T, N>() && loose::active() {
             loose::is_zero(a)
         } else {
@@ -805,7 +806,11 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     }
 
     #[inline(always)]
-    fn loose_sum_of_two_products(a: &[Fp<Self, N>; 2], b: &[Fp<Self, N>; 2]) -> Fp<Self, N> {
+    fn loose_sum_of_two_products(
+        a: &[Fp<Self, N>; 2],
+        b: &[Fp<Self, N>; 2],
+        _: LooseToken,
+    ) -> Fp<Self, N> {
         if loose::applies::<T, N>() && loose::active() {
             loose::sum_of_two_products(a, b)
         } else {

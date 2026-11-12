@@ -101,7 +101,7 @@ pub(crate) struct ReduceScratch<F: Field> {
 
 /// Most window scratch the parallel windows hold at once. A window holds about two and a half
 /// points' worth per base: its sorted copy of the points, two reduction levels and the pending
-/// records. On Pallas with 16 threads at `2^20` bases this caps peak memory at 2.3 GB instead of
+/// records. The bucket weighting's buffers scale with the bucket count and are left out. On Pallas with 16 threads at `2^20` bases this caps peak memory at 2.3 GB instead of
 /// 3.0 GB at the same speed; sizes up to `2^19` run every window at once as before.
 #[cfg(feature = "parallel")]
 const WINDOW_SCRATCH_BUDGET: usize = 2 << 30;
