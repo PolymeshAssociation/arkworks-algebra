@@ -1,22 +1,27 @@
-//! AArch64 assembly Montgomery kernels for 4-limb moduli of the Pasta shape, `modulus[2] = 0` and
-//! `modulus[3] = 2^62`, which both Pasta moduli have. Whenever [`pasta_asm_compiled`] holds, the
-//! `asm` feature on AArch64, the `MontConfig` derive routes `add_assign`, `sub_assign`,
-//! `double_in_place`, `mul_assign`, `square_in_place` and two-term `sum_of_products` of such a
-//! field here, the last to a fused kernel with one Montgomery reduction. Every kernel requires
-//! canonical inputs and returns the same canonical element as the portable path. On an Apple M3
-//! Max the kernels make Pallas mixed addition 1.3x, a GLV scalar multiplication 1.45x and MSMs of
-//! `2^8` to `2^16` points 1.35-1.4x faster than the portable path. On x86-64 Pasta fields take the
-//! portable path with loose arithmetic: on an i9-12900H, with and without BMI2 and ADX enabled at
-//! compile time, Zakura's MULX/ADX Pasta kernels made MSMs 0.78-0.91x and square roots 0.70-0.84x
-//! as fast as it.
+//! AArch64 assembly Montgomery kernels for 4-limb moduli of the Pasta shape
+//! ([`is_pasta_shape`]). Whenever [`pasta_asm_compiled`] holds, the `asm` feature on AArch64, the
+//! `MontConfig` derive routes `add_assign`, `sub_assign`, `double_in_place`, `mul_assign`,
+//! `square_in_place` and two-term `sum_of_products` of such a field here, the last to a fused
+//! kernel with one Montgomery reduction. Every kernel requires canonical inputs and returns the
+//! same canonical element as the portable path. On an Apple M3 Max the kernels make Pallas mixed
+//! addition 1.54x, addition 1.22x, doubling 1.52x, a GLV scalar multiplication 1.47x and MSMs of
+//! `2^8` to `2^16` points 1.15-1.16x faster than the portable path with loose arithmetic. On
+//! x86-64 Pasta fields take the portable path with loose arithmetic. On an i9-12900H, with and
+//! without BMI2 and ADX enabled at compile time, Zakura's MULX/ADX Pasta kernels made MSMs
+//! 0.78-0.91x and square roots 0.70-0.84x as fast as it.
 
-use super::{Fp, MontBackend, MontConfig};
+#[cfg(doc)]
+use super::loose::is_pasta_shape;
+use super::{
+    loose::{applies, params},
+    Fp, MontBackend, MontConfig,
+};
 
 #[cfg(all(feature = "asm", target_arch = "aarch64"))]
 #[allow(unsafe_code)]
-mod aarch64;
+pub(super) mod aarch64;
 #[cfg(all(feature = "asm", target_arch = "aarch64"))]
-use aarch64 as kernel;
+pub(super) use aarch64 as kernel;
 
 #[cfg(not(all(feature = "asm", target_arch = "aarch64")))]
 mod kernel {
@@ -40,8 +45,6 @@ mod kernel {
     }
 }
 
-pub(super) mod loose;
-
 #[cfg(all(feature = "asm", target_arch = "aarch64"))]
 use kernel::sum_of_two_products as fused_kernel;
 
@@ -49,26 +52,6 @@ use kernel::sum_of_two_products as fused_kernel;
 fn fused_kernel(_: &[u64; 4], _: &[u64; 4], _: &[u64; 4], _: &[u64; 4], _: &[u64; 5]) -> [u64; 4] {
     unreachable!("the fused Pasta kernel is not compiled in")
 }
-
-/// Whether a 4-limb modulus has the shape the kernels hardcode.
-pub const fn is_pasta_shape(modulus: &[u64; 4]) -> bool {
-    modulus[2] == 0 && modulus[3] == 1 << 62
-}
-
-/// The kernel operands of a Pasta-shape [`MontConfig`].
-trait PastaParams: MontConfig<4> {
-    const APPLIES: bool = is_pasta_shape(&Self::MODULUS.0);
-    /// `[modulus[0..4], INV]`.
-    const PARAMS: [u64; 5] = [
-        Self::MODULUS.0[0],
-        Self::MODULUS.0[1],
-        Self::MODULUS.0[2],
-        Self::MODULUS.0[3],
-        Self::INV,
-    ];
-}
-
-impl<T: MontConfig<4>> PastaParams for T {}
 
 /// Whether the kernels are compiled in: the `asm` feature on AArch64.
 #[doc(hidden)]
@@ -80,16 +63,8 @@ pub const fn pasta_asm_compiled() -> bool {
 type F<T> = Fp<MontBackend<T, 4>, 4>;
 
 #[inline(always)]
-const fn params<T: MontConfig<4>>() -> &'static [u64; 5] {
-    const { &<T as PastaParams>::PARAMS }
-}
-
-#[inline(always)]
 fn debug_check<T: MontConfig<4>>(values: &[&F<T>]) {
-    debug_assert!(
-        <T as PastaParams>::APPLIES,
-        "modulus is not of the Pasta shape"
-    );
+    debug_assert!(applies::<T, 4>(), "modulus is not of the Pasta shape");
     debug_assert!(pasta_asm_compiled(), "Pasta kernels are not compiled in");
     for v in values {
         debug_assert!(v.0 < T::MODULUS, "Pasta kernels require canonical inputs");
@@ -158,58 +133,13 @@ pub fn pasta_sum_of_two_products<T: MontConfig<4>>(a: &[F<T>], b: &[F<T>]) -> F<
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        super::loose::tests::{edge_values, PallasBase, VestaBase},
+        *,
+    };
     use crate::{AdditiveGroup, BigInt, BigInteger, Field, PrimeField, UniformRand};
-    use ark_std::{test_rng, vec::Vec};
+    use ark_std::test_rng;
     use num_bigint::BigUint;
-
-    #[derive(MontConfig)]
-    #[modulus = "28948022309329048855892746252171976963363056481941560715954676764349967630337"]
-    #[generator = "5"]
-    pub struct PallasBase;
-
-    #[derive(MontConfig)]
-    #[modulus = "28948022309329048855892746252171976963363056481941647379679742748393362948097"]
-    #[generator = "5"]
-    pub struct VestaBase;
-
-    /// Canonical Montgomery representations that stress the carry and borrow chains and the
-    /// final conditional subtraction.
-    pub(super) fn edge_values<T: MontConfig<4>>() -> Vec<F<T>> {
-        let p = T::MODULUS;
-        let mut raw = ark_std::vec![
-            BigInt::<4>::zero(),
-            BigInt::one(),
-            BigInt::from(2u64),
-            T::R,
-            T::R2,
-            BigInt([u64::MAX, 0, 0, 0]),
-            BigInt([u64::MAX, u64::MAX, 0, 0]),
-            BigInt([u64::MAX, u64::MAX, u64::MAX, 0]),
-            BigInt([0, 0, 0, p.0[3] - 1]),
-            BigInt([0, 0, u64::MAX, p.0[3] - 1]),
-            BigInt([u64::MAX, u64::MAX, u64::MAX, p.0[3] - 1]),
-        ];
-        for k in 1..=4u64 {
-            let mut v = p;
-            v.sub_with_borrow(&BigInt::from(k));
-            raw.push(v);
-        }
-        let half = {
-            let mut h = p;
-            h.div2();
-            h
-        };
-        for d in [0u64, 1] {
-            let mut v = half;
-            v.add_with_carry(&BigInt::from(d));
-            raw.push(v);
-        }
-        raw.into_iter()
-            .inspect(|v| assert!(*v < p))
-            .map(F::<T>::new_unchecked)
-            .collect()
-    }
 
     fn big(x: &F<impl MontConfig<4>>) -> BigUint {
         BigUint::from((x.0).0[0])
@@ -220,7 +150,7 @@ mod tests {
 
     /// Each wrapper against `BigUint` arithmetic on the Montgomery representations.
     fn check<T: MontConfig<4>>() {
-        assert!(<T as PastaParams>::APPLIES);
+        assert!(applies::<T, 4>());
         if !pasta_asm_compiled() {
             return;
         }
@@ -314,13 +244,5 @@ mod tests {
         }
         run::<PallasBase>();
         run::<VestaBase>();
-    }
-
-    #[test]
-    fn shape_predicate() {
-        assert!(is_pasta_shape(&PallasBase::MODULUS.0));
-        assert!(is_pasta_shape(&VestaBase::MODULUS.0));
-        assert!(!is_pasta_shape(&[1, 2, 0, 3]));
-        assert!(!is_pasta_shape(&[1, 2, 7, 1 << 62]));
     }
 }

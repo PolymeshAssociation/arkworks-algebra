@@ -7,9 +7,9 @@
 //! result; latency rows run one dependent chain. Kernel order alternates per repetition and each
 //! figure is the median over repetitions.
 //!
-//! Run with the test profile's debug assertions off, since the portable kernels would pay overflow
-//! checks the assembly cannot:
-//! `CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false cargo test --release --manifest-path curves/pallas/Cargo.toml --features asm --test asm_backend_bench -- --ignored --nocapture`
+//! Run with `--release`, whose profile has no debug assertions, since the portable kernels would
+//! pay overflow checks the assembly cannot:
+//! `cargo test --release --manifest-path curves/pallas/Cargo.toml --features asm --test asm_backend_bench -- --ignored --nocapture`
 
 use ark_ec::{CurveGroup, VariableBaseMSM};
 use ark_ff::{AdditiveGroup, Field, UniformRand};
@@ -30,11 +30,11 @@ fn median(mut v: Vec<f64>) -> f64 {
 #[ignore = "timing comparison; run explicitly with --release --nocapture"]
 fn asm_vs_portable() {
     println!(
-        "target_arch {} | asm feature {} | pasta kernels {} | x86-64 generic kernel {} | debug_assertions {}",
+        "target_arch {} | asm feature {} | pasta kernels {} | x86-64 MULX kernel {} | debug_assertions {}",
         std::env::consts::ARCH,
         cfg!(feature = "asm"),
         ark_ff::pasta_asm_compiled(),
-        ark_ff::asm_backend_active(),
+        ark_ff::mulx_kernel_active(),
         cfg!(debug_assertions),
     );
     field_ops();
@@ -69,34 +69,46 @@ fn field_ops() {
     }
 
     type Op = fn(Fq, Fq) -> Fq;
-    let ops: [(&str, Op, Op); 5] = [
-        ("mul", |x, y| x * y, |x, y| x.mul_portable(&y)),
-        ("square", |x, _| x.square(), |x, _| x.square_portable()),
-        ("add", |x, y| x + y, |x, y| x + y),
-        ("sub", |x, y| x - y, |x, y| x - y),
-        ("double", |x, _| x.double(), |x, _| x.double()),
+    // Multiply and square have a portable oracle in this binary; the others are compared across
+    // builds.
+    let ops: [(&str, Op, Option<Op>); 5] = [
+        ("mul", |x, y| x * y, Some(|x, y| x.mul_portable(&y))),
+        (
+            "square",
+            |x, _| x.square(),
+            Some(|x, _| x.square_portable()),
+        ),
+        ("add", |x, y| x + y, None),
+        ("sub", |x, y| x - y, None),
+        ("double", |x, _| x.double(), None),
     ];
     println!("\nFq, ns/op        dispatched   portable   ratio");
     for (name, dispatched, portable) in ops {
         let (mut td, mut tp, mut ld, mut lp) = (vec![], vec![], vec![], vec![]);
         for rep in 0..REPS {
+            if rep % 2 == 1 {
+                if let Some(portable) = portable {
+                    tp.push(throughput!(portable));
+                    lp.push(latency!(portable));
+                }
+            }
+            td.push(throughput!(dispatched));
+            ld.push(latency!(dispatched));
             if rep % 2 == 0 {
-                td.push(throughput!(dispatched));
-                tp.push(throughput!(portable));
-                ld.push(latency!(dispatched));
-                lp.push(latency!(portable));
-            } else {
-                tp.push(throughput!(portable));
-                td.push(throughput!(dispatched));
-                lp.push(latency!(portable));
-                ld.push(latency!(dispatched));
+                if let Some(portable) = portable {
+                    tp.push(throughput!(portable));
+                    lp.push(latency!(portable));
+                }
             }
         }
-        for (kind, d, p) in [
-            ("thr", median(td), median(tp)),
-            ("lat", median(ld), median(lp)),
-        ] {
-            println!("{name:>7} {kind}    {d:>9.2}  {p:>9.2}  {:>6.3}x", p / d);
+        for (kind, d, p) in [("thr", td, tp), ("lat", ld, lp)] {
+            let d = median(d);
+            if p.is_empty() {
+                println!("{name:>7} {kind}    {d:>9.2}");
+            } else {
+                let p = median(p);
+                println!("{name:>7} {kind}    {d:>9.2}  {p:>9.2}  {:>6.3}x", p / d);
+            }
         }
     }
     for (x, y) in xs.iter().zip(&ys) {

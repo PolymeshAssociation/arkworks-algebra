@@ -10,18 +10,31 @@
 //! The functions take the limbs of an `N`-limb element and apply only when [`applies`] holds, which
 //! the callers check first.
 
-use super::super::{Fp, MontBackend, MontConfig};
+use super::{Fp, MontBackend, MontConfig};
 use crate::BigInt;
 
 type Limbs = [u64; 4];
 type F<T, const N: usize> = Fp<MontBackend<T, N>, N>;
 
-/// Whether `T` is a 4-limb modulus of the Pasta shape, `modulus[2] = 0`, `modulus[3] = 2^62` and
-/// `modulus[1] < 2^62`. Then `p = 2^254 + c` with `16 c^2 < 2^256`, the bound under which loose
-/// products stay below `2p`, and `2 * modulus` has the shape `[t0, t1, 0, 2^63]`.
+/// Whether a 4-limb modulus has the Pasta shape, `modulus[1] < 2^62`, `modulus[2] = 0` and
+/// `modulus[3] = 2^62`, which both Pasta moduli have. Then `p = 2^254 + c` with `16 c^2 < 2^256`,
+/// the bound under which loose products stay below `2p`, and `2 * modulus` has the shape
+/// `[t0, t1, 0, 2^63]`. The AArch64 kernels in `pasta_asm` hardcode the same shape.
+#[inline(always)]
+pub const fn is_pasta_shape(modulus: &[u64; 4]) -> bool {
+    modulus[1] >> 62 == 0 && modulus[2] == 0 && modulus[3] == 1 << 62
+}
+
+/// Whether `T` is a 4-limb modulus of the Pasta shape ([`is_pasta_shape`]).
 #[inline(always)]
 pub const fn applies<T: MontConfig<N>, const N: usize>() -> bool {
-    N == 4 && T::MODULUS.0[1] >> 62 == 0 && T::MODULUS.0[2] == 0 && T::MODULUS.0[3] == 1 << 62
+    N == 4
+        && is_pasta_shape(&[
+            T::MODULUS.0[0],
+            T::MODULUS.0[1],
+            T::MODULUS.0[2],
+            T::MODULUS.0[3],
+        ])
 }
 
 /// Whether the loose kernels serve [`applies`] moduli on this target. On wasm the canonical
@@ -45,7 +58,12 @@ trait LooseParams<const N: usize>: MontConfig<N> {
     } else {
         [0; 5]
     };
-    const MODULUS_LIMBS: Limbs = [Self::PARAMS[0], Self::PARAMS[1], Self::PARAMS[2], Self::PARAMS[3]];
+    const MODULUS_LIMBS: Limbs = [
+        Self::PARAMS[0],
+        Self::PARAMS[1],
+        Self::PARAMS[2],
+        Self::PARAMS[3],
+    ];
     /// `2 * modulus`, of the shape `[t0, t1, 0, 2^63]`.
     const TWICE_MODULUS: Limbs = {
         let m = Self::MODULUS_LIMBS;
@@ -59,6 +77,12 @@ trait LooseParams<const N: usize>: MontConfig<N> {
 }
 
 impl<T: MontConfig<N>, const N: usize> LooseParams<N> for T {}
+
+/// `[modulus[0..4], INV]` of a Pasta-shape modulus, the operand block of the `pasta_asm` kernels.
+#[inline(always)]
+pub(super) const fn params<T: MontConfig<4>>() -> &'static [u64; 5] {
+    const { &<T as LooseParams<4>>::PARAMS }
+}
 
 #[inline(always)]
 fn limbs<T: MontConfig<N>, const N: usize>(a: &F<T, N>) -> Limbs {
@@ -241,7 +265,7 @@ macro_rules! kernel {
     ($asm:ident ($($arg:expr),*), $portable:ident ($($parg:expr),*)) => {{
         #[cfg(all(feature = "asm", target_arch = "aarch64"))]
         {
-            super::kernel::$asm($($arg),*)
+            super::pasta_asm::kernel::$asm($($arg),*)
         }
         #[cfg(not(all(feature = "asm", target_arch = "aarch64")))]
         {
@@ -324,14 +348,64 @@ pub fn is_zero<T: MontConfig<N>, const N: usize>(a: &F<T, N>) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{super::tests::*, *};
+pub(super) mod tests {
+    use super::*;
     use crate::{BigInteger, UniformRand};
     use ark_std::{test_rng, vec::Vec};
     use num_bigint::BigUint;
 
+    #[derive(crate::MontConfig)]
+    #[modulus = "28948022309329048855892746252171976963363056481941560715954676764349967630337"]
+    #[generator = "5"]
+    pub struct PallasBase;
+
+    #[derive(crate::MontConfig)]
+    #[modulus = "28948022309329048855892746252171976963363056481941647379679742748393362948097"]
+    #[generator = "5"]
+    pub struct VestaBase;
+
+    /// Canonical Montgomery representations that stress the carry and borrow chains and the
+    /// final conditional subtraction.
+    pub(crate) fn edge_values<T: MontConfig<4>>() -> Vec<F<T, 4>> {
+        let p = T::MODULUS;
+        let mut raw = ark_std::vec![
+            BigInt::<4>::zero(),
+            BigInt::one(),
+            BigInt::from(2u64),
+            T::R,
+            T::R2,
+            BigInt([u64::MAX, 0, 0, 0]),
+            BigInt([u64::MAX, u64::MAX, 0, 0]),
+            BigInt([u64::MAX, u64::MAX, u64::MAX, 0]),
+            BigInt([0, 0, 0, p.0[3] - 1]),
+            BigInt([0, 0, u64::MAX, p.0[3] - 1]),
+            BigInt([u64::MAX, u64::MAX, u64::MAX, p.0[3] - 1]),
+        ];
+        for k in 1..=4u64 {
+            let mut v = p;
+            v.sub_with_borrow(&BigInt::from(k));
+            raw.push(v);
+        }
+        let half = {
+            let mut h = p;
+            h.div2();
+            h
+        };
+        for d in [0u64, 1] {
+            let mut v = half;
+            v.add_with_carry(&BigInt::from(d));
+            raw.push(v);
+        }
+        raw.into_iter()
+            .inspect(|v| assert!(*v < p))
+            .map(F::<T, 4>::new_unchecked)
+            .collect()
+    }
+
     fn big(l: &Limbs) -> BigUint {
-        l.iter().rev().fold(BigUint::from(0u8), |acc, &x| (acc << 64) | BigUint::from(x))
+        l.iter()
+            .rev()
+            .fold(BigUint::from(0u8), |acc, &x| (acc << 64) | BigUint::from(x))
     }
 
     fn loose_values<T: MontConfig<4>>() -> Vec<F<T, 4>> {
@@ -376,7 +450,10 @@ mod tests {
             assert_eq!(loose(&double(a), "double"), (&ab << 1) % &twice);
             assert_eq!(loose(&neg(a), "neg") % &p, (&twice - &ab) % &p);
             assert_eq!(loose(&square(a), "square") % &p, &ab * &ab * &r_inv % &p);
-            assert_eq!(square_portable(&(a.0).0, &<T as LooseParams<4>>::PARAMS), (square(a).0).0);
+            assert_eq!(
+                square_portable(&(a.0).0, &<T as LooseParams<4>>::PARAMS),
+                (square(a).0).0
+            );
             let r = reduce(a);
             assert!(r.0 < T::MODULUS);
             assert_eq!(big(&(r.0).0), &ab % &p);
@@ -401,7 +478,11 @@ mod tests {
         let twice = &p * 2u8;
         let r_inv = (BigUint::from(1u8) << 256u32).modpow(&(&p - 2u8), &p);
         let values = loose_values::<T>();
-        let canonical: Vec<_> = values.iter().filter(|v| v.0 < T::MODULUS).copied().collect();
+        let canonical: Vec<_> = values
+            .iter()
+            .filter(|v| v.0 < T::MODULUS)
+            .copied()
+            .collect();
         let (n, m) = (values.len(), canonical.len());
         for (i, a0) in canonical.iter().enumerate() {
             for (j, b0) in values.iter().enumerate() {
@@ -410,7 +491,8 @@ mod tests {
                     let r = sum_of_two_products(&[*a0, a1], &[*b0, b1]);
                     let rb = big(&(r.0).0);
                     assert!(rb < twice);
-                    let expected = (big(&(a0.0).0) * big(&(b0.0).0) + big(&(a1.0).0) * big(&(b1.0).0))
+                    let expected = (big(&(a0.0).0) * big(&(b0.0).0)
+                        + big(&(a1.0).0) * big(&(b1.0).0))
                         * &r_inv
                         % &p;
                     assert_eq!(rb % &p, expected);
@@ -443,10 +525,15 @@ mod tests {
                 let top = F::<T, 4>::new_unchecked(BigInt(add_limbs(&(v.0).0, &p.0).0));
                 let mut x = top;
                 for i in 0..64 {
-                    x = if i % 3 == 0 { square(&x) } else { mul(&x, &top) };
+                    x = if i % 3 == 0 {
+                        square(&x)
+                    } else {
+                        mul(&x, &top)
+                    };
                     assert!(lt(&(x.0).0, &twice));
                 }
-                let canonical = (0..64).fold(v, |acc, i| if i % 3 == 0 { acc * acc } else { acc * v });
+                let canonical =
+                    (0..64).fold(v, |acc, i| if i % 3 == 0 { acc * acc } else { acc * v });
                 assert_eq!(reduce(&x), canonical);
             }
         }
@@ -467,7 +554,10 @@ mod tests {
     #[test]
     fn twice_modulus() {
         let p = BigUint::from(PallasBase::MODULUS);
-        assert_eq!(big(&<PallasBase as LooseParams<4>>::TWICE_MODULUS), &p * 2u8);
+        assert_eq!(
+            big(&<PallasBase as LooseParams<4>>::TWICE_MODULUS),
+            &p * 2u8
+        );
         let p = BigUint::from(VestaBase::MODULUS);
         assert_eq!(big(&<VestaBase as LooseParams<4>>::TWICE_MODULUS), &p * 2u8);
         assert!(!applies::<Bn254Base, 4>());
@@ -485,6 +575,16 @@ mod tests {
         assert_eq!((m[2], m[3]), (0, 1 << 62));
         assert_eq!(m[1] >> 62, 1);
         assert!(!applies::<WideMiddleLimb, 4>());
+    }
+
+    #[test]
+    fn shape_predicate() {
+        assert!(is_pasta_shape(&PallasBase::MODULUS.0));
+        assert!(is_pasta_shape(&VestaBase::MODULUS.0));
+        assert!(!is_pasta_shape(&WideMiddleLimb::MODULUS.0));
+        assert!(!is_pasta_shape(&Bn254Base::MODULUS.0));
+        assert!(!is_pasta_shape(&[1, 2, 0, 3]));
+        assert!(!is_pasta_shape(&[1, 2, 7, 1 << 62]));
     }
 
     #[derive(crate::MontConfig)]

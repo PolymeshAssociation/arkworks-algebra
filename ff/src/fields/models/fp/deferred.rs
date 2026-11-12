@@ -11,8 +11,8 @@
 //! carry back under `2^{64(2N-1)}` using their residues, then runs the same REDC loop as
 //! `square_in_place`. Under the `asm` feature the 4-limb accumulate and fold run in inline
 //! assembly, `deferred/aarch64.rs` on AArch64 and `deferred/x86_64.rs` on x86-64 CPUs with BMI2
-//! and ADX. On an Apple M3 Max the AArch64 kernels take a Pallas inner product from 6.3 to 4.5 ns
-//! per term.
+//! and ADX. On an Apple M3 Max a Pallas inner product of 64 to `2^14` terms costs 4.4-4.6 ns per
+//! term with the AArch64 kernels and 4.8-5.2 ns with the portable blocked accumulation.
 //!
 //! # Sources
 //!
@@ -39,11 +39,18 @@ mod x86_64;
 #[cfg(all(feature = "asm", target_arch = "x86_64"))]
 use x86_64 as kernel;
 
+/// Whether the 4-limb kernels are usable on this CPU, always on AArch64.
+#[cfg(all(feature = "asm", target_arch = "aarch64"))]
+#[inline(always)]
+const fn kernel_available() -> bool {
+    true
+}
+
 /// Whether the 4-limb kernels are usable on this CPU, which on x86-64 needs BMI2 and ADX.
-#[cfg(all(feature = "asm", any(target_arch = "aarch64", target_arch = "x86_64")))]
+#[cfg(all(feature = "asm", target_arch = "x86_64"))]
 #[inline(always)]
 fn kernel_available() -> bool {
-    cfg!(target_arch = "aarch64") || super::asm_backend_active()
+    super::mulx_kernel_active()
 }
 
 /// A running sum of unreduced `2N`-limb Montgomery products.
@@ -493,28 +500,37 @@ mod tests {
         }
     }
 
+    // BLS12-381 base field: six limbs, which take the blocked path on AArch64 in every build.
+    #[derive(MontConfig)]
+    #[modulus = "4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787"]
+    #[generator = "2"]
+    pub struct Bls12_381Base;
+
     /// The blocked path leaves exactly the per-product path's state, on saturating limbs.
-    fn check_block<T: MontConfig<4>>() {
-        type F<T> = Fp<MontBackend<T, 4>, 4>;
+    fn check_block<T: MontConfig<N>, const N: usize>() {
+        type F<T, const N: usize> = Fp<MontBackend<T, N>, N>;
         let mut rng = test_rng();
-        fn pick<T: MontConfig<4>, R: ark_std::rand::Rng>(i: usize, rng: &mut R) -> F<T> {
-            let limbs = match i % 3 {
-                0 => [u64::MAX; 4],
-                1 => [u64::MAX, 0, u64::MAX, 0],
-                _ => rng.gen(),
+        fn pick<T: MontConfig<N>, const N: usize, R: ark_std::rand::Rng>(
+            i: usize,
+            rng: &mut R,
+        ) -> F<T, N> {
+            let limbs: [u64; N] = match i % 3 {
+                0 => [u64::MAX; N],
+                1 => core::array::from_fn(|j| if j % 2 == 0 { u64::MAX } else { 0 }),
+                _ => core::array::from_fn(|_| rng.gen()),
             };
-            F::<T>::new_unchecked(BigInt(limbs))
+            F::<T, N>::new_unchecked(BigInt(limbs))
         }
         for len in [0usize, 1, 2, 3, 4, 5, 7, 8, 31, 32, 33, 100] {
-            let a: Vec<F<T>> = (0..len).map(|i| pick::<T, _>(i, &mut rng)).collect();
-            let b: Vec<F<T>> = (0..len).map(|i| pick::<T, _>(i + 1, &mut rng)).collect();
+            let a: Vec<F<T, N>> = (0..len).map(|i| pick::<T, N, _>(i, &mut rng)).collect();
+            let b: Vec<F<T, N>> = (0..len).map(|i| pick::<T, N, _>(i + 1, &mut rng)).collect();
             let (mut per_product, mut blocked) =
-                (MontAccumulator::<T, 4>::ZERO, MontAccumulator::<T, 4>::ZERO);
+                (MontAccumulator::<T, N>::ZERO, MontAccumulator::<T, N>::ZERO);
             for (x, y) in a.iter().zip(&b) {
                 per_product.mul_accumulate(x, y);
             }
             // Seed both with the same nonzero state so the block's carry-in path is exercised.
-            let seed: F<T> = pick::<T, _>(0, &mut rng);
+            let seed: F<T, N> = pick::<T, N, _>(0, &mut rng);
             per_product.mul_accumulate(&seed, &seed);
             blocked.mul_accumulate(&seed, &seed);
             for (x, y) in a.chunks(32).zip(b.chunks(32)) {
@@ -532,27 +548,31 @@ mod tests {
     /// `inner_product` against the naive sum at lengths around the block and tail boundaries.
     #[test]
     fn inner_product_across_blocks() {
-        fn run<T: MontConfig<4>>() {
+        fn run<T: MontConfig<N>, const N: usize>() {
             let mut rng = test_rng();
             for len in [31usize, 32, 33, 127, 128, 129, 159, 160, 161, 300] {
                 let a: Vec<_> = (0..len)
-                    .map(|_| Fp::<MontBackend<T, 4>, 4>::rand(&mut rng))
+                    .map(|_| Fp::<MontBackend<T, N>, N>::rand(&mut rng))
                     .collect();
                 let b: Vec<_> = (0..len)
-                    .map(|_| Fp::<MontBackend<T, 4>, 4>::rand(&mut rng))
+                    .map(|_| Fp::<MontBackend<T, N>, N>::rand(&mut rng))
                     .collect();
                 let naive = a.iter().zip(&b).map(|(a, b)| *a * b).sum();
-                assert_eq!(inner_product::<T, 4>(&a, &b), naive, "len {len}");
+                assert_eq!(inner_product::<T, N>(&a, &b), naive, "len {len}");
             }
         }
-        run::<PallasBase>();
-        run::<Secp256k1Scalar>();
+        run::<PallasBase, 4>();
+        run::<Secp256k1Scalar, 4>();
+        run::<Bls12_381Base, 6>();
+        run::<Twelve, 12>();
     }
 
     #[test]
     fn block_matches_per_product() {
-        check_block::<PallasBase>();
-        check_block::<Secp256k1Scalar>();
+        check_block::<PallasBase, 4>();
+        check_block::<Secp256k1Scalar, 4>();
+        check_block::<Bls12_381Base, 6>();
+        check_block::<Twelve, 12>();
     }
 
     #[test]

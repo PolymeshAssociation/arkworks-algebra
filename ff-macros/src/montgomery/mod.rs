@@ -68,42 +68,49 @@ pub(crate) fn mont_config_helper(
         }
     };
     let modulus = quote::quote! { BigInt([ #( #modulus_limbs ),* ]) };
-    let pasta_shape = limbs == 4 && modulus_limbs[2] == 0 && modulus_limbs[3] == 1 << 62;
+    // Four-limb moduli test `ark_ff::fields::is_pasta_shape` in the emitted code, which folds at
+    // compile time, so the shape has one definition.
+    let pasta_shape = quote::quote! { ark_ff::fields::is_pasta_shape(&Self::MODULUS.0) };
 
     let add_with_carry = add_with_carry_impl(limbs);
     let sub_with_borrow = sub_with_borrow_impl(limbs);
     let subtract_modulus = subtract_modulus_impl(&modulus, limbs);
     let add_assign = add_assign_impl(modulus_has_spare_bit);
     let double_in_place = double_in_place_impl(modulus_has_spare_bit);
-    // Pasta-shape fields skip the x86-64 MULX/ADX kernel: the portable path with loose arithmetic
+    // Pasta-shape fields skip the x86-64 MULX/ADX kernel. The portable path with loose arithmetic
     // is faster for them.
+    let mulx_gate = if limbs == 4 {
+        quote::quote! { !#pasta_shape && ark_ff::mulx_kernel_active() }
+    } else {
+        quote::quote! { ark_ff::mulx_kernel_active() }
+    };
     let mul_assign = mul_assign_impl(
         can_use_no_carry_mul_opt,
         limbs,
         &modulus_limbs,
         modulus_has_spare_bit,
-        !pasta_shape,
+        Some(&mulx_gate),
     );
     let square_in_place = square_in_place_impl(
         can_use_no_carry_mul_opt,
         limbs,
         &modulus_limbs,
         modulus_has_spare_bit,
-        !pasta_shape,
+        Some(&mulx_gate),
     );
     let mul_assign_portable = mul_assign_impl(
         can_use_no_carry_mul_opt,
         limbs,
         &modulus_limbs,
         modulus_has_spare_bit,
-        false,
+        None,
     );
     let square_in_place_portable = square_in_place_impl(
         can_use_no_carry_mul_opt,
         limbs,
         &modulus_limbs,
         modulus_has_spare_bit,
-        false,
+        None,
     );
     let sum_of_products = sum_of_products_impl(limbs, &modulus_limbs);
     // Masked for fields wider than 4 limbs, as in `subtract_modulus_impl`. After Zakura #484
@@ -151,10 +158,11 @@ pub(crate) fn mont_config_helper(
 
     // Pasta-shape moduli take ark-ff's `pasta_*` assembly kernels when they are compiled in,
     // including the fused kernel for two-term sums of products.
-    let pasta = |gate: proc_macro2::TokenStream, call: proc_macro2::TokenStream| {
-        if pasta_shape {
+    let pasta_gate = quote::quote! { ark_ff::fields::pasta_asm_compiled() && #pasta_shape };
+    let pasta = |call: proc_macro2::TokenStream| {
+        if limbs == 4 {
             quote::quote! {
-                if #gate {
+                if #pasta_gate {
                     #call;
                     return;
                 }
@@ -163,30 +171,14 @@ pub(crate) fn mont_config_helper(
             quote::quote! {}
         }
     };
-    let compiled = quote::quote! { ark_ff::fields::pasta_asm_compiled() };
-    let pasta_add = pasta(
-        compiled.clone(),
-        quote::quote! { ark_ff::fields::pasta_add_assign::<Self>(a, b) },
-    );
-    let pasta_sub = pasta(
-        compiled.clone(),
-        quote::quote! { ark_ff::fields::pasta_sub_assign::<Self>(a, b) },
-    );
-    let pasta_double = pasta(
-        compiled.clone(),
-        quote::quote! { ark_ff::fields::pasta_double_in_place::<Self>(a) },
-    );
-    let pasta_mul = pasta(
-        compiled.clone(),
-        quote::quote! { ark_ff::fields::pasta_mul_assign::<Self>(a, b) },
-    );
-    let pasta_square = pasta(
-        compiled,
-        quote::quote! { ark_ff::fields::pasta_square_in_place::<Self>(a) },
-    );
-    let pasta_sum_of_products = if pasta_shape {
+    let pasta_add = pasta(quote::quote! { ark_ff::fields::pasta_add_assign::<Self>(a, b) });
+    let pasta_sub = pasta(quote::quote! { ark_ff::fields::pasta_sub_assign::<Self>(a, b) });
+    let pasta_double = pasta(quote::quote! { ark_ff::fields::pasta_double_in_place::<Self>(a) });
+    let pasta_mul = pasta(quote::quote! { ark_ff::fields::pasta_mul_assign::<Self>(a, b) });
+    let pasta_square = pasta(quote::quote! { ark_ff::fields::pasta_square_in_place::<Self>(a) });
+    let pasta_sum_of_products = if limbs == 4 {
         quote::quote! {
-            if M == 2 && ark_ff::fields::pasta_asm_compiled() {
+            if M == 2 && #pasta_gate {
                 return ark_ff::fields::pasta_sum_of_two_products::<Self>(&a[..], &b[..]);
             }
         }

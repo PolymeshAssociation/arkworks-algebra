@@ -28,7 +28,7 @@ type Limbs = [u64; 4];
 
 /// `lhs + rhs mod p`. `params` is `[modulus[0..4], INV]`.
 #[inline(always)]
-pub(super) fn add(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
+pub(crate) fn add(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
     let [mut r0, mut r1, mut r2, mut r3] = *lhs;
     // SAFETY: register-only arithmetic with declared inputs and outputs;
     // no memory or stack access and no data-dependent control flow.
@@ -69,7 +69,7 @@ pub(super) fn add(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
 
 /// `lhs - rhs mod p`.
 #[inline(always)]
-pub(super) fn sub(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
+pub(crate) fn sub(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
     let [mut r0, mut r1, mut r2, mut r3] = *lhs;
     // SAFETY: register-only arithmetic with declared inputs and outputs;
     // no memory or stack access and no data-dependent control flow.
@@ -311,21 +311,22 @@ macro_rules! mul_kernel {
 
 /// `lhs * rhs * R^{-1} mod p`.
 #[inline(always)]
-pub(super) fn mul(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
+pub(crate) fn mul(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
     mul_kernel!(
-        lhs, rhs, params,
+        lhs,
+        rhs,
+        params,
         // Subtract p = [p0,p1,0,p3].
-        "mov {q}, #0x4000000000000000",     // Materialize p3 = 2^62.
-        "subs {t0}, {r0}, {p0}",            // Tentative result limb 0 = candidate - p[0].
-        "sbcs {t1}, {r1}, {p1}",            // Tentative result limb 1 minus p[1].
-        "sbcs {t2}, {r2}, xzr",             // Tentative result limb 2; p[2] is zero.
-        "sbcs {t3}, {r3}, {q}",             // Tentative result limb 3 minus p[3].
-
+        "mov {q}, #0x4000000000000000", // Materialize p3 = 2^62.
+        "subs {t0}, {r0}, {p0}",        // Tentative result limb 0 = candidate - p[0].
+        "sbcs {t1}, {r1}, {p1}",        // Tentative result limb 1 minus p[1].
+        "sbcs {t2}, {r2}, xzr",         // Tentative result limb 2; p[2] is zero.
+        "sbcs {t3}, {r3}, {q}",         // Tentative result limb 3 minus p[3].
         // `lo` means subtraction borrowed, so retain the original candidate.
-        "csel {r0}, {r0}, {t0}, lo",        // Select canonical output limb 0.
-        "csel {r1}, {r1}, {t1}, lo",        // Select canonical output limb 1.
-        "csel {r2}, {r2}, {t2}, lo",        // Select canonical output limb 2.
-        "csel {r3}, {r3}, {t3}, lo",        // Select canonical output limb 3.
+        "csel {r0}, {r0}, {t0}, lo", // Select canonical output limb 0.
+        "csel {r1}, {r1}, {t1}, lo", // Select canonical output limb 1.
+        "csel {r2}, {r2}, {t2}, lo", // Select canonical output limb 2.
+        "csel {r3}, {r3}, {t3}, lo", // Select canonical output limb 3.
     )
 }
 
@@ -334,7 +335,7 @@ pub(super) fn mul(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
 /// [`square_run`](https://github.com/zakura-core/common/blob/c4d62d2e84f0db8a19f075a8d42fb24c2f373d4a/crates/udon/src/field/pasta/montgomery.rs#L262-L272).
 /// The instructions are those of Udon's AArch64 `montgomery_multiply_loose`.
 #[inline(always)]
-pub(super) fn mul_loose(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
+pub(crate) fn mul_loose(lhs: &Limbs, rhs: &Limbs, params: &[u64; 5]) -> Limbs {
     mul_kernel!(lhs, rhs, params)
 }
 
@@ -352,9 +353,8 @@ macro_rules! square_kernel {
         // stack use, and outputs depend only on the declared inputs.
         unsafe {
             asm!(
-                // 512-bit square: cross products, doubling, diagonals.
-                // Square a (in a0..a3) exactly as in sqr_mont above; the 512-bit
-                // product limbs A0..A7 map to z0,z1,z2,z3,z4,z5,z6,z7.
+                // 512-bit square of a0..a3 into z0..z7: cross products, doubling,
+                // diagonals.
 
                 "mul {z1}, {a1}, {a0}",             // z1 = low(a[1] * a[0]).
                 "umulh {w1}, {a1}, {a0}",           // w1 = high(a[1] * a[0]).
@@ -409,7 +409,7 @@ macro_rules! square_kernel {
                 "adcs {z6}, {z6}, {w3}",            // Add low(a[3]^2) to product limb 6.
                 "adc {z7}, {z7}, {a3}",             // Add high(a[3]^2) to product limb 7.
 
-                // Montgomery cancellation 0 on the low half, as in the shared helper.
+                // Montgomery cancellation 0 on the low half.
                 // low(q * p[0]) cancels z0 and is discarded by the limb shift.
                 "mul {w1}, {p1}, {q}",              // w1 = low(q * p[1]).
                 // q * p[2] is zero because p[2] = 0.
@@ -490,12 +490,12 @@ macro_rules! square_kernel {
                 "adcs {z1}, {z2}, {w1}",            // Reduced limb 1 includes high(q * p[1]).
                 "adcs {z2}, {z3}, xzr",             // Reduced limb 2; p[2] contributes zero.
                 "adc {z3}, {cy}, {w3}",             // Reduced limb 3 includes high(q * p[3]).
-                // Add the upper product half; the sum stays below 2p (see above), so no
-                // carry escapes and no conditional subtraction is needed mid-loop.
-                "adds {a0}, {z0}, {z4}",            // Next-iteration a[0].
-                "adcs {a1}, {z1}, {z5}",            // Next-iteration a[1].
-                "adcs {a2}, {z2}, {z6}",            // Next-iteration a[2].
-                "adc {a3}, {z3}, {z7}",             // Next-iteration a[3].
+                // Add the upper product half. The sum is below 2p < 2^256, so no carry
+                // escapes.
+                "adds {a0}, {z0}, {z4}",            // Candidate limb 0.
+                "adcs {a1}, {z1}, {z5}",            // Candidate limb 1.
+                "adcs {a2}, {z2}, {z6}",            // Candidate limb 2.
+                "adc {a3}, {z3}, {z7}",             // Candidate limb 3.
                 $($tail,)*
                 a0 = inout(reg) a0,
                 a1 = inout(reg) a1,
@@ -527,31 +527,86 @@ macro_rules! square_kernel {
 
 /// `value^2 * R^{-1} mod p`.
 #[inline(always)]
-pub(super) fn square(value: &Limbs, params: &[u64; 5]) -> Limbs {
+pub(crate) fn square(value: &Limbs, params: &[u64; 5]) -> Limbs {
     square_kernel!(
-        value, params,
+        value,
+        params,
         // Conditional subtraction of p = [p0, p1, 0, 2^62]. The input is
         // canonical, so the candidate is below 1.25p < 2^255: no bit 256
         // exists and a four-limb comparison suffices.
-        "mov {q}, #0x4000000000000000",     // Materialize p3 = 2^62.
-        "subs {z0}, {a0}, {p0}",            // Tentative limb 0 = candidate - p0.
-        "sbcs {z1}, {a1}, {p1}",            // Tentative limb 1 minus p1.
-        "sbcs {z2}, {a2}, xzr",             // Tentative limb 2; p2 is zero.
-        "sbcs {z3}, {a3}, {q}",             // Tentative limb 3 minus p3.
+        "mov {q}, #0x4000000000000000", // Materialize p3 = 2^62.
+        "subs {z0}, {a0}, {p0}",        // Tentative limb 0 = candidate - p0.
+        "sbcs {z1}, {a1}, {p1}",        // Tentative limb 1 minus p1.
+        "sbcs {z2}, {a2}, xzr",         // Tentative limb 2; p2 is zero.
+        "sbcs {z3}, {a3}, {q}",         // Tentative limb 3 minus p3.
         // `lo` means the subtraction borrowed, so retain the original
         // candidate.
-        "csel {a0}, {a0}, {z0}, lo",        // Select canonical output limb 0.
-        "csel {a1}, {a1}, {z1}, lo",        // Select canonical output limb 1.
-        "csel {a2}, {a2}, {z2}, lo",        // Select canonical output limb 2.
-        "csel {a3}, {a3}, {z3}, lo",        // Select canonical output limb 3.
+        "csel {a0}, {a0}, {z0}, lo", // Select canonical output limb 0.
+        "csel {a1}, {a1}, {z1}, lo", // Select canonical output limb 1.
+        "csel {a2}, {a2}, {z2}, lo", // Select canonical output limb 2.
+        "csel {a3}, {a3}, {z3}, lo", // Select canonical output limb 3.
     )
 }
 
 /// [`square`] without its closing subtraction, for inputs below `2p`. The result is below `2p`, as
 /// for [`mul_loose`].
 #[inline(always)]
-pub(super) fn square_loose(value: &Limbs, params: &[u64; 5]) -> Limbs {
+pub(crate) fn square_loose(value: &Limbs, params: &[u64; 5]) -> Limbs {
     square_kernel!(value, params)
+}
+
+/// One row of [`sum_of_two_products`], `acc += [a0, a1, a2, a3] * scalar` on the five-limb
+/// accumulator in `x20..x24`, with `x0`, `x1`, `x3` and `x5` as scratch.
+#[rustfmt::skip]
+macro_rules! pasta_add_row {
+    ($a0:literal, $a1:literal, $a2:literal, $a3:literal, $scalar:literal) => {
+        concat!(
+            "mul x0, ", $a0, ", ", $scalar, "\n",
+            "mul x1, ", $a1, ", ", $scalar, "\n",
+            "mul x3, ", $a2, ", ", $scalar, "\n",
+            "mul x5, ", $a3, ", ", $scalar, "\n",
+            "adds x20, x20, x0\n",
+            "umulh x0, ", $a0, ", ", $scalar, "\n",
+            "adcs x21, x21, x1\n",
+            "umulh x1, ", $a1, ", ", $scalar, "\n",
+            "adcs x22, x22, x3\n",
+            "umulh x3, ", $a2, ", ", $scalar, "\n",
+            "adcs x23, x23, x5\n",
+            "umulh x5, ", $a3, ", ", $scalar, "\n",
+            "adc x24, x24, xzr\n",
+            "adds x21, x21, x0\n",
+            "adcs x22, x22, x1\n",
+            "adcs x23, x23, x3\n",
+            "adc x24, x24, x5\n",
+        )
+    };
+}
+
+/// The Montgomery cancellation of [`sum_of_two_products`]. Adds `q * p` for
+/// `q = x20 * INV mod 2^64`, with `p0`, `p1` and `INV` in `x25`, `x26` and `x27`, shifts the
+/// cancelled low limb out of `x20..x24` and clears the fifth limb.
+#[rustfmt::skip]
+macro_rules! pasta_cancel_and_shift {
+    () => {
+        concat!(
+            "mul x3, x27, x20\n",
+            "mul x5, x26, x3\n",
+            "lsl x7, x3, #62\n",
+            "subs xzr, x20, #1\n",
+            "umulh x0, x25, x3\n",
+            "adcs x21, x21, x5\n",
+            "umulh x1, x26, x3\n",
+            "adcs x22, x22, xzr\n",
+            "adcs x23, x23, x7\n",
+            "lsr x7, x3, #2\n",
+            "adc x24, x24, xzr\n",
+            "adds x20, x21, x0\n",
+            "adcs x21, x22, x1\n",
+            "adcs x22, x23, xzr\n",
+            "adc x23, x24, x7\n",
+            "mov x24, xzr\n",
+        )
+    };
 }
 
 /// `(a * b + c * d) * R^{-1} mod p` with one interleaved Montgomery reduction. Each round adds the
@@ -567,7 +622,7 @@ pub(super) fn square_loose(value: &Limbs, params: &[u64; 5]) -> Limbs {
 /// which computes `a * b - c * d` with a signed accumulator. This variant drops the row negation,
 /// the sign limb and the negative fix-up.
 #[inline(always)]
-pub(super) fn sum_of_two_products(
+pub(crate) fn sum_of_two_products(
     a: &Limbs,
     b: &Limbs,
     c: &Limbs,
@@ -576,105 +631,53 @@ pub(super) fn sum_of_two_products(
 ) -> Limbs {
     let (o0, o1, o2, o3): (u64, u64, u64, u64);
     // SAFETY: reads only the four declared 32-byte inputs; no stores, no stack use and no
-    // data-dependent control flow. Each macro is purged before the block ends, so the block can
-    // be inlined more than once into one function.
+    // data-dependent control flow.
     unsafe {
         asm!(
-            r#"
-            ldp x8, x9, [x0]
-            ldp x10, x11, [x0, #16]
-            ldp x12, x13, [x1]
-            ldp x14, x15, [x1, #16]
-
-            .macro PASTA_ADD_ROW a0, a1, a2, a3, scalar
-        mul x0, \a0, \scalar
-        mul x1, \a1, \scalar
-        mul x3, \a2, \scalar
-        mul x5, \a3, \scalar
-        adds x20, x20, x0
-        umulh x0, \a0, \scalar
-        adcs x21, x21, x1
-        umulh x1, \a1, \scalar
-        adcs x22, x22, x3
-        umulh x3, \a2, \scalar
-        adcs x23, x23, x5
-        umulh x5, \a3, \scalar
-        adc x24, x24, xzr
-        adds x21, x21, x0
-        adcs x22, x22, x1
-        adcs x23, x23, x3
-        adc x24, x24, x5
-            .endm
-
-            .macro PASTA_CANCEL_AND_SHIFT
-        mul x3, x27, x20
-        mul x5, x26, x3
-        lsl x7, x3, #62
-        subs xzr, x20, #1
-        umulh x0, x25, x3
-        adcs x21, x21, x5
-        umulh x1, x26, x3
-        adcs x22, x22, xzr
-        adcs x23, x23, x7
-        lsr x7, x3, #2
-        adc x24, x24, xzr
-
-        adds x20, x21, x0
-        adcs x21, x22, x1
-        adcs x22, x23, xzr
-        adc x23, x24, x7
-        mov x24, xzr
-            .endm
-
+            "ldp x8, x9, [x0]",
+            "ldp x10, x11, [x0, #16]",
+            "ldp x12, x13, [x1]",
+            "ldp x14, x15, [x1, #16]",
             // The first row initializes the accumulator directly.
-            ldp x16, x17, [x2]
-            mul x20, x8, x16
-            mul x21, x9, x16
-            mul x22, x10, x16
-            mul x23, x11, x16
-            umulh x0, x8, x16
-            umulh x1, x9, x16
-            umulh x3, x10, x16
-            umulh x5, x11, x16
-            adds x21, x21, x0
-            adcs x22, x22, x1
-            adcs x23, x23, x3
-            adc x24, x5, xzr
-
-            ldr x7, [x4]
-            PASTA_ADD_ROW x12, x13, x14, x15, x7
-            PASTA_CANCEL_AND_SHIFT
-
-            PASTA_ADD_ROW x8, x9, x10, x11, x17
-            ldr x16, [x4, #8]
-            PASTA_ADD_ROW x12, x13, x14, x15, x16
-            PASTA_CANCEL_AND_SHIFT
-
-            ldp x16, x17, [x2, #16]
-            PASTA_ADD_ROW x8, x9, x10, x11, x16
-            ldr x16, [x4, #16]
-            PASTA_ADD_ROW x12, x13, x14, x15, x16
-            PASTA_CANCEL_AND_SHIFT
-
-            PASTA_ADD_ROW x8, x9, x10, x11, x17
-            ldr x16, [x4, #24]
-            PASTA_ADD_ROW x12, x13, x14, x15, x16
-            PASTA_CANCEL_AND_SHIFT
-
+            "ldp x16, x17, [x2]",
+            "mul x20, x8, x16",
+            "mul x21, x9, x16",
+            "mul x22, x10, x16",
+            "mul x23, x11, x16",
+            "umulh x0, x8, x16",
+            "umulh x1, x9, x16",
+            "umulh x3, x10, x16",
+            "umulh x5, x11, x16",
+            "adds x21, x21, x0",
+            "adcs x22, x22, x1",
+            "adcs x23, x23, x3",
+            "adc x24, x5, xzr",
+            "ldr x7, [x4]",
+            pasta_add_row!("x12", "x13", "x14", "x15", "x7"),
+            pasta_cancel_and_shift!(),
+            pasta_add_row!("x8", "x9", "x10", "x11", "x17"),
+            "ldr x16, [x4, #8]",
+            pasta_add_row!("x12", "x13", "x14", "x15", "x16"),
+            pasta_cancel_and_shift!(),
+            "ldp x16, x17, [x2, #16]",
+            pasta_add_row!("x8", "x9", "x10", "x11", "x16"),
+            "ldr x16, [x4, #16]",
+            pasta_add_row!("x12", "x13", "x14", "x15", "x16"),
+            pasta_cancel_and_shift!(),
+            pasta_add_row!("x8", "x9", "x10", "x11", "x17"),
+            "ldr x16, [x4, #24]",
+            pasta_add_row!("x12", "x13", "x14", "x15", "x16"),
+            pasta_cancel_and_shift!(),
             // Subtract p once when the result is at least p.
-            mov x7, #0x4000000000000000
-            subs x0, x20, x25
-            sbcs x1, x21, x26
-            sbcs x3, x22, xzr
-            sbcs x5, x23, x7
-            csel x20, x0, x20, cs
-            csel x21, x1, x21, cs
-            csel x22, x3, x22, cs
-            csel x23, x5, x23, cs
-
-            .purgem PASTA_CANCEL_AND_SHIFT
-            .purgem PASTA_ADD_ROW
-            "#,
+            "mov x7, #0x4000000000000000",
+            "subs x0, x20, x25",
+            "sbcs x1, x21, x26",
+            "sbcs x3, x22, xzr",
+            "sbcs x5, x23, x7",
+            "csel x20, x0, x20, cs",
+            "csel x21, x1, x21, cs",
+            "csel x22, x3, x22, cs",
+            "csel x23, x5, x23, cs",
             inout("x0") a.as_ptr() => _,
             inout("x1") c.as_ptr() => _,
             in("x2") b.as_ptr(),
@@ -713,7 +716,7 @@ pub(super) fn sum_of_two_products(
 /// [`add_loose`](https://github.com/zakura-core/common/blob/c4d62d2e84f0db8a19f075a8d42fb24c2f373d4a/crates/udon/src/field/aarch64_asm/mod.rs#L251-L300)
 /// with the zero limb of `2p` read from `xzr`.
 #[inline(always)]
-pub(super) fn add_loose(lhs: &Limbs, rhs: &Limbs, twice_modulus: &Limbs) -> Limbs {
+pub(crate) fn add_loose(lhs: &Limbs, rhs: &Limbs, twice_modulus: &Limbs) -> Limbs {
     let [mut r0, mut r1, mut r2, mut r3] = *lhs;
     // SAFETY: register-only arithmetic with declared inputs and outputs;
     // no memory or stack access and no data-dependent control flow.
@@ -761,7 +764,7 @@ pub(super) fn add_loose(lhs: &Limbs, rhs: &Limbs, twice_modulus: &Limbs) -> Limb
 /// [`sub_loose`](https://github.com/zakura-core/common/blob/c4d62d2e84f0db8a19f075a8d42fb24c2f373d4a/crates/udon/src/field/aarch64_asm/mod.rs#L302-L346)
 /// with the zero limb of `2p` read from `xzr`.
 #[inline(always)]
-pub(super) fn sub_loose(lhs: &Limbs, rhs: &Limbs, twice_modulus: &Limbs) -> Limbs {
+pub(crate) fn sub_loose(lhs: &Limbs, rhs: &Limbs, twice_modulus: &Limbs) -> Limbs {
     let [mut r0, mut r1, mut r2, mut r3] = *lhs;
     // SAFETY: register-only arithmetic with declared inputs and outputs;
     // no memory or stack access and no data-dependent control flow.
@@ -800,7 +803,7 @@ pub(super) fn sub_loose(lhs: &Limbs, rhs: &Limbs, twice_modulus: &Limbs) -> Limb
 
 /// `-value mod 2p`, below `2p`, for an input below `2p`: [`sub_loose`] from zero.
 #[inline(always)]
-pub(super) fn neg_loose(value: &Limbs, twice_modulus: &Limbs) -> Limbs {
+pub(crate) fn neg_loose(value: &Limbs, twice_modulus: &Limbs) -> Limbs {
     let (r0, r1, r2, r3): (u64, u64, u64, u64);
     // SAFETY: register-only arithmetic with declared inputs and outputs;
     // no memory or stack access and no data-dependent control flow.
@@ -840,7 +843,7 @@ pub(super) fn neg_loose(value: &Limbs, twice_modulus: &Limbs) -> Limbs {
 /// The canonical representative of a value below `2p`: one conditional subtraction of `p`, the
 /// closing instructions of [`mul`].
 #[inline(always)]
-pub(super) fn reduce_loose(value: &Limbs, params: &[u64; 5]) -> Limbs {
+pub(crate) fn reduce_loose(value: &Limbs, params: &[u64; 5]) -> Limbs {
     let [mut r0, mut r1, mut r2, mut r3] = *value;
     // SAFETY: register-only arithmetic with declared inputs and outputs;
     // no memory or stack access and no data-dependent control flow.

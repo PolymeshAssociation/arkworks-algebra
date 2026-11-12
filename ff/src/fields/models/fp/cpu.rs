@@ -12,39 +12,24 @@ const PRESENT: u8 = 2;
 
 static STATE: AtomicU8 = AtomicU8::new(UNKNOWN);
 
-/// Whether this CPU has both BMI2 and ADX, and the portable path has not been forced.
-///
-/// Cached after the first call. A race computes the same answer twice and stores it twice, so
-/// `Relaxed` is enough.
+/// Whether this CPU has both BMI2 and ADX. Cached after the first call. A race computes the same
+/// answer twice and stores it twice, so `Relaxed` is enough.
 #[inline]
 pub(crate) fn has_bmi2_adx() -> bool {
     match STATE.load(Ordering::Relaxed) {
         PRESENT => true,
         ABSENT => false,
         _ => {
-            let yes = detect();
+            let yes = cpu_has_bmi2_adx();
             STATE.store(if yes { PRESENT } else { ABSENT }, Ordering::Relaxed);
             yes
         },
     }
 }
 
-#[cold]
-fn detect() -> bool {
-    #[cfg(feature = "std")]
-    {
-        // Differential testing needs a way to run the whole stack on the fallback in one process.
-        extern crate std;
-        if std::env::var("ARK_FF_FORCE_PORTABLE").as_deref() == Ok("1") {
-            return false;
-        }
-    }
-    cpu_has_bmi2_adx()
-}
-
 /// Reads CPUID directly rather than going through `std::is_x86_feature_detected!`, which needs
 /// `std`. Leaf 7 subleaf 0: `EBX` bit 8 is BMI2, bit 19 is ADX.
-#[inline]
+#[cold]
 fn cpu_has_bmi2_adx() -> bool {
     // Safe intrinsics on current toolchains, `unsafe` on older ones.
     #[allow(unsafe_code, unused_unsafe)]
@@ -65,6 +50,7 @@ const fn leaf7_has_bmi2_adx(ebx: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "std"))]
     extern crate std;
     use super::*;
 

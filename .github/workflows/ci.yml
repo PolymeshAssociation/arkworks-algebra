@@ -199,8 +199,8 @@ jobs:
           grep -qE '\badx\b' /proc/cpuinfo || { echo "runner lacks ADX"; exit 1; }
           grep -qE '\bbmi2\b' /proc/cpuinfo || { echo "runner lacks BMI2"; exit 1; }
 
-      - name: Confirm the kernels are live
-        run: ARK_FF_REQUIRE_ASM=1 cargo test -p ark-ff --features asm --lib asm_backend_is_active -- --nocapture
+      - name: Confirm the kernels are live through the CPUID check
+        run: ARK_FF_REQUIRE_ASM=runtime cargo test -p ark-ff --features asm --lib asm_backend_is_active -- --nocapture
 
       - name: Field tests with the kernels live
         run: |
@@ -212,6 +212,11 @@ jobs:
           for d in pallas vesta secp256k1 secq256k1 bn254 bls12_381; do
             cargo test --manifest-path "curves/$d/Cargo.toml" --features asm
           done
+
+      - name: Field tests on the portable path
+        run: |
+          cargo test -p ark-ff
+          cargo test -p ark-test-curves --features parallel,bls12_381_curve,ed_on_bls12_381,mnt4_753_curve,mnt6_753,bn384_small_two_adicity_curve,secp256k1
 
   test-aarch64-asm:
     name: Test AArch64 assembly kernels
@@ -235,9 +240,15 @@ jobs:
 
       - name: Curve tests with the kernels live
         run: |
-          for d in pallas vesta secp256k1 bn254; do
+          for d in pallas vesta secp256k1 bn254 bls12_381; do
             cargo test --manifest-path "curves/$d/Cargo.toml" --features asm
           done
+
+      # Without `asm`, 4-limb inner products also take the blocked accumulator.
+      - name: Field and Pasta tests on the portable path
+        run: |
+          cargo test -p ark-ff
+          cargo test --manifest-path curves/pallas/Cargo.toml
 
   directories: # Job that list subdirectories
     name: List directories for parallelizing tests

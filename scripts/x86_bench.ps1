@@ -1,17 +1,20 @@
 <#
-Runs the correctness tests and benchmarks with the `asm` feature on and off on the code this script
-sits in, and with `-Zakura` also Zakura #701's GLV MSM with AVX2 on and off. Writes raw logs,
-summary.txt and x86-bench-results.zip under .\x86-bench.
+Runs the correctness tests and benchmarks with the `asm` feature on and off on the repository this
+script sits in, times the run-time CPUID selection of the MULX/ADX kernel against a build with BMI2
+and ADX at compile time, and with `-Zakura` also Zakura #701's GLV MSM with AVX2 on and off. Writes
+raw logs, summary.txt and x86-bench-results.zip under .\x86-bench.
 
-From the folder holding this script:
-    powershell -ExecutionPolicy Bypass -File x86_bench.ps1
+From the repository root:
+    powershell -ExecutionPolicy Bypass -File scripts\x86_bench.ps1
+
+`-Affinity` pins the timing runs to a hexadecimal CPU mask; `-Affinity 555` takes one logical CPU
+on each of an i9-12900H's six P-cores (logical CPUs 0-11). Without it the runs are not pinned.
 #>
 param(
     [string]$Branch = "platform-specific",
     [string]$ZakuraCommit = "05dffadf7fd21f1d6adda7fd7ddc75159b70b2c0",
     [int]$Rounds = 2,
-    # One logical CPU on each of the 12900H's six P-cores (logical CPUs 0-11).
-    [string]$Affinity = "555",
+    [string]$Affinity = "",
     [string]$Threads = "1,4,6",
     [string]$MsmSizes = "256,1024,4096,16384",
     [switch]$SkipTests,
@@ -65,6 +68,7 @@ function Run([string]$Dir, [string]$Cmd, [string]$Log) {
 
 $AllCpus = [System.Diagnostics.Process]::GetCurrentProcess().ProcessorAffinity
 function Pin([bool]$On) {
+    if ($Affinity -eq "") { return }
     $p = [System.Diagnostics.Process]::GetCurrentProcess()
     if ($On) { $p.ProcessorAffinity = [IntPtr]([Convert]::ToInt64($Affinity, 16)) } else { $p.ProcessorAffinity = $AllCpus }
 }
@@ -103,15 +107,15 @@ function DataLines([string]$Log) {
     return , $rows
 }
 
-# Pairs the rows of the asm and portable logs by position. Numbers equal in every run stay as
-# they are; the others become `[asm A | portable B | B/A x]`, medians over rounds, durations in ns.
-function Compare-Builds([string]$Bench) {
+# Pairs the rows of build A's and build B's logs by position. Numbers equal in every run stay as
+# they are; the others become `[A a | B b | b/a x]`, medians over rounds, durations in ns.
+function Compare-Builds([string]$Bench, [string]$A = "asm", [string]$B = "portable") {
     Say ""
-    Say "== $Bench   [asm | portable | portable/asm]"
+    Say "== $Bench   [$A | $B | $B/$A]"
     $a = @(); $p = @()
     for ($r = 1; $r -le $Rounds; $r++) {
-        $a += , (DataLines "$Bench.asm.$r.txt")
-        $p += , (DataLines "$Bench.portable.$r.txt")
+        $a += , (DataLines "$Bench.$A.$r.txt")
+        $p += , (DataLines "$Bench.$B.$r.txt")
     }
     $all = $a + $p
     $n = $all[0].Count
@@ -123,8 +127,8 @@ function Compare-Builds([string]$Bench) {
         $rows = @($all | ForEach-Object { $_[$i] })
         $skel = @($rows | ForEach-Object { $TokenRe.Replace($_, "#") -replace '\s+', ' ' } | Select-Object -Unique)
         if ($skel.Count -ne 1) {
-            Say ("  asm:      " + $a[0][$i].Trim())
-            Say ("  portable: " + $p[0][$i].Trim())
+            Say ("  ${A}: " + $a[0][$i].Trim())
+            Say ("  ${B}: " + $p[0][$i].Trim())
             continue
         }
         $tokens = @($rows | ForEach-Object { , @($TokenRe.Matches($_)) })
@@ -140,10 +144,10 @@ function Compare-Builds([string]$Bench) {
             $va = Median $vals[0..($Rounds - 1)]
             $vp = Median $vals[$Rounds..(2 * $Rounds - 1)]
             $unit = $m.Groups[2].Value
-            if ($unit -eq "x") { return "[asm $(Fmt $va)x | portable $(Fmt $vp)x]" }
+            if ($unit -eq "x") { return "[$A $(Fmt $va)x | $B $(Fmt $vp)x]" }
             $suffix = ""
             if ($unit -ne "") { $suffix = "ns" }
-            return "[asm $(Fmt $va)$suffix | portable $(Fmt $vp)$suffix | $(Fmt ($vp / $va))x]"
+            return "[$A $(Fmt $va)$suffix | $B $(Fmt $vp)$suffix | $(Fmt ($vp / $va))x]"
         })
         Say ("  " + $line.Trim())
     }
@@ -158,19 +162,20 @@ Say ("rustc: " + ((& rustc -vV) -join "; "))
 Say ("power scheme: " + (& powercfg /getactivescheme))
 $battery = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue
 if ($battery -and $battery.BatteryStatus -ne 2) { Say "WARNING: running on battery; plug in for stable timings" }
-Say "affinity mask for timing runs: 0x$Affinity, rounds: $Rounds"
+if ($Affinity -eq "") { Say "timing runs not pinned, rounds: $Rounds" } else { Say "affinity mask for timing runs: 0x$Affinity, rounds: $Rounds" }
 Say "Rows read [asm A | portable B | B/A x], medians over rounds; B/A above 1 means the asm build is faster."
+Say "MULX dispatch rows read [cpuid A | folded B | B/A x]; B/A below 1 means the CPUID check costs time."
 Say "[asm Ax | portable Bx] are the benchmark's own ratio columns, shown for both builds."
 
 # --- Fork ---------------------------------------------------------------------------------------
 
-if (Test-Path (Join-Path $PSScriptRoot "curves/pallas/Cargo.toml")) {
-    $fork = $PSScriptRoot
+$repo = Split-Path $PSScriptRoot -Parent
+if (Test-Path (Join-Path $repo "curves/pallas/Cargo.toml")) {
+    $fork = $repo
 } else {
     $fork = Get-Source "https://github.com/PolymeshAssociation/arkworks-algebra/archive/refs/heads/$Branch.zip" "fork"
 }
 Say "code: $fork"
-$env:CARGO_PROFILE_TEST_DEBUG_ASSERTIONS = "false"
 $pallas = "--manifest-path curves/pallas/Cargo.toml"
 
 if (-not $SkipTests) {
@@ -235,8 +240,48 @@ Pin $false
 
 foreach ($b in $benches) { Compare-Builds $b.Name }
 Say ""
-Say "== loose_ops_bench (asm build; canonical MULX/ADX against loose kernels, round 1)"
+Say "== loose_ops_bench (asm build; canonical against loose field operations, round 1)"
 foreach ($l in (DataLines "loose_ops_bench.asm.1.txt")) { Say ("  " + $l.Trim()) }
+
+# --- MULX/ADX selection --------------------------------------------------------------------------
+
+# `cpuid` replaces .cargo/config.toml's `+bmi2,+adx` with a no-op flag, since Windows drops an empty
+# environment variable, so the kernel is reached through the run-time CPUID check. `folded` keeps
+# the config's flags, which fold the check away.
+$dispatch = @{ cpuid = "-C debuginfo=0"; folded = $null }
+$dispatchCurves = @("bls12_381", "bn254")
+
+function Set-Dispatch([string]$Build) {
+    if ($dispatch[$Build]) { $env:RUSTFLAGS = $dispatch[$Build] } else { Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue }
+}
+
+function DispatchCmd([string]$Curve, [string]$Build, [string]$Tail) {
+    return "cargo test --release -q --target-dir target-$Build --manifest-path curves/$Curve/Cargo.toml --features asm --test mulx_dispatch_bench $Tail"
+}
+
+Say ""
+Say "Building MULX dispatch benchmarks"
+foreach ($c in $dispatchCurves) {
+    foreach ($build in @("cpuid", "folded")) {
+        Set-Dispatch $build
+        Run $fork (DispatchCmd $c $build "--no-run") "build.mulx_dispatch_$c.$build.txt" | Out-Null
+    }
+}
+
+Pin $true
+for ($r = 1; $r -le $Rounds; $r++) {
+    foreach ($c in $dispatchCurves) {
+        foreach ($build in @("cpuid", "folded")) {
+            Write-Host "round $r/$Rounds  mulx_dispatch $c  $build" -ForegroundColor Yellow
+            Set-Dispatch $build
+            Run $fork (DispatchCmd $c $build "-- --ignored --nocapture") "mulx_dispatch_$c.$build.$r.txt" | Out-Null
+        }
+    }
+}
+Pin $false
+Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
+
+foreach ($c in $dispatchCurves) { Compare-Builds "mulx_dispatch_$c" "cpuid" "folded" }
 
 # --- Zakura #701 --------------------------------------------------------------------------------
 

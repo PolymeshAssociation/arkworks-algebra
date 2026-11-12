@@ -1,4 +1,4 @@
-use super::{deferred, modinv62, pasta_asm::loose, Fp, FpConfig};
+use super::{deferred, loose, modinv62, Fp, FpConfig};
 use crate::{
     biginteger::arithmetic as fa, BigInt, BigInteger, LooseToken, PrimeField, SqrtPrecomputation,
     Zero,
@@ -6,20 +6,22 @@ use crate::{
 use ark_ff_macros::unroll_for_loops;
 use ark_std::marker::PhantomData;
 
-/// Whether the x86-64 MULX/ADX Montgomery kernels are compiled in and usable on this CPU: the
-/// `asm` feature is on, the target is x86-64, and the build enables BMI2 and ADX or a cached CPUID
-/// check finds them. Every kernel returns the same canonical element as the portable path, so nodes
-/// that answer differently here still agree.
+/// Whether the x86-64 MULX/ADX Montgomery kernel is compiled in and usable on this CPU. It is when
+/// the `asm` feature is on, the target is x86-64, and the build enables BMI2 and ADX or a cached
+/// CPUID check finds them. The kernel returns the same canonical element as the portable path, so
+/// nodes that answer differently here still agree.
+#[cfg(all(feature = "asm", target_arch = "x86_64"))]
 #[inline(always)]
-pub fn asm_backend_active() -> bool {
-    #[cfg(all(feature = "asm", target_arch = "x86_64"))]
-    {
-        cfg!(all(target_feature = "bmi2", target_feature = "adx")) || super::cpu::has_bmi2_adx()
-    }
-    #[cfg(not(all(feature = "asm", target_arch = "x86_64")))]
-    {
-        false
-    }
+pub fn mulx_kernel_active() -> bool {
+    cfg!(all(target_feature = "bmi2", target_feature = "adx")) || super::cpu::has_bmi2_adx()
+}
+
+/// Whether the x86-64 MULX/ADX Montgomery kernel is compiled in and usable on this CPU, never
+/// without the `asm` feature or off x86-64.
+#[cfg(not(all(feature = "asm", target_arch = "x86_64")))]
+#[inline(always)]
+pub const fn mulx_kernel_active() -> bool {
+    false
 }
 
 /// A trait that specifies the constants and arithmetic procedures
@@ -228,20 +230,20 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
             && N <= 6
             && N > 1
             && !loose::applies::<Self, N>()
-            && asm_backend_active()
+            && mulx_kernel_active()
         {
-            Self::asm_mul_assign(a, b);
+            Self::mulx_mul_assign(a, b);
         } else {
             Self::mul_assign_portable(a, b);
         }
     }
 
-    /// `a *= b` by the `ff-asm` MULX/ADX kernel. Requires [`asm_backend_active`],
+    /// `a *= b` by the `ff-asm` MULX/ADX kernel. Requires [`mulx_kernel_active`],
     /// `2 <= N <= 6` and `CAN_USE_NO_CARRY_MUL_OPT`.
     #[doc(hidden)]
     #[inline(always)]
-    fn asm_mul_assign(a: &mut Fp<MontBackend<Self, N>, N>, b: &Fp<MontBackend<Self, N>, N>) {
-        debug_assert!(asm_backend_active() && Self::CAN_USE_NO_CARRY_MUL_OPT);
+    fn mulx_mul_assign(a: &mut Fp<MontBackend<Self, N>, N>, b: &Fp<MontBackend<Self, N>, N>) {
+        debug_assert!(mulx_kernel_active() && Self::CAN_USE_NO_CARRY_MUL_OPT);
         #[cfg(all(feature = "asm", target_arch = "x86_64"))]
         {
             #[allow(unsafe_code)]
@@ -263,12 +265,12 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         }
     }
 
-    /// `a = a^2` by the `ff-asm` MULX/ADX kernel. Requires [`asm_backend_active`],
+    /// `a = a^2` by the `ff-asm` MULX/ADX kernel. Requires [`mulx_kernel_active`],
     /// `2 <= N <= 6` and `CAN_USE_NO_CARRY_SQUARE_OPT`.
     #[doc(hidden)]
     #[inline(always)]
-    fn asm_square_in_place(a: &mut Fp<MontBackend<Self, N>, N>) {
-        debug_assert!(asm_backend_active() && Self::CAN_USE_NO_CARRY_SQUARE_OPT);
+    fn mulx_square_in_place(a: &mut Fp<MontBackend<Self, N>, N>) {
+        debug_assert!(mulx_kernel_active() && Self::CAN_USE_NO_CARRY_SQUARE_OPT);
         #[cfg(all(feature = "asm", target_arch = "x86_64"))]
         {
             #[allow(unsafe_code)]
@@ -350,9 +352,9 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         if Self::CAN_USE_NO_CARRY_SQUARE_OPT
             && (2..=6).contains(&N)
             && !loose::applies::<Self, N>()
-            && asm_backend_active()
+            && mulx_kernel_active()
         {
-            Self::asm_square_in_place(a);
+            Self::mulx_square_in_place(a);
             return;
         }
 
@@ -896,6 +898,7 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
 impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     /// `self * other` through [`MontConfig::mul_assign_portable`], bypassing every assembly
     /// kernel. The oracle `test_backend_identity` checks `Mul` against.
+    #[doc(hidden)]
     pub fn mul_portable(&self, other: &Self) -> Self {
         let mut r = *self;
         T::mul_assign_portable(&mut r, other);
@@ -904,6 +907,7 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
 
     /// `self * self` through [`MontConfig::square_in_place_portable`], bypassing every assembly
     /// kernel. The oracle `test_backend_identity` checks `square` against.
+    #[doc(hidden)]
     pub fn square_portable(&self) -> Self {
         let mut r = *self;
         T::square_in_place_portable(&mut r);
@@ -1205,26 +1209,39 @@ mod test {
 
 #[cfg(test)]
 mod asm_backend_tests {
+    #[cfg(not(feature = "std"))]
     extern crate std;
-    use super::{super::pasta_asm_compiled, asm_backend_active};
+    use super::{super::pasta_asm_compiled, mulx_kernel_active};
 
     /// Fails a build that meant to run the assembly kernels and does not. Asserts only when
-    /// `ARK_FF_REQUIRE_ASM=1`, which CI sets.
+    /// `ARK_FF_REQUIRE_ASM` is `1`, or `runtime` on x86-64, which also requires the MULX/ADX
+    /// kernel to be reached through the CPUID check rather than compile-time target features.
     #[test]
     fn asm_backend_is_active() {
+        let compile_time = cfg!(all(target_feature = "bmi2", target_feature = "adx"));
         std::println!(
-            "target_arch={} asm_feature={} asm_backend_active={} pasta_asm_compiled={}",
+            "target_arch={} asm_feature={} mulx_kernel_active={} bmi2_adx_compile_time={} \
+             pasta_asm_compiled={}",
             std::env::consts::ARCH,
             cfg!(feature = "asm"),
-            asm_backend_active(),
+            mulx_kernel_active(),
+            compile_time,
             pasta_asm_compiled(),
         );
-        if std::env::var("ARK_FF_REQUIRE_ASM").as_deref() == Ok("1") {
+        let require = std::env::var("ARK_FF_REQUIRE_ASM").ok();
+        if require.as_deref() == Some("runtime") {
+            assert!(
+                cfg!(target_arch = "x86_64") && !compile_time,
+                "ARK_FF_REQUIRE_ASM=runtime but the target is not x86-64 or BMI2 and ADX are \
+                 compile-time target features, which fold the CPUID check away"
+            );
+        }
+        if matches!(require.as_deref(), Some("1" | "runtime")) {
             if cfg!(target_arch = "x86_64") {
                 assert!(
-                    asm_backend_active(),
-                    "ARK_FF_REQUIRE_ASM=1 but the MULX/ADX kernel is off: the `asm` feature is \
-                     off or the CPU lacks BMI2 or ADX"
+                    mulx_kernel_active(),
+                    "ARK_FF_REQUIRE_ASM is set but the MULX/ADX kernel is off: the `asm` feature \
+                     is off or the CPU lacks BMI2 or ADX"
                 );
             } else {
                 assert!(

@@ -23,6 +23,8 @@ pub use montgomery_backend::*;
 mod deferred;
 pub use deferred::MontAccumulator;
 
+mod loose;
+pub use loose::is_pasta_shape;
 mod modinv62;
 mod mont29;
 
@@ -31,7 +33,7 @@ mod cpu;
 
 mod pasta_asm;
 pub use pasta_asm::{
-    is_pasta_shape, pasta_add_assign, pasta_asm_compiled, pasta_double_in_place, pasta_mul_assign,
+    pasta_add_assign, pasta_asm_compiled, pasta_double_in_place, pasta_mul_assign,
     pasta_square_in_place, pasta_sub_assign, pasta_sum_of_two_products,
 };
 

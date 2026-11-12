@@ -1,13 +1,13 @@
 use quote::quote;
 
-/// `with_asm == false` emits the body without the assembly branch, for
-/// `MontConfig::square_in_place_portable`; see [`super::mul::mul_assign_impl`].
+/// `mulx_gate` as for [`super::mul::mul_assign_impl`]. `None` emits the body for
+/// `MontConfig::square_in_place_portable`.
 pub(super) fn square_in_place_impl(
     can_use_no_carry_mul_opt: bool,
     num_limbs: usize,
     modulus_limbs: &[u64],
     modulus_has_spare_bit: bool,
-    with_asm: bool,
+    mulx_gate: Option<&proc_macro2::TokenStream>,
 ) -> proc_macro2::TokenStream {
     let mut body = proc_macro2::TokenStream::new();
     let mut default = proc_macro2::TokenStream::new();
@@ -68,10 +68,12 @@ pub(super) fn square_in_place_impl(
         quote!({
             *a *= *a;
         })
-    } else if with_asm && (2..=6).contains(&num_limbs) && can_use_no_carry_mul_opt {
+    } else if let Some(gate) =
+        mulx_gate.filter(|_| (2..=6).contains(&num_limbs) && can_use_no_carry_mul_opt)
+    {
         body.extend(quote!({
-            if ark_ff::asm_backend_active() {
-                Self::asm_square_in_place(a);
+            if #gate {
+                Self::mulx_square_in_place(a);
                 return;
             }
         }));
