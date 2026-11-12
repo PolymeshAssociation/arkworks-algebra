@@ -49,11 +49,11 @@ fn timing() {
 
     println!("\n=== Bls12_381 pairing timing (best of rounds) ===");
     {
+        use ark_algebra_test_templates::Sha256;
         use ark_ec::hashing::{
             curve_maps::wb::WBMap, map_to_curve_hasher::MapToCurveBasedHasher, HashToCurve,
         };
         use ark_ff::field_hashers::DefaultFieldHasher;
-        use ark_algebra_test_templates::Sha256;
         let g1h = MapToCurveBasedHasher::<
             G1Projective,
             DefaultFieldHasher<Sha256, 128>,

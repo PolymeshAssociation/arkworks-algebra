@@ -186,8 +186,7 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
                     //      `a ^ (2k + 2) 2 ^ (4k + 2) = a = x ^ 2 (mod p)`
                     // so that `x = +- a ^ (k+1) 2 ^ (2k + 1) (mod p)`.
                     let two: F = 2.into();
-                    elem
-                        .pow(modulus_plus_three_div_eight.as_ref())
+                    elem.pow(modulus_plus_three_div_eight.as_ref())
                         .mul(two.pow(modulus_minus_one_div_four.as_ref()))
                 } else {
                     return None;
@@ -354,8 +353,7 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
                 .to_base_prime_field_elements()
                 .next()
                 .expect("a prime field element has exactly one base element");
-            <F::BasePrimeField as super::PrimeField>::into_bigint(c).as_ref()[0] as u32
-                as usize
+            <F::BasePrimeField as super::PrimeField>::into_bigint(c).as_ref()[0] as u32 as usize
         };
         let inv_lookup = |x: &F| -> usize {
             let h = (low32(x) ^ (*hash_xor as usize)) % (*hash_mod as usize);
@@ -395,7 +393,6 @@ impl<F: crate::Field> SqrtPrecomputation<F> {
         t = (((t as u64) + 1) >> 1) as usize;
         uv * g0[t & 0xFF] * g1[(t >> 8) & 0xFF] * g2[(t >> 16) & 0xFF] * g3[t >> 24]
     }
-
 }
 
 #[cfg(test)]
@@ -437,5 +434,4 @@ mod tests {
         check::<Fr>();
         check::<Fq>();
     }
-
 }

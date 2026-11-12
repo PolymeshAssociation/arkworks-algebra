@@ -96,7 +96,11 @@ fn build<F: PrimeField + FftField>(hash_xor: u32, hash_mod: u32) -> Dataset {
         inv[h] = ((256 - j) & 0xFF) as u8;
     }
 
-    let dec = |v: &[F]| v.iter().map(|e| e.into_bigint().to_string()).collect::<Vec<_>>();
+    let dec = |v: &[F]| {
+        v.iter()
+            .map(|e| e.into_bigint().to_string())
+            .collect::<Vec<_>>()
+    };
     let trace = F::TRACE_MINUS_ONE_DIV_TWO.as_ref().to_vec();
 
     Dataset {

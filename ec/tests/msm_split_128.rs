@@ -19,7 +19,11 @@ fn split_128_matches_naive() {
                 Fr::rand(rng)
             } else {
                 let v = Fr::from(u128::rand(rng) | 1 << 127);
-                if i % 2 == 0 { v } else { -v }
+                if i % 2 == 0 {
+                    v
+                } else {
+                    -v
+                }
             }
         })
         .collect();

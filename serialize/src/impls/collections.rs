@@ -1,5 +1,6 @@
+use crate::impls::compact::CompactU64;
 use crate::{
-    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate
+    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
 };
 use ark_std::{
     borrow::*,
@@ -8,7 +9,6 @@ use ark_std::{
     string::*,
     vec::*,
 };
-use crate::impls::compact::CompactU64;
 
 // To avoid pre-allocation of memory based on size_hint
 struct NoSizeHint<I>(I);
@@ -21,7 +21,7 @@ impl<I: Iterator> Iterator for NoSizeHint<I> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, None)  // Lie: we don't know the size
+        (0, None) // Lie: we don't know the size
     }
 }
 
@@ -76,10 +76,11 @@ macro_rules! impl_canonical_serialize_seq {
 
             #[inline]
             fn serialized_size(&self, compress: Compress) -> usize {
-                CompactU64(self.len() as u64).serialized_size(compress) + self
-                    .iter()
-                    .map(|item| item.borrow().serialized_size(compress))
-                    .sum::<usize>()
+                CompactU64(self.len() as u64).serialized_size(compress)
+                    + self
+                        .iter()
+                        .map(|item| item.borrow().serialized_size(compress))
+                        .sum::<usize>()
             }
         }
     };
@@ -254,10 +255,11 @@ where
     }
 
     fn serialized_size(&self, compress: Compress) -> usize {
-        CompactU64(self.len() as u64).serialized_size(compress) + self
-            .iter()
-            .map(|(k, v)| k.serialized_size(compress) + v.serialized_size(compress))
-            .sum::<usize>()
+        CompactU64(self.len() as u64).serialized_size(compress)
+            + self
+                .iter()
+                .map(|(k, v)| k.serialized_size(compress) + v.serialized_size(compress))
+                .sum::<usize>()
     }
 }
 
@@ -343,9 +345,9 @@ where
     fn serialized_size(&self, compress: Compress) -> usize {
         CompactU64(self.len() as u64).serialized_size(compress)
             + self
-            .iter()
-            .map(|(k, v)| k.serialized_size(compress) + v.serialized_size(compress))
-            .sum::<usize>()
+                .iter()
+                .map(|(k, v)| k.serialized_size(compress) + v.serialized_size(compress))
+                .sum::<usize>()
     }
 }
 

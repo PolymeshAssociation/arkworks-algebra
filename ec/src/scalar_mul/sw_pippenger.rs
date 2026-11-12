@@ -186,7 +186,10 @@ pub fn msm_batch_affine_glv_bigint<P: GLVConfig>(
     let mut halves = vec![<P::ScalarField as PrimeField>::BigInt::default(); 2 * size];
     #[allow(clippy::type_complexity)]
     let split = |((p, h), (base, k)): (
-        (&mut [Affine<P>], &mut [<P::ScalarField as PrimeField>::BigInt]),
+        (
+            &mut [Affine<P>],
+            &mut [<P::ScalarField as PrimeField>::BigInt],
+        ),
         (&Affine<P>, &<P::ScalarField as PrimeField>::BigInt),
     )| {
         let ((s1, k1), (s2, k2)) = P::scalar_decomposition_bigint(k);
@@ -410,7 +413,12 @@ pub(crate) fn affine_bucket_sums<P: SWCurveConfig>(
             .map(|g| (cur_off[g + 1] - cur_off[g]) / 2)
             .sum();
         let live_main = cur_off[main];
-        let records = tree_records + if split { live_main / 2 + live_main / 4 } else { 0 };
+        let records = tree_records
+            + if split {
+                live_main / 2 + live_main / 4
+            } else {
+                0
+            };
         if records < WEIGH_MIN_RECORDS {
             break;
         }
@@ -524,15 +532,15 @@ fn reduce_levels<P: SWCurveConfig>(
                     current_level_retried,
                 );
                 a
-            }
+            },
             1 => {
                 pair_level::<P>(|i| a[i], a_off, b, b_off, pending, current_level_retried);
                 b
-            }
+            },
             _ => {
                 pair_level::<P>(|i| b[i], b_off, a, a_off, pending, current_level_retried);
                 a
-            }
+            },
         };
 
         // Add the current level pending points
@@ -667,7 +675,10 @@ fn add_pending<F: Field>(
 }
 
 /// Affine `base` as a [`Point`], its `y` negated when `negate`.
-pub(crate) fn signed_point<P: SWCurveConfig>(base: &Affine<P>, negate: bool) -> Point<P::BaseField> {
+pub(crate) fn signed_point<P: SWCurveConfig>(
+    base: &Affine<P>,
+    negate: bool,
+) -> Point<P::BaseField> {
     Point {
         x: base.x,
         y: if negate { -base.y } else { base.y },
@@ -684,7 +695,14 @@ pub(crate) fn counting_sort<P: SWCurveConfig>(
     entry: impl Fn(usize) -> (i64, Affine<P>),
 ) -> (Vec<usize>, Vec<Point<P::BaseField>>) {
     let (mut offsets, mut positions, mut points) = (Vec::new(), Vec::new(), Vec::new());
-    counting_sort_into::<P>(num_buckets, len, entry, &mut offsets, &mut positions, &mut points);
+    counting_sort_into::<P>(
+        num_buckets,
+        len,
+        entry,
+        &mut offsets,
+        &mut positions,
+        &mut points,
+    );
     (offsets, points)
 }
 

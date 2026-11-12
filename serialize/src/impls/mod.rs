@@ -1,5 +1,5 @@
 mod collections;
+pub mod compact;
 mod int_like;
 mod misc;
 mod tuples;
-pub mod compact;

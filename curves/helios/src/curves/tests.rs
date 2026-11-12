@@ -1,6 +1,6 @@
-use ark_std::rand::Rng;
-use crate::{Projective, Affine, HeliosConfig};
+use crate::{Affine, HeliosConfig, Projective};
 use ark_algebra_test_templates::*;
+use ark_std::rand::Rng;
 
 test_group!(g1; Projective; sw);
 
@@ -12,12 +12,12 @@ test_h2c_swu!(hash_arbitrary_string_to_curve_swu; Projective; HeliosConfig);
 #[test]
 fn test_helios_selene_timing() {
     use crate::Fr;
-    use ark_std::{rand::prelude::SliceRandom, vec::Vec};
-    use ark_selene::{Projective as SProjective, Fr as SFr};
     use ark_ec::{AffineRepr, CurveGroup, PrimeGroup, VariableBaseMSM};
     use ark_ff::Field;
+    use ark_selene::{Fr as SFr, Projective as SProjective};
+    use ark_std::{rand::prelude::SliceRandom, vec::Vec};
     use ark_std::{test_rng, UniformRand};
-    use std::time::{Instant, Duration};
+    use std::time::{Duration, Instant};
 
     let mut rng = test_rng();
 
@@ -60,7 +60,10 @@ fn test_helios_selene_timing() {
 
     helios_mul_times.sort();
     let helios_median_mul_time = helios_mul_times[helios_mul_times.len() / 2];
-    println!("Helios median scalar multiplication time ({} operations): {} microsecond", count, helios_median_mul_time);
+    println!(
+        "Helios median scalar multiplication time ({} operations): {} microsecond",
+        count, helios_median_mul_time
+    );
 
     // Selene scalar multiplications
     let mut selene_mul_times = Vec::new();
@@ -73,12 +76,15 @@ fn test_helios_selene_timing() {
 
     selene_mul_times.sort();
     let selene_median_mul_time = selene_mul_times[selene_mul_times.len() / 2];
-    println!("Selene median scalar multiplication time ({} operations): {} microsecond", count, selene_median_mul_time);
+    println!(
+        "Selene median scalar multiplication time ({} operations): {} microsecond",
+        count, selene_median_mul_time
+    );
 
     // Benchmark field element operations using existing scalars
     // Helios field element multiplications
     let mut helios_field_mul_duration = Duration::default();
-    for i in 0..count-1 {
+    for i in 0..count - 1 {
         let a = scalars_helios[i];
         let b = scalars_helios[i + 1];
         let instant = Instant::now();
@@ -87,12 +93,16 @@ fn test_helios_selene_timing() {
         helios_field_mul_duration += instant.elapsed();
     }
 
-    let helios_mean_field_mul_time = helios_field_mul_duration.as_nanos() / (count-1) as u128;
-    println!("Helios mean field multiplication time ({} operations): {} nanosecond", count-1, helios_mean_field_mul_time);
+    let helios_mean_field_mul_time = helios_field_mul_duration.as_nanos() / (count - 1) as u128;
+    println!(
+        "Helios mean field multiplication time ({} operations): {} nanosecond",
+        count - 1,
+        helios_mean_field_mul_time
+    );
 
     // Selene field element multiplications
     let mut selene_field_mul_duration = Duration::default();
-    for i in 0..count-1 {
+    for i in 0..count - 1 {
         let a = scalars_selene[i];
         let b = scalars_selene[i + 1];
         let instant = Instant::now();
@@ -101,12 +111,16 @@ fn test_helios_selene_timing() {
         selene_field_mul_duration += instant.elapsed();
     }
 
-    let selene_mean_field_mul_time = selene_field_mul_duration.as_nanos() / (count-1) as u128;
-    println!("Selene mean field multiplication time ({} operations): {} nanosecond", count-1, selene_mean_field_mul_time);
+    let selene_mean_field_mul_time = selene_field_mul_duration.as_nanos() / (count - 1) as u128;
+    println!(
+        "Selene mean field multiplication time ({} operations): {} nanosecond",
+        count - 1,
+        selene_mean_field_mul_time
+    );
 
     // Helios field element additions
     let mut helios_field_add_duration = Duration::from_nanos(0);
-    for i in 0..count-1 {
+    for i in 0..count - 1 {
         let a = scalars_helios[i];
         let b = scalars_helios[i + 1];
         let instant = Instant::now();
@@ -115,12 +129,16 @@ fn test_helios_selene_timing() {
         helios_field_add_duration += instant.elapsed();
     }
 
-    let helios_mean_field_add_time = helios_field_add_duration.as_nanos() / (count-1) as u128;
-    println!("Helios mean field addition time ({} operations): {} nanosecond", count-1, helios_mean_field_add_time);
+    let helios_mean_field_add_time = helios_field_add_duration.as_nanos() / (count - 1) as u128;
+    println!(
+        "Helios mean field addition time ({} operations): {} nanosecond",
+        count - 1,
+        helios_mean_field_add_time
+    );
 
     // Selene field element additions
     let mut selene_field_add_duration = Duration::from_nanos(0);
-    for i in 0..count-1 {
+    for i in 0..count - 1 {
         let a = scalars_selene[i];
         let b = scalars_selene[i + 1];
         let instant = Instant::now();
@@ -129,8 +147,12 @@ fn test_helios_selene_timing() {
         selene_field_add_duration += instant.elapsed();
     }
 
-    let selene_mean_field_add_time = selene_field_add_duration.as_nanos() / (count-1) as u128;
-    println!("Selene mean field addition time ({} operations): {} nanosecond", count-1, selene_mean_field_add_time);
+    let selene_mean_field_add_time = selene_field_add_duration.as_nanos() / (count - 1) as u128;
+    println!(
+        "Selene mean field addition time ({} operations): {} nanosecond",
+        count - 1,
+        selene_mean_field_add_time
+    );
 
     // Helios field element inversions
     let mut helios_field_inv_times = Vec::new();
@@ -144,7 +166,10 @@ fn test_helios_selene_timing() {
 
     helios_field_inv_times.sort();
     let helios_median_field_inv_time = helios_field_inv_times[helios_field_inv_times.len() / 2];
-    println!("Helios median field inversion time ({} operations): {} nanosecond", count, helios_median_field_inv_time);
+    println!(
+        "Helios median field inversion time ({} operations): {} nanosecond",
+        count, helios_median_field_inv_time
+    );
 
     // Selene field element inversions
     let mut selene_field_inv_times = Vec::new();
@@ -158,7 +183,10 @@ fn test_helios_selene_timing() {
 
     selene_field_inv_times.sort();
     let selene_median_field_inv_time = selene_field_inv_times[selene_field_inv_times.len() / 2];
-    println!("Selene median field inversion time ({} operations): {} nanosecond", count, selene_median_field_inv_time);
+    println!(
+        "Selene median field inversion time ({} operations): {} nanosecond",
+        count, selene_median_field_inv_time
+    );
 
     // Benchmark point additions
     // Helios point additions
@@ -178,7 +206,11 @@ fn test_helios_selene_timing() {
 
     helios_add_times.sort();
     let helios_median_add_time = helios_add_times[helios_add_times.len() / 2];
-    println!("Helios median point addition time ({} operations): {} nanosecond", count / 2, helios_median_add_time);
+    println!(
+        "Helios median point addition time ({} operations): {} nanosecond",
+        count / 2,
+        helios_median_add_time
+    );
 
     // Selene point additions
     let mut selene_add_times = Vec::new();
@@ -196,5 +228,9 @@ fn test_helios_selene_timing() {
 
     selene_add_times.sort();
     let selene_median_add_time = selene_add_times[selene_add_times.len() / 2];
-    println!("Selene median point addition time ({} operations): {} nanosecond", count / 2, selene_median_add_time);
+    println!(
+        "Selene median point addition time ({} operations): {} nanosecond",
+        count / 2,
+        selene_median_add_time
+    );
 }

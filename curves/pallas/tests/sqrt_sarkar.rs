@@ -18,7 +18,9 @@ fn check<F: Field>() {
             LegendreSymbol::Zero => {},
             LegendreSymbol::QuadraticResidue => {
                 squares += 1;
-                let r = x.sqrt().expect("a quadratic residue must have a square root");
+                let r = x
+                    .sqrt()
+                    .expect("a quadratic residue must have a square root");
                 assert_eq!(r * r, x, "returned root does not square back to input");
             },
             LegendreSymbol::QuadraticNonResidue => {

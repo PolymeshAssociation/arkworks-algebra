@@ -41,7 +41,10 @@ fn compare(n: usize, bit_size: u32) {
     let bigints: Vec<_> = scalars.iter().map(|s| s.into_bigint()).collect();
 
     let expected: G = msm_bigint_wnaf(&bases, &bigints);
-    assert_eq!(msm_batch_affine_bigint::<PallasConfig>(&bases, &bigints), expected);
+    assert_eq!(
+        msm_batch_affine_bigint::<PallasConfig>(&bases, &bigints),
+        expected
+    );
     assert_eq!(G::msm_unchecked(&bases, &scalars), expected);
 
     let reps = 100;

@@ -2,7 +2,7 @@
 //! per-row medians across interleaved runs. Run with
 //! `cargo test --release --manifest-path curves/pallas/Cargo.toml [--features asm] --test point_add_bench -- --ignored --nocapture`
 
-use ark_ec::{AdditiveGroup, CurveGroup, VariableBaseMSM, scalar_mul::glv::GLVConfig};
+use ark_ec::{scalar_mul::glv::GLVConfig, AdditiveGroup, CurveGroup, VariableBaseMSM};
 use ark_ff::UniformRand;
 use ark_pallas::{Affine, Fr, PallasConfig, Projective};
 use ark_std::test_rng;

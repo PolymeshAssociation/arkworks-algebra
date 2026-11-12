@@ -17,7 +17,7 @@
 //!   7237005577332262213973186563042994240857116359379907606001950938285454250989
 //! * Curve equation: y^2 = x^3 + A*x + B
 //!
-//! Reference: https://datatracker.ietf.org/doc/html/draft-ietf-lwig-curve-representations-19
+//! Reference: <https://datatracker.ietf.org/doc/html/draft-ietf-lwig-curve-representations-19>
 
 mod curves;
 

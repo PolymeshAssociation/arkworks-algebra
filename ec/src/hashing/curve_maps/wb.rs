@@ -431,7 +431,11 @@ pub(crate) mod test {
                 let expected: Projective<TestWBF127MapToCurveConfig> =
                     Map::map_to_curve(u0).unwrap() + Map::map_to_curve(u1).unwrap();
                 let got = Map::map_to_curve_sum(u0, u1).unwrap();
-                assert_eq!(got.into_affine(), expected.into_affine(), "u0 = {i}, u1 = {j}");
+                assert_eq!(
+                    got.into_affine(),
+                    expected.into_affine(),
+                    "u0 = {i}, u1 = {j}"
+                );
                 if expected == Projective::zero() {
                     cancelling_pairs += 1;
                 }
@@ -446,8 +450,12 @@ pub(crate) mod test {
         );
         let g = Projective::<TestSWU127MapToIsogenousCurveConfig>::generator();
         assert_eq!(
-            TestWBF127MapToCurveConfig::ISOGENY_MAP.apply_projective(g).into_affine(),
-            TestWBF127MapToCurveConfig::ISOGENY_MAP.apply(g.into_affine()).unwrap()
+            TestWBF127MapToCurveConfig::ISOGENY_MAP
+                .apply_projective(g)
+                .into_affine(),
+            TestWBF127MapToCurveConfig::ISOGENY_MAP
+                .apply(g.into_affine())
+                .unwrap()
         );
     }
 }

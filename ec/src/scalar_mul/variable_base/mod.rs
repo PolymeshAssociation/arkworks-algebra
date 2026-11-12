@@ -441,7 +441,9 @@ fn msm_signed<V: VariableBaseMSM>(
     // partition run serially; their per-scalar work is lighter than `into_bigint`'s.
     let add = |a: [usize; 3], b: [usize; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
     let counts = |s: &[<V::ScalarField as PrimeField>::BigInt]| {
-        s.iter().map(width_counts::<V::ScalarField>).fold([0; 3], add)
+        s.iter()
+            .map(width_counts::<V::ScalarField>)
+            .fold([0; 3], add)
     };
     #[cfg(feature = "parallel")]
     let parallel = size >= MIN_PARALLEL_SCALARS;
@@ -467,22 +469,37 @@ fn msm_signed<V: VariableBaseMSM>(
         let (group, value) = ScalarSize::of_scalar::<V::ScalarField>(scalar);
         PackedIndex::new(i, group, value)
     };
-    let nonzero = |(_, scalar): &(usize, &<V::ScalarField as PrimeField>::BigInt)| !scalar.is_zero();
+    let nonzero =
+        |(_, scalar): &(usize, &<V::ScalarField as PrimeField>::BigInt)| !scalar.is_zero();
 
     #[cfg(feature = "parallel")]
     let grouped = if parallel {
-        let mut grouped: Vec<_> =
-            scalars.par_iter().enumerate().filter(nonzero).map(classify).collect();
+        let mut grouped: Vec<_> = scalars
+            .par_iter()
+            .enumerate()
+            .filter(nonzero)
+            .map(classify)
+            .collect();
         grouped.par_sort_unstable_by_key(|i| i.group());
         grouped
     } else {
-        let mut grouped: Vec<_> = scalars.iter().enumerate().filter(nonzero).map(classify).collect();
+        let mut grouped: Vec<_> = scalars
+            .iter()
+            .enumerate()
+            .filter(nonzero)
+            .map(classify)
+            .collect();
         grouped.sort_unstable_by_key(|i| i.group());
         grouped
     };
     #[cfg(not(feature = "parallel"))]
     let grouped = {
-        let mut grouped: Vec<_> = scalars.iter().enumerate().filter(nonzero).map(classify).collect();
+        let mut grouped: Vec<_> = scalars
+            .iter()
+            .enumerate()
+            .filter(nonzero)
+            .map(classify)
+            .collect();
         grouped.sort_unstable_by_key(|i| i.group());
         grouped
     };
@@ -581,11 +598,7 @@ fn msm_signed<V: VariableBaseMSM>(
     }
 
     // Handle the rest of the scalars, with the 65 to 128 bit ones unless split off.
-    let wide = if split_128 {
-        bigints
-    } else {
-        above_64
-    };
+    let wide = if split_128 { bigints } else { above_64 };
     let (bf, sf) = large_value_unzip(wide, |i| (bases[i], scalars[i]));
     add_result += V::msm_bigint_full_width(&bf, &sf);
 
@@ -680,7 +693,10 @@ fn msm_u64<V: VariableBaseMSM>(mut bases: &[V::MulBase], mut scalars: &[u64]) ->
 }
 
 /// Combines per-window bucket sums into the final MSM result using Horner's method.
-pub(crate) fn combine_window_sums<V: VariableBaseMSM>(window_sums: &[V::Bucket], window_size: usize) -> V {
+pub(crate) fn combine_window_sums<V: VariableBaseMSM>(
+    window_sums: &[V::Bucket],
+    window_size: usize,
+) -> V {
     // Horner's rule
     window_sums
         .iter()
@@ -862,7 +878,10 @@ pub fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
     bigints: &[<V::ScalarField as PrimeField>::BigInt],
 ) -> V {
     let size = bases.len().min(bigints.len());
-    wnaf_sum(&bases[..size], pippenger_setup::<V::ScalarField>(bigints, size))
+    wnaf_sum(
+        &bases[..size],
+        pippenger_setup::<V::ScalarField>(bigints, size),
+    )
 }
 
 /// [`msm_bigint_wnaf`] over the low `num_bits` bits, for scalars below `2^num_bits`.
@@ -895,7 +914,11 @@ fn wnaf_sum<V: VariableBaseMSM>(bases: &[V::MulBase], setup: PippengerSetup) -> 
         .map(|i| {
             let mut buckets = vec![
                 V::ZERO_BUCKET;
-                if i == (digits_count-1) {ms_window_num_buckets} else {num_buckets}
+                if i == (digits_count - 1) {
+                    ms_window_num_buckets
+                } else {
+                    num_buckets
+                }
             ];
             for (digits, base) in scalar_digits.chunks(digits_count).zip(bases) {
                 use ark_std::cmp::Ordering;

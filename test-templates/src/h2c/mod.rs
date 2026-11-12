@@ -105,11 +105,8 @@ macro_rules! test_h2c_swu {
     ($test_name:ident; $group: ty; $config: ty) => {
         #[test]
         fn $test_name() {
-            use ark_ec::{
-                hashing::{
-                    curve_maps::swu::SWUMap, map_to_curve_hasher::MapToCurveBasedHasher,
-                    HashToCurve,
-                },
+            use ark_ec::hashing::{
+                curve_maps::swu::SWUMap, map_to_curve_hasher::MapToCurveBasedHasher, HashToCurve,
             };
             use ark_ff::field_hashers::DefaultFieldHasher;
             use ark_std::{test_rng, vec, UniformRand};

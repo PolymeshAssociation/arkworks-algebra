@@ -183,10 +183,7 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
 
     /// One counting sort of every nonzero entry into the shared buckets, keyed by digit magnitude,
     /// then one tree reduction and one bucket weighting.
-    fn serial_eval(
-        &self,
-        scalars: &[<P::ScalarField as PrimeField>::BigInt],
-    ) -> Projective<P> {
+    fn serial_eval(&self, scalars: &[<P::ScalarField as PrimeField>::BigInt]) -> Projective<P> {
         let (c, m) = (self.c, self.num_buckets);
         let num_bits = P::ScalarField::MODULUS_BIT_SIZE as usize;
         let digits = scalars
@@ -218,10 +215,7 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
     /// `L_s = \sum_b (b - s*L + 1) B_b` and plain sum `S_s = \sum_b B_b` the total is
     /// `\sum_s L_s + L * \sum_s s S_s`, the last sum a running sum over the chunk totals.
     #[cfg(feature = "parallel")]
-    fn par_eval(
-        &self,
-        scalars: &[<P::ScalarField as PrimeField>::BigInt],
-    ) -> Projective<P> {
+    fn par_eval(&self, scalars: &[<P::ScalarField as PrimeField>::BigInt]) -> Projective<P> {
         let (c, w, m) = (self.c, self.num_windows, self.num_buckets);
         let n = scalars.len();
         let num_bits = P::ScalarField::MODULUS_BIT_SIZE as usize;
@@ -309,7 +303,8 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
             .for_each(|(g, (group, slice))| {
                 let (glo, ghi) = (group[0].0, group[group.len() - 1].1);
                 let base = offsets[glo];
-                let mut positions: Vec<usize> = offsets[glo..ghi].iter().map(|o| o - base).collect();
+                let mut positions: Vec<usize> =
+                    offsets[glo..ghi].iter().map(|o| o - base).collect();
                 for (_, lists) in &binned {
                     for &idx in &lists[g] {
                         let idx = idx as usize;
@@ -324,7 +319,12 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
         let parts: Vec<(Bucket<P>, Bucket<P>)> = segs
             .par_iter()
             .map_init(
-                || (ReduceScratch::<P::BaseField>::default(), WeighScratch::default()),
+                || {
+                    (
+                        ReduceScratch::<P::BaseField>::default(),
+                        WeighScratch::default(),
+                    )
+                },
                 |(scratch, weigh), &(lo, hi)| {
                     let base = offsets[lo];
                     let local: Vec<usize> = offsets[lo..=hi].iter().map(|o| o - base).collect();
@@ -395,7 +395,11 @@ impl<P: SWCurveConfig> FixedBaseMSM<P> {
 }
 
 /// `num_windows` multiples of `base` as `[base, 2^c base, 2^{2c} base, ..]`.
-fn base_multiples<P: SWCurveConfig>(base: &Affine<P>, num_windows: usize, c: usize) -> Vec<Projective<P>> {
+fn base_multiples<P: SWCurveConfig>(
+    base: &Affine<P>,
+    num_windows: usize,
+    c: usize,
+) -> Vec<Projective<P>> {
     let mut cur = base.into_group();
     let mut row = Vec::with_capacity(num_windows);
     for _ in 0..num_windows {

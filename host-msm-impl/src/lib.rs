@@ -108,7 +108,7 @@ pub mod table_cache {
                     None => {
                         var_bases.push(*p);
                         var_scalars.push(*s);
-                    }
+                    },
                 }
             }
             (fixed, var_bases, var_scalars)
@@ -225,7 +225,6 @@ pub mod table_cache {
             tables.clear();
         }
     }
-
 }
 
 type CurveMSMFn = Box<dyn Fn(&mut [u8], u32) -> u32 + Send + Sync>;
@@ -297,7 +296,7 @@ impl RegisteredCurves {
                     msm_fn(buffer, buf_len)
                 } else {
                     1 // Curve is supported, but no MSM data provided
-                }
+                };
             }
         }
         0
@@ -403,6 +402,7 @@ mod tests {
         clear_tables, host_msm_unchecked, register_table, Bls12_381G1Config, Bls12_381G2Config,
         Bn254G1Config, Bn254G2Config, VestaConfig,
     };
+    use crate::table_cache::CurveTable;
     use ark_ec::short_weierstrass::{Affine, Projective, SWCurveConfig};
     use ark_ec::{CurveGroup, VariableBaseMSM};
     use ark_host_msm::{CurveMSMId, CURVE_ID_LEN};
@@ -410,7 +410,6 @@ mod tests {
     use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
     use ark_std::{test_rng, vec::Vec, UniformRand};
     use std::time::Instant;
-    use crate::table_cache::CurveTable;
 
     fn build_buffer(bases: &[PallasAffine], scalars: &[PallasFr]) -> Vec<u8> {
         let name = <Projective<PallasConfig> as VariableBaseMSM>::curve_name().unwrap();
@@ -449,11 +448,18 @@ mod tests {
 
         let mut probe = Vec::new();
         curve_id.serialize_uncompressed(&mut probe).unwrap();
-        assert_eq!(host_msm_unchecked(&mut probe, CURVE_ID_LEN as u32), 1, "{name}");
+        assert_eq!(
+            host_msm_unchecked(&mut probe, CURVE_ID_LEN as u32),
+            1,
+            "{name}"
+        );
 
         for n in [1usize, 2, 64, 65, 300] {
-            let bases: Vec<Affine<P>> = (0..n).map(|_| Projective::<P>::rand(&mut rng).into_affine()).collect();
-            let scalars: Vec<P::ScalarField> = (0..n).map(|_| P::ScalarField::rand(&mut rng)).collect();
+            let bases: Vec<Affine<P>> = (0..n)
+                .map(|_| Projective::<P>::rand(&mut rng).into_affine())
+                .collect();
+            let scalars: Vec<P::ScalarField> =
+                (0..n).map(|_| P::ScalarField::rand(&mut rng)).collect();
             let mut buf = Vec::new();
             curve_id.serialize_uncompressed(&mut buf).unwrap();
             bases.serialize_uncompressed(&mut buf).unwrap();
@@ -461,7 +467,11 @@ mod tests {
             let len = buf.len() as u32;
             let res_len = host_msm_unchecked(&mut buf, len) as usize;
             let got = Projective::<P>::deserialize_uncompressed_unchecked(&buf[..res_len]).unwrap();
-            assert_eq!(got, Projective::<P>::msm_unchecked(&bases, &scalars), "{name}, n = {n}");
+            assert_eq!(
+                got,
+                Projective::<P>::msm_unchecked(&bases, &scalars),
+                "{name}, n = {n}"
+            );
         }
     }
 
@@ -484,10 +494,22 @@ mod tests {
         }
         assert_eq!(id::<PallasConfig>(), CurveMSMId::from_curve_name("pallas"));
         assert_eq!(id::<VestaConfig>(), CurveMSMId::from_curve_name("vesta"));
-        assert_eq!(id::<Bls12_381G1Config>(), CurveMSMId::from_curve_name("bls12_381_g1"));
-        assert_eq!(id::<Bls12_381G2Config>(), CurveMSMId::from_curve_name("bls12_381_g2"));
-        assert_eq!(id::<Bn254G1Config>(), CurveMSMId::from_curve_name("bn254_g1"));
-        assert_eq!(id::<Bn254G2Config>(), CurveMSMId::from_curve_name("bn254_g2"));
+        assert_eq!(
+            id::<Bls12_381G1Config>(),
+            CurveMSMId::from_curve_name("bls12_381_g1")
+        );
+        assert_eq!(
+            id::<Bls12_381G2Config>(),
+            CurveMSMId::from_curve_name("bls12_381_g2")
+        );
+        assert_eq!(
+            id::<Bn254G1Config>(),
+            CurveMSMId::from_curve_name("bn254_g1")
+        );
+        assert_eq!(
+            id::<Bn254G2Config>(),
+            CurveMSMId::from_curve_name("bn254_g2")
+        );
     }
 
     /// `buf_len` past the end of `buffer` returns `0` instead of panicking.
@@ -520,8 +542,12 @@ mod tests {
         // array.
         let num_fixed = 514;
         let num_variable = 64;
-        let fixed: Vec<PallasAffine> = (0..num_fixed).map(|_| PallasAffine::rand(&mut rng)).collect();
-        let var: Vec<PallasAffine> = (0..num_variable).map(|_| PallasAffine::rand(&mut rng)).collect();
+        let fixed: Vec<PallasAffine> = (0..num_fixed)
+            .map(|_| PallasAffine::rand(&mut rng))
+            .collect();
+        let var: Vec<PallasAffine> = (0..num_variable)
+            .map(|_| PallasAffine::rand(&mut rng))
+            .collect();
         let mut bases = Vec::new();
         bases.extend_from_slice(&var[..20]);
         bases.extend_from_slice(&fixed);
@@ -539,7 +565,10 @@ mod tests {
         // table needs.
         #[cfg(feature = "parallel")]
         for threads in [1usize, 16] {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
             pool.install(|| assert_eq!(run(&bases, &scalars), reference, "{threads} threads"));
         }
         let few = [&fixed[..100], &var[..]].concat();
@@ -563,13 +592,11 @@ mod tests {
     fn table_gen_and_filter_costs() {
         let mut rng = test_rng();
         let n_bases = 514usize;
-        let bases: Vec<PallasAffine> =
-            (0..n_bases).map(|_| PallasAffine::rand(&mut rng)).collect();
+        let bases: Vec<PallasAffine> = (0..n_bases).map(|_| PallasAffine::rand(&mut rng)).collect();
         // MSM input = all tabled bases (all hit) + 80 variable ones.
         let mut input: Vec<PallasAffine> = bases.clone();
         input.extend((0..80).map(|_| PallasAffine::rand(&mut rng)));
-        let scalars: Vec<PallasFr> =
-            (0..input.len()).map(|_| PallasFr::rand(&mut rng)).collect();
+        let scalars: Vec<PallasFr> = (0..input.len()).map(|_| PallasFr::rand(&mut rng)).collect();
 
         println!(
             "\n=== Fixed-base table: window-size sweep ({} bases, Pallas) ===",

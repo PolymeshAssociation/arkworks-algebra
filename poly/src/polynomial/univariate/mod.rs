@@ -267,7 +267,8 @@ impl<'a, F: FftField> DenseOrSparsePolynomial<'a, F> {
     }
 
     fn reverse_coeffs(poly: &DensePolynomial<F>, max_degree: usize) -> DensePolynomial<F> {
-        assert!(poly.coeffs.len() <= max_degree, 
+        assert!(
+            poly.coeffs.len() <= max_degree,
             "Polynomial too big (size {}) to be reverted in size {}",
             poly.coeffs.len(),
             max_degree
@@ -275,8 +276,7 @@ impl<'a, F: FftField> DenseOrSparsePolynomial<'a, F> {
 
         let mut rev_coeffs = vec![F::zero(); max_degree];
         rev_coeffs[max_degree - poly.coeffs.len()..].clone_from_slice(
-            poly
-                .coeffs
+            poly.coeffs
                 .clone()
                 .into_iter()
                 .rev()

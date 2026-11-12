@@ -296,17 +296,14 @@ pub fn test_var_base_msm_small<G: VariableBaseMSM>() {
                     .collect::<Vec<_>>(),
             ];
             for scalars in scalar_sets {
-                let bigints = scalars
-                    .iter()
-                    .map(|s| s.into_bigint())
-                    .collect::<Vec<_>>();
+                let bigints = scalars.iter().map(|s| s.into_bigint()).collect::<Vec<_>>();
                 let expected = G::msm_bigint(&bases, &bigints);
+                assert_eq!(G::msm_unchecked(&bases, &scalars), expected, "n = {n}");
                 assert_eq!(
-                    G::msm_unchecked(&bases, &scalars),
+                    naive_var_base_msm::<G>(&bases, &scalars),
                     expected,
                     "n = {n}"
                 );
-                assert_eq!(naive_var_base_msm::<G>(&bases, &scalars), expected, "n = {n}");
             }
         }
     }
@@ -352,7 +349,9 @@ pub fn test_batch_affine_msm<P: ark_ec::short_weierstrass::SWCurveConfig>() {
 
         for bases in [random.clone(), all_equal, alternating, with_identity, few] {
             let scalar_sets = [
-                (0..n).map(|_| P::ScalarField::rand(rng)).collect::<Vec<_>>(),
+                (0..n)
+                    .map(|_| P::ScalarField::rand(rng))
+                    .collect::<Vec<_>>(),
                 vec![one; n],
                 vec![neg_one; n],
                 // Few distinct digits, so buckets are deep and unevenly filled.
@@ -361,12 +360,13 @@ pub fn test_batch_affine_msm<P: ark_ec::short_weierstrass::SWCurveConfig>() {
                     .collect::<Vec<_>>(),
             ];
             for scalars in scalar_sets {
-                let bigints = scalars
-                    .iter()
-                    .map(|s| s.into_bigint())
-                    .collect::<Vec<_>>();
+                let bigints = scalars.iter().map(|s| s.into_bigint()).collect::<Vec<_>>();
                 let expected: Projective<P> = msm_bigint_wnaf(&bases, &bigints);
-                assert_eq!(msm_batch_affine_bigint::<P>(&bases, &bigints), expected, "n = {n}");
+                assert_eq!(
+                    msm_batch_affine_bigint::<P>(&bases, &bigints),
+                    expected,
+                    "n = {n}"
+                );
             }
         }
     }

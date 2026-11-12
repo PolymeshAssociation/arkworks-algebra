@@ -533,9 +533,9 @@ macro_rules! test_compact_serialization {
     ($affine: ty; $compressed_size: expr; $uncompressed_size: expr) => {
         #[test]
         fn compact_serialization() {
-            use ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
-            use ark_std::{test_rng, vec, UniformRand};
             use ark_ec::AffineRepr;
+            use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+            use ark_std::{test_rng, vec, UniformRand};
 
             let mut rng = test_rng();
 
@@ -575,4 +575,3 @@ macro_rules! test_compact_serialization {
         }
     };
 }
-

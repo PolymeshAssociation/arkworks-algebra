@@ -4,8 +4,8 @@ use ark_bls12_381::{g1::Config as Bls12_381G1Config, g2::Config as Bls12_381G2Co
 use ark_bn254::{g1::Config as Bn254G1Config, g2::Config as Bn254G2Config};
 use ark_ec::short_weierstrass::Affine;
 pub use ark_host_hash_to_curve::{
-    batch_serialized_size, curve_id, BatchHashToCurveRequest, HashToCurveConfig,
-    MAX_HOST_DST_LEN, MAX_HOST_GENS_PER_CALL, MAX_HOST_MSG_PREFIX_LEN,
+    batch_serialized_size, curve_id, BatchHashToCurveRequest, HashToCurveConfig, MAX_HOST_DST_LEN,
+    MAX_HOST_GENS_PER_CALL, MAX_HOST_MSG_PREFIX_LEN,
 };
 pub use ark_host_msm::{pack_fat_pointer, unpack_fat_pointer, CurveMSMId, CURVE_ID_LEN};
 use ark_pallas::PallasConfig;
@@ -41,7 +41,10 @@ impl RegisteredCurves {
             curves.register_curve::<Bn254G1Config>(),
             curves.register_curve::<Bn254G2Config>(),
         ];
-        debug_assert!(registered.iter().all(|r| *r), "hash-to-curve curve IDs collide");
+        debug_assert!(
+            registered.iter().all(|r| *r),
+            "hash-to-curve curve IDs collide"
+        );
         curves
     }
 
@@ -52,7 +55,8 @@ impl RegisteredCurves {
         if self.curves.contains_key(&id) {
             return false;
         }
-        self.curves.insert(id, Box::new(batch_hash_to_curve_impl::<C>));
+        self.curves
+            .insert(id, Box::new(batch_hash_to_curve_impl::<C>));
         true
     }
 
@@ -114,8 +118,7 @@ pub fn host_batch_hash_to_curve(buffer: &mut [u8], buf_len: u32) -> u32 {
 /// [`MAX_HOST_DST_LEN`] `dst` bytes or [`MAX_HOST_MSG_PREFIX_LEN`] `msg_prefix` bytes,
 /// `gens_offset + gens_count` overflows, or the result does not fit in `buf_len`.
 fn batch_hash_to_curve_impl<C: HashToCurveConfig>(buffer: &mut [u8], buf_len: usize) -> u32 {
-    let Ok(req) =
-        BatchHashToCurveRequest::deserialize_uncompressed(&buffer[CURVE_ID_LEN..buf_len])
+    let Ok(req) = BatchHashToCurveRequest::deserialize_uncompressed(&buffer[CURVE_ID_LEN..buf_len])
     else {
         return 0;
     };
@@ -170,7 +173,10 @@ mod tests {
             let res_len = host_batch_hash_to_curve(&mut buffer, len) as usize;
             assert!(res_len > 0);
             let got = Vec::<Affine<C>>::deserialize_uncompressed(&buffer[..res_len]).unwrap();
-            assert_eq!(got, C::batch_hash_to_curve(&req.dst, &req.msg_prefix, offset, count));
+            assert_eq!(
+                got,
+                C::batch_hash_to_curve(&req.dst, &req.msg_prefix, offset, count)
+            );
         }
     }
 
@@ -196,17 +202,26 @@ mod tests {
         ] {
             let mut buffer = Vec::new();
             id.serialize_uncompressed(&mut buffer).unwrap();
-            assert_eq!(host_batch_hash_to_curve(&mut buffer, CURVE_ID_LEN as u32), 1);
+            assert_eq!(
+                host_batch_hash_to_curve(&mut buffer, CURVE_ID_LEN as u32),
+                1
+            );
         }
 
         let mut buffer = Vec::new();
         CurveMSMId::from_curve_name("unregistered_curve")
             .serialize_uncompressed(&mut buffer)
             .unwrap();
-        assert_eq!(host_batch_hash_to_curve(&mut buffer, CURVE_ID_LEN as u32), 0);
+        assert_eq!(
+            host_batch_hash_to_curve(&mut buffer, CURVE_ID_LEN as u32),
+            0
+        );
 
         let mut short = vec![0u8; CURVE_ID_LEN - 1];
-        assert_eq!(host_batch_hash_to_curve(&mut short, (CURVE_ID_LEN - 1) as u32), 0);
+        assert_eq!(
+            host_batch_hash_to_curve(&mut short, (CURVE_ID_LEN - 1) as u32),
+            0
+        );
     }
 
     #[test]
@@ -218,7 +233,9 @@ mod tests {
 
         // Truncated request.
         let mut buffer = Vec::new();
-        curve_id::<PallasConfig>().serialize_uncompressed(&mut buffer).unwrap();
+        curve_id::<PallasConfig>()
+            .serialize_uncompressed(&mut buffer)
+            .unwrap();
         buffer.extend_from_slice(&[5, 1, 2]);
         let len = buffer.len() as u32;
         assert_eq!(host_batch_hash_to_curve(&mut buffer, len), 0);
@@ -230,16 +247,25 @@ mod tests {
 
         // Buffer too small for the result.
         let mut buffer = Vec::new();
-        curve_id::<PallasConfig>().serialize_uncompressed(&mut buffer).unwrap();
+        curve_id::<PallasConfig>()
+            .serialize_uncompressed(&mut buffer)
+            .unwrap();
         request(0, 16).serialize_uncompressed(&mut buffer).unwrap();
         let len = buffer.len() as u32;
         assert_eq!(host_batch_hash_to_curve(&mut buffer, len), 0);
 
         // More points than one call hashes, with room for the result.
         let mut buffer = Vec::new();
-        curve_id::<PallasConfig>().serialize_uncompressed(&mut buffer).unwrap();
-        request(0, MAX_HOST_GENS_PER_CALL + 1).serialize_uncompressed(&mut buffer).unwrap();
-        buffer.resize(batch_serialized_size::<PallasConfig>(MAX_HOST_GENS_PER_CALL + 1), 0);
+        curve_id::<PallasConfig>()
+            .serialize_uncompressed(&mut buffer)
+            .unwrap();
+        request(0, MAX_HOST_GENS_PER_CALL + 1)
+            .serialize_uncompressed(&mut buffer)
+            .unwrap();
+        buffer.resize(
+            batch_serialized_size::<PallasConfig>(MAX_HOST_GENS_PER_CALL + 1),
+            0,
+        );
         let len = buffer.len() as u32;
         assert_eq!(host_batch_hash_to_curve(&mut buffer, len), 0);
 

@@ -116,7 +116,10 @@ impl<F: Field> UnscaledImage<F> {
 impl<P: SWUConfig> SWUMap<P> {
     /// The images of `u0` and `u1` through one inversion shared by their denominators.
     pub fn map_to_curve_pair(u0: P::BaseField, u1: P::BaseField) -> (Affine<P>, Affine<P>) {
-        let (a, b) = (Self::map_to_curve_unscaled(u0), Self::map_to_curve_unscaled(u1));
+        let (a, b) = (
+            Self::map_to_curve_unscaled(u0),
+            Self::map_to_curve_unscaled(u1),
+        );
         let ab_inv = (a.div * b.div).inverse().expect("`div` is never zero");
         (a.finish(ab_inv * b.div), b.finish(ab_inv * a.div))
     }

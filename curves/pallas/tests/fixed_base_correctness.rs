@@ -3,18 +3,20 @@
 //! `--features parallel`, sizes from `n = 1024` up cross `MIN_PARALLEL_ENTRIES` at every window
 //! here, so both the serial and the segmented evaluation are exercised.
 
+use ark_ec::short_weierstrass::{Affine, Projective};
 use ark_ec::{
     scalar_mul::fixed_base::FixedBaseMSM, short_weierstrass::SWCurveConfig, AffineRepr, CurveGroup,
     VariableBaseMSM,
 };
-use ark_ec::short_weierstrass::{Affine, Projective};
 use ark_ff::{UniformRand, Zero};
 use ark_std::test_rng;
 
 fn check<P: SWCurveConfig>(n: usize, cs: &[Option<usize>]) {
     let rng = &mut test_rng();
     let bases = Projective::<P>::normalize_batch(
-        &(0..n).map(|_| Projective::<P>::rand(rng)).collect::<Vec<_>>(),
+        &(0..n)
+            .map(|_| Projective::<P>::rand(rng))
+            .collect::<Vec<_>>(),
     );
     let scalars: Vec<P::ScalarField> = (0..n).map(|_| P::ScalarField::rand(rng)).collect();
     let expected = Projective::<P>::msm_unchecked(&bases, &scalars);
@@ -23,7 +25,12 @@ fn check<P: SWCurveConfig>(n: usize, cs: &[Option<usize>]) {
             Some(c) => FixedBaseMSM::<P>::new_given_window_size(&bases, c),
             None => FixedBaseMSM::<P>::new(&bases),
         };
-        assert_eq!(pc.msm(&scalars), expected, "mismatch n={n} c={}", pc.window());
+        assert_eq!(
+            pc.msm(&scalars),
+            expected,
+            "mismatch n={n} c={}",
+            pc.window()
+        );
     }
 }
 
@@ -31,7 +38,18 @@ fn check<P: SWCurveConfig>(n: usize, cs: &[Option<usize>]) {
 fn pallas_matches_variable_base() {
     use ark_pallas::PallasConfig;
     for &n in &[1usize, 2, 5, 33, 100, 257, 1024, 2050] {
-        check::<PallasConfig>(n, &[None, Some(3), Some(4), Some(8), Some(13), Some(15), Some(16)]);
+        check::<PallasConfig>(
+            n,
+            &[
+                None,
+                Some(3),
+                Some(4),
+                Some(8),
+                Some(13),
+                Some(15),
+                Some(16),
+            ],
+        );
     }
 }
 
@@ -43,7 +61,9 @@ fn parallel_size_identity_bases_and_truncation() {
     let rng = &mut test_rng();
     let n = 1500;
     let mut bases = Projective::<PallasConfig>::normalize_batch(
-        &(0..n).map(|_| Projective::<PallasConfig>::rand(rng)).collect::<Vec<_>>(),
+        &(0..n)
+            .map(|_| Projective::<PallasConfig>::rand(rng))
+            .collect::<Vec<_>>(),
     );
     for i in (0..n).step_by(7) {
         bases[i] = Affine::<PallasConfig>::zero();
@@ -79,7 +99,9 @@ fn scalars_shorter_than_bases_are_truncated() {
     use ark_pallas::{Fr, PallasConfig};
     let rng = &mut test_rng();
     let bases = Projective::<PallasConfig>::normalize_batch(
-        &(0..10).map(|_| Projective::<PallasConfig>::rand(rng)).collect::<Vec<_>>(),
+        &(0..10)
+            .map(|_| Projective::<PallasConfig>::rand(rng))
+            .collect::<Vec<_>>(),
     );
     let pc = FixedBaseMSM::<PallasConfig>::new_given_window_size(&bases, 6);
     let scalars: Vec<Fr> = (0..4).map(|_| Fr::rand(rng)).collect();
@@ -103,10 +125,18 @@ fn non_canonical_scalars() {
     let wide = [BigInt([u64::MAX; 4]), r, r_plus_1, top_bit];
     for n in [8usize, 700] {
         let bases = Projective::<PallasConfig>::normalize_batch(
-            &(0..n).map(|_| Projective::<PallasConfig>::rand(rng)).collect::<Vec<_>>(),
+            &(0..n)
+                .map(|_| Projective::<PallasConfig>::rand(rng))
+                .collect::<Vec<_>>(),
         );
         let scalars: Vec<BigInt<4>> = (0..n)
-            .map(|i| if i % 3 == 0 { wide[i % 4] } else { Fr::rand(rng).into_bigint() })
+            .map(|i| {
+                if i % 3 == 0 {
+                    wide[i % 4]
+                } else {
+                    Fr::rand(rng).into_bigint()
+                }
+            })
             .collect();
         let expected: Projective<PallasConfig> = bases
             .iter()
@@ -127,7 +157,9 @@ fn size_limit_search_is_capped() {
     use ark_pallas::PallasConfig;
     let rng = &mut test_rng();
     let bases = Projective::<PallasConfig>::normalize_batch(
-        &(0..64).map(|_| Projective::<PallasConfig>::rand(rng)).collect::<Vec<_>>(),
+        &(0..64)
+            .map(|_| Projective::<PallasConfig>::rand(rng))
+            .collect::<Vec<_>>(),
     );
     let entry = core::mem::size_of::<Affine<PallasConfig>>();
     let at_max = 64 * 255usize.div_ceil(MAX_WINDOW) * entry;

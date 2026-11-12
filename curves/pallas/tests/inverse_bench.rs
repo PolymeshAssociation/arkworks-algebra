@@ -1,5 +1,5 @@
 //! Divstep (safegcd) inversion against the BEA it replaced.
-//! 
+//!
 //! Run with:
 //! `cargo test --release --manifest-path curves/pallas/Cargo.toml --test inverse_bench -- --ignored --nocapture`
 
@@ -43,7 +43,9 @@ where
     let (mut t_new, mut t_old) = (0.0f64, 0.0f64);
     for _ in 0..REPS {
         let t = Instant::now();
-        let acc = values.iter().fold(F::one(), |acc, a| acc + a.bea().unwrap());
+        let acc = values
+            .iter()
+            .fold(F::one(), |acc, a| acc + a.bea().unwrap());
         let old = t.elapsed().as_secs_f64();
         let t = Instant::now();
         let acc2 = values
@@ -143,10 +145,7 @@ fn normalize_batch(n: usize) {
         }
         times.push(t.elapsed().as_secs_f64() / rounds as f64);
     }
-    println!(
-        "normalize_batch({n}): {:.2} us/call",
-        median(times) * 1e6
-    );
+    println!("normalize_batch({n}): {:.2} us/call", median(times) * 1e6);
 }
 
 /// Access to the replaced BEA path through the `PrimeField` bound.

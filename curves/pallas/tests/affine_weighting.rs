@@ -1,11 +1,11 @@
 //! Batch-affine, GLV and fixed-base MSMs, which weigh their buckets in affine, against a naive sum.
 
 use ark_ec::{
-    CurveGroup,
     scalar_mul::{
         fixed_base::FixedBaseMSM,
         sw_pippenger::{msm_batch_affine_bigint, msm_batch_affine_glv_bigint},
     },
+    CurveGroup,
 };
 use ark_ff::{PrimeField, UniformRand};
 use ark_pallas::{Affine as GAffine, Fr, PallasConfig, Projective as G};

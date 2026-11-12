@@ -166,7 +166,7 @@ impl BnConfig for Config {
     type G1Config = g1::Config;
     type G2Config = g2::Config;
 
-    /// `f^x` by [`SEED_CHAIN`], negative digits through the conjugate.
+    /// `f^x` by `SEED_CHAIN`, negative digits through the conjugate.
     fn exp_by_x(f: Fq12) -> Fq12 {
         let f2 = f.cyclotomic_square();
         let f3 = f2 * f;

@@ -29,8 +29,16 @@ fn eisenstein_vs_jsf() {
         table_build(n);
     }
     single_narrow();
-    decompose("random 255-bit  ", &(0..512).map(|_| Fr::rand(&mut test_rng())).collect::<Vec<_>>());
-    decompose("64-bit          ", &(1..=512u64).map(Fr::from).collect::<Vec<_>>());
+    decompose(
+        "random 255-bit  ",
+        &(0..512)
+            .map(|_| Fr::rand(&mut test_rng()))
+            .collect::<Vec<_>>(),
+    );
+    decompose(
+        "64-bit          ",
+        &(1..=512u64).map(Fr::from).collect::<Vec<_>>(),
+    );
     decompose("powers_of_base  ", &powers_of_base());
     powers_of_base_msm();
     digit_density();
@@ -72,7 +80,8 @@ fn single_projective() {
     assert!(points
         .iter()
         .zip(&scalars)
-        .all(|(p, k)| PallasConfig::glv_mul_projective(*p, *k) == jsf_mul_projective::<PallasConfig>(*p, *k)));
+        .all(|(p, k)| PallasConfig::glv_mul_projective(*p, *k)
+            == jsf_mul_projective::<PallasConfig>(*p, *k)));
     compare(
         "single mul, projective base ",
         n,
@@ -223,7 +232,9 @@ fn decompose(label: &str, scalars: &[Fr]) {
     for k in scalars {
         let ((sa, a), (sb, b)) = PallasConfig::scalar_decomposition(*k);
         assert_eq!(
-            Decomposed::<PallasConfig>::new(*k).map(|d| d.len()).is_some(),
+            Decomposed::<PallasConfig>::new(*k)
+                .map(|d| d.len())
+                .is_some(),
             Decomposed::<PallasConfig>::new_given_halves(sa, a, sb, b).is_some(),
         );
     }
@@ -259,7 +270,10 @@ fn powers_of_base_msm() {
     let n = scalars.len();
     let bases: Vec<GAffine> = G::normalize_batch(&(0..n).map(|_| G::rand(rng)).collect::<Vec<_>>());
     let expected = G::msm_unchecked(&bases, &scalars);
-    assert_eq!(eisenstein_msm::<PallasConfig>(&bases, &scalars), Some(expected));
+    assert_eq!(
+        eisenstein_msm::<PallasConfig>(&bases, &scalars),
+        Some(expected)
+    );
     let rounds = 256;
     compare(
         "powers_of_base msm, n = 6   ",
@@ -286,7 +300,10 @@ fn powers_of_base_msm() {
 #[ignore = "absolute timing; run explicitly with --release --nocapture"]
 fn same_scalar_phases() {
     println!("same-scalar phases (us per call, min of {ABS_REPS} reps):");
-    println!("{:>6}  {:>10}  {:>10}  {:>10}  {:>10}", "n", "build", "ladder", "end2end", "b+l");
+    println!(
+        "{:>6}  {:>10}  {:>10}  {:>10}  {:>10}",
+        "n", "build", "ladder", "end2end", "b+l"
+    );
     for n in [32usize, 128, 512, 2048] {
         phases(n);
     }
@@ -334,13 +351,17 @@ fn phases(n: usize) {
             let _ = core::hint::black_box(glv_mul_same_scalar::<PallasConfig>(&affine, k));
         }
     });
-    println!("{n:>6}  {build:>10.2}  {ladder:>10.2}  {e2e:>10.2}  {:>10.2}", build + ladder);
+    println!(
+        "{n:>6}  {build:>10.2}  {ladder:>10.2}  {e2e:>10.2}  {:>10.2}",
+        build + ladder
+    );
 }
 
 /// The digit counts the cost model rests on.
 fn digit_density() {
     let rng = &mut test_rng();
-    let (mut columns, mut nonzero, mut max_columns, mut max_nonzero) = (0usize, 0usize, 0usize, 0usize);
+    let (mut columns, mut nonzero, mut max_columns, mut max_nonzero) =
+        (0usize, 0usize, 0usize, 0usize);
     let samples = 20_000;
     for _ in 0..samples {
         let d = Decomposed::<PallasConfig>::new(Fr::rand(rng)).expect("half-width bound holds");
@@ -357,5 +378,8 @@ fn digit_density() {
         nonzero as f64 / samples as f64,
     );
     let table_bytes = core::mem::size_of::<Table<PallasConfig>>();
-    println!("Table = {table_bytes} bytes, Decomposed = {} bytes", core::mem::size_of::<Decomposed<PallasConfig>>());
+    println!(
+        "Table = {table_bytes} bytes, Decomposed = {} bytes",
+        core::mem::size_of::<Decomposed<PallasConfig>>()
+    );
 }

@@ -62,7 +62,10 @@ mod reference {
         }};
     }
 
-    pub fn hash_to_pallas_slow<H: HashToField<PallasBase>>(dst: &[u8], message: &[u8]) -> PallasProjective {
+    pub fn hash_to_pallas_slow<H: HashToField<PallasBase>>(
+        dst: &[u8],
+        message: &[u8],
+    ) -> PallasProjective {
         hash_to_curve_naive!(
             H,
             PallasBase,
@@ -80,7 +83,10 @@ mod reference {
     /// This can fail if both calls to `map_to_curve_simple_swu` generate the same point.
     /// This would rarely happen in practice.
     /// Faster than `hash_to_pallas_slow`
-    pub fn hash_to_pallas_fallible<H: HashToField<PallasBase>>(dst: &[u8], message: &[u8]) -> Result<PallasProjective, HashToCurveError> {
+    pub fn hash_to_pallas_fallible<H: HashToField<PallasBase>>(
+        dst: &[u8],
+        message: &[u8],
+    ) -> Result<PallasProjective, HashToCurveError> {
         hash_to_curve!(
             H,
             PallasBase,
@@ -95,7 +101,10 @@ mod reference {
         )
     }
 
-    pub fn hash_to_vesta_slow<H: HashToField<VestaBase>>(dst: &[u8], message: &[u8]) -> VestaProjective {
+    pub fn hash_to_vesta_slow<H: HashToField<VestaBase>>(
+        dst: &[u8],
+        message: &[u8],
+    ) -> VestaProjective {
         hash_to_curve_naive!(
             H,
             VestaBase,
@@ -113,7 +122,10 @@ mod reference {
     /// This can fail if both calls to `map_to_curve_simple_swu` generate the same point.
     /// This would rarely happen in practice.
     /// Faster than `hash_to_vesta_slow`
-    pub fn hash_to_vesta_fallible<H: HashToField<VestaBase>>(dst: &[u8], message: &[u8]) -> Result<VestaProjective, HashToCurveError> {
+    pub fn hash_to_vesta_fallible<H: HashToField<VestaBase>>(
+        dst: &[u8],
+        message: &[u8],
+    ) -> Result<VestaProjective, HashToCurveError> {
         hash_to_curve!(
             H,
             VestaBase,
@@ -141,14 +153,21 @@ mod reference {
 
     /// [`map_to_pallas`] for Vesta.
     pub fn map_to_vesta(u: VestaBase) -> VestaProjective {
-        let q =
-            map_to_curve_simple_swu::<VestaBase, VestaConfig>(u, VESTA_ZETA, ISO_VESTA_A, ISO_VESTA_B);
+        let q = map_to_curve_simple_swu::<VestaBase, VestaConfig>(
+            u,
+            VESTA_ZETA,
+            ISO_VESTA_A,
+            ISO_VESTA_B,
+        );
         iso_map::<VestaBase, VestaConfig>(q, &ISO_VESTA_CONSTS)
     }
 
     /// Call the faster but fallible version but fallback to slower version if it fails.
     /// This can be variable time but currently fine for our use-case
-    pub fn hash_to_pallas<H: HashToField<PallasBase>>(dst: &[u8], message: &[u8]) -> PallasProjective {
+    pub fn hash_to_pallas<H: HashToField<PallasBase>>(
+        dst: &[u8],
+        message: &[u8],
+    ) -> PallasProjective {
         if let Ok(p) = hash_to_pallas_fallible::<H>(dst, message) {
             p
         } else {
@@ -236,9 +255,9 @@ mod reference {
             } else {
                 let zeta_gx1 = zeta * gx1;
                 gx1_square = false;
-                zeta_gx1
-                    .sqrt()
-                    .expect("ZETA * gx1 is a quadratic residue because legard is multiplicative. Q.E.D")
+                zeta_gx1.sqrt().expect(
+                    "ZETA * gx1 is a quadratic residue because legard is multiplicative. Q.E.D",
+                )
             }
         };
 
@@ -336,7 +355,6 @@ mod reference {
         MontFp!("27750019491425549478052705219038872820967119544371171554731748615170299632943"),
         MontFp!("28948022309329048855892746252171976963363056481941647379679742748393362947557"),
     ];
-
 }
 
 use ark_ec::hashing::curve_maps::swu::{SWUConfig, SWUMap};
@@ -486,8 +504,14 @@ fn swu_hash<P: SWUConfig>(dst: &[u8], msg: &[u8]) -> Affine<P> {
 
 #[test]
 fn committed_json_matches_reference() {
-    assert_eq!(std::fs::read_to_string(json_path("pallas", "Pallas")).unwrap(), pallas_json());
-    assert_eq!(std::fs::read_to_string(json_path("vesta", "Vesta")).unwrap(), vesta_json());
+    assert_eq!(
+        std::fs::read_to_string(json_path("pallas", "Pallas")).unwrap(),
+        pallas_json()
+    );
+    assert_eq!(
+        std::fs::read_to_string(json_path("vesta", "Vesta")).unwrap(),
+        vesta_json()
+    );
 }
 
 #[test]
@@ -529,18 +553,46 @@ fn generate_test_vectors() {
             println!("    \"{l}\",");
         }
     };
-    print("pallas", known_answers::<PallasConfig>(|d, m| reference::hash_to_pallas::<LegacyFieldHasher<Sha256>>(d, m).into_affine()));
-    print("vesta", known_answers::<VestaConfig>(|d, m| reference::hash_to_vesta::<LegacyFieldHasher<Sha256>>(d, m).into_affine()));
-    print("helios", known_answers::<ark_helios::HeliosConfig>(swu_hash));
-    print("selene", known_answers::<ark_selene::SeleneConfig>(swu_hash));
-    print("wei25519", known_answers::<ark_wei25519::Wei25519Config>(swu_hash));
+    print(
+        "pallas",
+        known_answers::<PallasConfig>(|d, m| {
+            reference::hash_to_pallas::<LegacyFieldHasher<Sha256>>(d, m).into_affine()
+        }),
+    );
+    print(
+        "vesta",
+        known_answers::<VestaConfig>(|d, m| {
+            reference::hash_to_vesta::<LegacyFieldHasher<Sha256>>(d, m).into_affine()
+        }),
+    );
+    print(
+        "helios",
+        known_answers::<ark_helios::HeliosConfig>(swu_hash),
+    );
+    print(
+        "selene",
+        known_answers::<ark_selene::SeleneConfig>(swu_hash),
+    );
+    print(
+        "wei25519",
+        known_answers::<ark_wei25519::Wei25519Config>(swu_hash),
+    );
     println!(
         "pallas delta: {}",
-        point_hex(&reference::hash_to_pallas::<LegacyFieldHasher<Sha256>>(b"pallas", b"curve_trees_delta").into_affine())
+        point_hex(
+            &reference::hash_to_pallas::<LegacyFieldHasher<Sha256>>(
+                b"pallas",
+                b"curve_trees_delta"
+            )
+            .into_affine()
+        )
     );
     println!(
         "vesta delta: {}",
-        point_hex(&reference::hash_to_vesta::<LegacyFieldHasher<Sha256>>(b"vesta", b"curve_trees_delta").into_affine())
+        point_hex(
+            &reference::hash_to_vesta::<LegacyFieldHasher<Sha256>>(b"vesta", b"curve_trees_delta")
+                .into_affine()
+        )
     );
 }
 
@@ -550,8 +602,12 @@ fn check_suite_vectors<C: HashToCurveConfig>(path: &str) {
     use ark_algebra_test_templates::{from_reader, json::SuiteVector};
     use ark_ff::Field;
 
-    let file = std::fs::File::open(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(path))
-        .unwrap();
+    let file = std::fs::File::open(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(path),
+    )
+    .unwrap();
     let suite: SuiteVector = from_reader(std::io::BufReader::new(file)).unwrap();
     let coordinate = |hexes: &str| {
         let elems = hexes.split(',').map(|h| {
@@ -564,7 +620,12 @@ fn check_suite_vectors<C: HashToCurveConfig>(path: &str) {
     assert!(!suite.vectors.is_empty());
     for v in &suite.vectors {
         let want = Affine::<C>::new_unchecked(coordinate(&v.p.x), coordinate(&v.p.y));
-        assert_eq!(C::hash_to_curve(suite.dst.as_bytes(), v.msg.as_bytes()), want, "{path}: msg = {:?}", v.msg);
+        assert_eq!(
+            C::hash_to_curve(suite.dst.as_bytes(), v.msg.as_bytes()),
+            want,
+            "{path}: msg = {:?}",
+            v.msg
+        );
     }
 }
 

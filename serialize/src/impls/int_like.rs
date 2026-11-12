@@ -1,5 +1,5 @@
 use crate::{
-    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate
+    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
 };
 use ark_std::{
     io::{Read, Write},

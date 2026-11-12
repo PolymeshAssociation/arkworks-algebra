@@ -263,7 +263,6 @@ pub trait SWCurveConfig: super::CurveConfig {
     }
 }
 
-
 pub trait ZeroFlag<C: SWCurveConfig>:
     Hash + Ord + Eq + Copy + Sync + Send + Sized + 'static
 {

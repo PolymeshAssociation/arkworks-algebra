@@ -1,6 +1,6 @@
-use ark_std::rand::Rng;
-use crate::{Projective, Affine, SeleneConfig};
+use crate::{Affine, Projective, SeleneConfig};
 use ark_algebra_test_templates::*;
+use ark_std::rand::Rng;
 
 test_group!(g1; Projective; sw);
 

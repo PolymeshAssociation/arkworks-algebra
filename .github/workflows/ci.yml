@@ -377,6 +377,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      # The host-function crates default to `std`, so they are built separately without it.
       - name: check
         uses: actions-rs/cargo@v1
         with:
@@ -385,6 +386,10 @@ jobs:
                   --exclude ark-algebra-test-templates \
                   --exclude ark-algebra-bench-templates \
                   --exclude ark-poly-benches \
+                  --exclude ark-host-msm \
+                  --exclude ark-host-msm-impl \
+                  --exclude ark-host-hash-to-curve \
+                  --exclude ark-host-hash-to-curve-impl \
                   --target aarch64-unknown-none"
 
       - name: build
@@ -395,4 +400,19 @@ jobs:
                   --exclude ark-algebra-test-templates \
                   --exclude ark-algebra-bench-templates \
                   --exclude ark-poly-benches \
+                  --exclude ark-host-msm \
+                  --exclude ark-host-msm-impl \
+                  --exclude ark-host-hash-to-curve \
+                  --exclude ark-host-hash-to-curve-impl \
+                  --target aarch64-unknown-none"
+
+      - name: build host-function crates without std
+        uses: actions-rs/cargo@v1
+        with:
+            command: build
+            args: "--no-default-features \
+                  --package ark-host-msm \
+                  --package ark-host-msm-impl \
+                  --package ark-host-hash-to-curve \
+                  --package ark-host-hash-to-curve-impl \
                   --target aarch64-unknown-none"

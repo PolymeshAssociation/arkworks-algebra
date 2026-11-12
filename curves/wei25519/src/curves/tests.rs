@@ -1,6 +1,6 @@
-use ark_std::rand::Rng;
-use crate::{Projective, Affine, Wei25519Config};
+use crate::{Affine, Projective, Wei25519Config};
 use ark_algebra_test_templates::*;
+use ark_std::rand::Rng;
 
 test_group!(g1; Projective; sw);
 
@@ -29,7 +29,9 @@ fn x_zero_point_does_not_serialize_as_infinity() {
     }
     for compress in [Compress::Yes, Compress::No] {
         let mut bytes = ark_std::vec::Vec::new();
-        Affine::zero().serialize_with_mode(&mut bytes, compress).unwrap();
+        Affine::zero()
+            .serialize_with_mode(&mut bytes, compress)
+            .unwrap();
         assert!(bytes.iter().all(|b| *b == 0));
         let q = Affine::deserialize_with_mode(&bytes[..], compress, Validate::Yes).unwrap();
         assert!(q.is_zero());
@@ -81,7 +83,10 @@ fn fixed_base_msm_with_two_torsion_base() {
         bases[2] = (bases[2] + t).into_affine();
         let mut r_plus_one = Fr::MODULUS;
         r_plus_one.add_with_carry(&1u64.into());
-        for torsion_scalars in [[Fr::from(17u64).into_bigint(); 2], [Fr::MODULUS, r_plus_one]] {
+        for torsion_scalars in [
+            [Fr::from(17u64).into_bigint(); 2],
+            [Fr::MODULUS, r_plus_one],
+        ] {
             let scalars: ark_std::vec::Vec<_> = (0..n)
                 .map(|i| {
                     if i < 2 {
