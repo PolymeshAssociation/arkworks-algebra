@@ -107,6 +107,7 @@ impl<T: MontConfig<N>, const N: usize> MontAccumulator<T, N> {
     /// block instead of once per product. Three words hold any realizable column, since fewer than
     /// `2^61` products of `2^128` fit in memory. Generalizes Zakura's 4-limb
     /// [`mul_accumulate_block`](https://github.com/zakura-core/common/blob/61aeb7e066f3e9f0afa13355d0f73f02170bcd50/crates/pasta_curves/src/deferred.rs#L188-L286) (#280) over `N`.
+    /// Needs a benchmark on x86-64 before `inner_product` uses it there.
     #[inline]
     pub fn mul_accumulate_block(
         &mut self,

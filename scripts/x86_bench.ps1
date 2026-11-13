@@ -245,25 +245,21 @@ foreach ($l in (DataLines "loose_ops_bench.asm.1.txt")) { Say ("  " + $l.Trim())
 
 # --- MULX/ADX selection --------------------------------------------------------------------------
 
-# `cpuid` replaces .cargo/config.toml's `+bmi2,+adx` with a no-op flag, since Windows drops an empty
-# environment variable, so the kernel is reached through the run-time CPUID check. `folded` keeps
-# the config's flags, which fold the check away.
-$dispatch = @{ cpuid = "-C debuginfo=0"; folded = $null }
+# `cpuid` is the default build, which reaches the kernel through the run-time CPUID check. `folded`
+# enables BMI2 and ADX at compile time through .cargo/bmi2-adx.toml, which folds the check away. A
+# set RUSTFLAGS would override that file, so it is cleared.
+$dispatch = @{ cpuid = ""; folded = "--config .cargo/bmi2-adx.toml " }
 $dispatchCurves = @("bls12_381", "bn254")
-
-function Set-Dispatch([string]$Build) {
-    if ($dispatch[$Build]) { $env:RUSTFLAGS = $dispatch[$Build] } else { Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue }
-}
+Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
 
 function DispatchCmd([string]$Curve, [string]$Build, [string]$Tail) {
-    return "cargo test --release -q --target-dir target-$Build --manifest-path curves/$Curve/Cargo.toml --features asm --test mulx_dispatch_bench $Tail"
+    return "cargo $($dispatch[$Build])test --release -q --target-dir target-$Build --manifest-path curves/$Curve/Cargo.toml --features asm --test mulx_dispatch_bench $Tail"
 }
 
 Say ""
 Say "Building MULX dispatch benchmarks"
 foreach ($c in $dispatchCurves) {
     foreach ($build in @("cpuid", "folded")) {
-        Set-Dispatch $build
         Run $fork (DispatchCmd $c $build "--no-run") "build.mulx_dispatch_$c.$build.txt" | Out-Null
     }
 }
@@ -273,13 +269,11 @@ for ($r = 1; $r -le $Rounds; $r++) {
     foreach ($c in $dispatchCurves) {
         foreach ($build in @("cpuid", "folded")) {
             Write-Host "round $r/$Rounds  mulx_dispatch $c  $build" -ForegroundColor Yellow
-            Set-Dispatch $build
             Run $fork (DispatchCmd $c $build "-- --ignored --nocapture") "mulx_dispatch_$c.$build.$r.txt" | Out-Null
         }
     }
 }
 Pin $false
-Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
 
 foreach ($c in $dispatchCurves) { Compare-Builds "mulx_dispatch_$c" "cpuid" "folded" }
 

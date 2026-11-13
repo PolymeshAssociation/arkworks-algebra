@@ -641,6 +641,32 @@ macro_rules! __test_field {
                 assert_eq!(r.square(), r.mul_portable(&r), "square/mul disagree at {r}");
                 check_additive(&r, &s);
             }
+
+            // Fused two-term products, canonical and loose, and the deferred inner product,
+            // against sums of portable products.
+            let portable_dot = |a: &[$field], b: &[$field]| {
+                a.iter().zip(b).fold(<$field>::ZERO, |s, (x, y)| s + x.mul_portable(y))
+            };
+            let pick = |i: usize, rng: &mut _| {
+                if i % 3 == 0 {
+                    edge[i % edge.len()]
+                } else {
+                    <$field>::rand(rng)
+                }
+            };
+            for i in 0..ITERATIONS {
+                let a = [pick(i, &mut rng), pick(i + 1, &mut rng)];
+                let b = [pick(i + 2, &mut rng), pick(i + 4, &mut rng)];
+                let expected = portable_dot(&a, &b);
+                assert_eq!(<$field>::sum_of_products(&a, &b), expected, "sum_of_products mismatch at {a:?} . {b:?}");
+                let loose = ark_ff::Loose::sum_of_two_products(&a, &[b[0].into(), b[1].into()]);
+                assert_eq!(loose.reduce(), expected, "loose sum_of_two_products mismatch at {a:?} . {b:?}");
+            }
+            for n in [1usize, 31, 32, 33, 100, 1000] {
+                let a: Vec<$field> = (0..n).map(|i| pick(i, &mut rng)).collect();
+                let b: Vec<$field> = (0..n).map(|i| pick(i + 1, &mut rng)).collect();
+                assert_eq!(<$field>::inner_product(&a, &b), portable_dot(&a, &b), "inner_product mismatch at n = {n}");
+            }
         }
 
         #[test]

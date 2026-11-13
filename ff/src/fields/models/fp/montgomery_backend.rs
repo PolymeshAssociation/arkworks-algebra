@@ -1214,8 +1214,9 @@ mod asm_backend_tests {
     use super::{super::pasta_asm_compiled, mulx_kernel_active};
 
     /// Fails a build that meant to run the assembly kernels and does not. Asserts only when
-    /// `ARK_FF_REQUIRE_ASM` is `1`, or `runtime` on x86-64, which also requires the MULX/ADX
-    /// kernel to be reached through the CPUID check rather than compile-time target features.
+    /// `ARK_FF_REQUIRE_ASM` is `1`, `runtime` or `compile-time`. On x86-64, `runtime` also
+    /// requires the MULX/ADX kernel to be reached through the CPUID check, and `compile-time`
+    /// requires BMI2 and ADX to be compile-time target features, which fold the check away.
     #[test]
     fn asm_backend_is_active() {
         let compile_time = cfg!(all(target_feature = "bmi2", target_feature = "adx"));
@@ -1236,7 +1237,14 @@ mod asm_backend_tests {
                  compile-time target features, which fold the CPUID check away"
             );
         }
-        if matches!(require.as_deref(), Some("1" | "runtime")) {
+        if require.as_deref() == Some("compile-time") {
+            assert!(
+                cfg!(target_arch = "x86_64") && compile_time,
+                "ARK_FF_REQUIRE_ASM=compile-time but the target is not x86-64 or BMI2 and ADX are \
+                 not compile-time target features"
+            );
+        }
+        if matches!(require.as_deref(), Some("1" | "runtime" | "compile-time")) {
             if cfg!(target_arch = "x86_64") {
                 assert!(
                     mulx_kernel_active(),
