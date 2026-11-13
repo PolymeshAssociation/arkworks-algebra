@@ -29,9 +29,9 @@ use crate::{
         },
     },
     short_weierstrass::{Affine, Bucket, Projective, SWCurveConfig},
-    AdditiveGroup, AffineRepr,
+    AffineRepr,
 };
-use ark_ff::{BigInteger, Field, PrimeField, Zero};
+use ark_ff::{BigInteger, Field, Loose, PrimeField, Zero};
 use ark_std::{vec, vec::Vec};
 use itertools::Either;
 
@@ -45,14 +45,14 @@ use rayon::prelude::*;
 pub const BATCH_AFFINE_MIN_POINTS: usize = 1 << 8;
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct Point<F: Zero> {
+pub(crate) struct Point<F> {
     pub(crate) x: F,
     pub(crate) y: F,
 }
 
 /// One level's pending affine additions, as parallel arrays.
 #[derive(Default)]
-struct Pending<F: Zero> {
+struct Pending<F> {
     /// Slot in the output level holding the left operand, which the result replaces.
     out: Vec<usize>,
     /// Sum of x-coords of pairwise point addition
@@ -63,7 +63,7 @@ struct Pending<F: Zero> {
     den: Vec<F>,
 }
 
-impl<F: Field> Pending<F> {
+impl<F> Pending<F> {
     fn clear(&mut self) {
         self.out.clear();
         self.x_sum.clear();
@@ -87,20 +87,21 @@ impl<F: Field> Pending<F> {
 }
 
 /// Two level buffers and the pending records, kept so reducing many bucket ranges allocates once.
+/// The levels and records hold [`Loose`] values.
 #[derive(Default)]
-pub(crate) struct ReduceScratch<F: Zero> {
+pub(crate) struct ReduceScratch<F: Field> {
     /// Store the points for the current level
-    a: Vec<Point<F>>,
+    a: Vec<Point<Loose<F>>>,
     a_off: Vec<usize>,
     /// Store the points for the next level
-    b: Vec<Point<F>>,
+    b: Vec<Point<Loose<F>>>,
     b_off: Vec<usize>,
-    pending: Pending<F>,
+    pending: Pending<Loose<F>>,
 }
 
 /// Most window scratch the parallel windows hold at once. A window holds about two and a half
 /// points' worth per base: its sorted copy of the points, two reduction levels and the pending
-/// records. On Pallas with 16 threads at `2^20` bases this caps peak memory at 2.3 GB instead of
+/// records. The bucket weighting's buffers scale with the bucket count and are left out. On Pallas with 16 threads at `2^20` bases this caps peak memory at 2.3 GB instead of
 /// 3.0 GB at the same speed; sizes up to `2^19` run every window at once as before.
 #[cfg(feature = "parallel")]
 const WINDOW_SCRATCH_BUDGET: usize = 2 << 30;
@@ -108,11 +109,12 @@ const WINDOW_SCRATCH_BUDGET: usize = 2 << 30;
 /// Buffers for one [`window_sum`], reused across the windows a worker runs: the counting sort's
 /// output and the reduction levels.
 #[derive(Default)]
-struct WindowScratch<F: Zero> {
+struct WindowScratch<F: Field> {
     offsets: Vec<usize>,
     positions: Vec<usize>,
     points: Vec<Point<F>>,
     reduce: ReduceScratch<F>,
+    weigh: WeighScratch<F>,
 }
 
 /// `sum(bases_i * scalars_i)` with affine buckets. Mirrors
@@ -184,7 +186,10 @@ pub fn msm_batch_affine_glv_bigint<P: GLVConfig>(
     let mut halves = vec![<P::ScalarField as PrimeField>::BigInt::default(); 2 * size];
     #[allow(clippy::type_complexity)]
     let split = |((p, h), (base, k)): (
-        (&mut [Affine<P>], &mut [<P::ScalarField as PrimeField>::BigInt]),
+        (
+            &mut [Affine<P>],
+            &mut [<P::ScalarField as PrimeField>::BigInt],
+        ),
         (&Affine<P>, &<P::ScalarField as PrimeField>::BigInt),
     )| {
         let ((s1, k1), (s2, k2)) = P::scalar_decomposition_bigint(k);
@@ -267,8 +272,8 @@ fn sum_windows<P: SWCurveConfig>(bases: &[Affine<P>], setup: PippengerSetup) -> 
     combine_window_sums::<Projective<P>>(&window_sums, c)
 }
 
-/// One window's contribution: counting-sort the signed points into buckets, reduce each bucket,
-/// then the usual high-to-low running sum.
+/// One window's contribution. Counting-sorts the signed points into buckets, reduces each bucket,
+/// then weighs the buckets.
 fn window_sum<P: SWCurveConfig>(
     scalar_digits: &[i64],
     digits_count: usize,
@@ -282,6 +287,7 @@ fn window_sum<P: SWCurveConfig>(
         positions,
         points,
         reduce,
+        weigh,
     } = scratch;
     // `scalar_digits` is scalar-major, so base `i`'s digit for this window is
     // `scalar_digits[i * digits_count + window_index]`. An identity base is mapped to digit 0 so it
@@ -303,52 +309,176 @@ fn window_sum<P: SWCurveConfig>(
         points,
     );
 
-    let (points, offsets) = reduce_tree_with::<P>(points, offsets, true, reduce);
-    running_bucket_sum::<P>(points, offsets)
+    let (level, offsets) = reduce_tree_with::<P>(points, offsets, true, reduce);
+    affine_bucket_sums::<P>(level, offsets, weigh).0
 }
 
-/// Same idea as [crate::scalar_mul::variable_base::reduce_buckets]. bucket `b` (magnitude `b + 1`)
-/// is non-empty when `offsets[b + 1] > offsets[b]`. The bucket count is `offsets.len() - 1`.
-pub(crate) fn running_bucket_sum<P: SWCurveConfig>(
-    points: &[Point<P::BaseField>],
+/// A reduced bucket level, the input's canonical points or the reduction's [`Loose`] ones.
+pub(crate) type Level<'a, F> = Either<&'a [Point<F>], &'a [Point<Loose<F>>]>;
+
+/// Point `i` of `level` in [`Loose`] form.
+#[inline(always)]
+fn level_point<F: Field>(level: Level<'_, F>, i: usize) -> Point<Loose<F>> {
+    match level {
+        Either::Left(p) => Point {
+            x: Loose::from(p[i].x),
+            y: Loose::from(p[i].y),
+        },
+        Either::Right(p) => p[i],
+    }
+}
+
+/// The canonical affine point of a [`Loose`] point.
+#[inline(always)]
+fn loose_affine<P: SWCurveConfig>(p: &Point<Loose<P::BaseField>>) -> Affine<P> {
+    Affine::new_unchecked(p.x.reduce(), p.y.reduce())
+}
+
+/// The weighted bucket sum `\sum_b (b + 1) M_b` by the high-to-low running sum, and the plain sum
+/// `\sum_b M_b`, the final running sum. Bucket `b` is non-empty when `offsets[b + 1] > offsets[b]`.
+pub(crate) fn running_bucket_sums<P: SWCurveConfig>(
+    level: Level<'_, P::BaseField>,
     offsets: &[usize],
-) -> Bucket<P> {
+) -> (Bucket<P>, Bucket<P>) {
     let mut running = Bucket::<P>::ZERO;
     let mut sum = Bucket::<P>::ZERO;
     for b in (0..offsets.len() - 1).rev() {
         if offsets[b + 1] > offsets[b] {
-            let p = points[offsets[b]];
-            running += Affine::<P>::new_unchecked(p.x, p.y);
+            running += loose_affine::<P>(&level_point(level, offsets[b]));
         }
         sum += &running;
     }
-    sum
+    (sum, running)
 }
 
-/// Reduces every bucket of `points`, delimited by `offsets`, to at most one point, by pairing
-/// neighbors level by level. Each level is one batch inversion.
-///
-/// The first pass assumes distinct x-coordinates, which is what makes the denominator a plain
-/// `r.x - l.x`; a zero denominator means some pair collided, and the level is redone with
-/// doublings and inverse pairs handled. The retry cannot itself hit a zero denominator over a
-/// prime field of characteristic > 2, so this never fails for the curves it serves.
-pub(crate) fn reduce_tree<P: SWCurveConfig>(
-    points: &mut Vec<Point<P::BaseField>>,
-    offsets: &mut Vec<usize>,
-    parallelize: bool,
-) {
-    let mut scratch = ReduceScratch::default();
-    match reduce_levels::<P>(points, offsets, parallelize, &mut scratch) {
-        0 => {}
-        1 => {
-            ark_std::mem::swap(points, &mut scratch.a);
-            ark_std::mem::swap(offsets, &mut scratch.a_off);
+/// Fewest pending additions a weighting step must have to run in affine; below it the inversion
+/// outweighs the cheaper additions and the remainder is finished in `xyzz`.
+const WEIGH_MIN_RECORDS: usize = 16;
+
+/// Fewest buckets [`affine_bucket_sums`] weighs in affine; below it the staging costs more than
+/// the affine steps save and the `xyzz` running sum runs instead (Apple M3 Max: 0.96x at 24
+/// buckets, 1.05x at 32, 1.14x at 48).
+const WEIGH_MIN_BUCKETS: usize = 48;
+
+/// Buffers for [`affine_bucket_sums`], reused across the windows a worker runs.
+#[derive(Default)]
+pub(crate) struct WeighScratch<F: Field> {
+    cur: Vec<Point<Loose<F>>>,
+    cur_off: Vec<usize>,
+    src: Vec<Point<Loose<F>>>,
+    src_off: Vec<usize>,
+    pending: Pending<Loose<F>>,
+}
+
+/// [`running_bucket_sums`] with the additions in affine, each step sharing one inversion. Uses
+/// `W(M_1, ..., M_{2m}) = 2 W(M_1 + M_2, ..., M_{2m-1} + M_{2m}) - \sum_j M_{2j-1}`, where
+/// `W(M) = \sum_i i * M_i`. Each step pairs the main list, starts a tree summing its odd entries,
+/// and advances every earlier tree one level, so all of them share the step's inversion. Once a
+/// step would have fewer than [`WEIGH_MIN_RECORDS`] additions, the main list's running sum and
+/// the trees' leftovers are combined in `xyzz` by Horner's rule. The main list's entries partition
+/// the buckets, so its final running sum is the plain sum. Ported from Udon's
+/// [`collapse_with_scratch`](https://github.com/zakura-core/common/blob/a58eb39b/crates/udon/src/curve/pasta/reduce.rs#L579-L692),
+/// which fixes 128 buckets and four steps.
+pub(crate) fn affine_bucket_sums<P: SWCurveConfig>(
+    level: Level<'_, P::BaseField>,
+    offsets: &[usize],
+    scratch: &mut WeighScratch<P::BaseField>,
+) -> (Bucket<P>, Bucket<P>) {
+    if offsets.len() - 1 < WEIGH_MIN_BUCKETS {
+        return running_bucket_sums::<P>(level, offsets);
+    }
+    let WeighScratch {
+        cur,
+        cur_off,
+        src,
+        src_off,
+        pending,
+    } = scratch;
+    // `cur` holds `main` groups of at most one point, the main list, then one group per tree.
+    cur.clear();
+    cur_off.clear();
+    cur_off.push(0);
+    for r in offsets.windows(2) {
+        debug_assert!(r[1] - r[0] <= 1);
+        if r[1] > r[0] {
+            cur.push(level_point(level, r[0]));
         }
-        _ => {
-            ark_std::mem::swap(points, &mut scratch.b);
-            ark_std::mem::swap(offsets, &mut scratch.b_off);
+        cur_off.push(cur.len());
+    }
+    let mut main = offsets.len() - 1;
+    loop {
+        let groups = cur_off.len() - 1;
+        let split = main >= 2;
+        let tree_records: usize = (main..groups)
+            .map(|g| (cur_off[g + 1] - cur_off[g]) / 2)
+            .sum();
+        let live_main = cur_off[main];
+        let records = tree_records
+            + if split {
+                live_main / 2 + live_main / 4
+            } else {
+                0
+            };
+        if records < WEIGH_MIN_RECORDS {
+            break;
+        }
+
+        src.clear();
+        src_off.clear();
+        src_off.push(0);
+        if split {
+            for g in 0..main {
+                src.extend_from_slice(&cur[cur_off[g]..cur_off[g + 1]]);
+                if g % 2 == 1 || g + 1 == main {
+                    src_off.push(src.len());
+                }
+            }
+        } else {
+            src.extend_from_slice(&cur[..cur_off[main]]);
+            src_off.extend_from_slice(&cur_off[1..=main]);
+        }
+        for g in main..groups {
+            src.extend_from_slice(&cur[cur_off[g]..cur_off[g + 1]]);
+            src_off.push(src.len());
+        }
+        if split {
+            for g in (0..main).step_by(2) {
+                src.extend_from_slice(&cur[cur_off[g]..cur_off[g + 1]]);
+            }
+            src_off.push(src.len());
+        }
+
+        let mut retried = false;
+        loop {
+            pair_level::<P>(|i| src[i], src_off, cur, cur_off, pending, retried);
+            if batch_add::<P>(pending, cur, false).is_some() {
+                break;
+            }
+            debug_assert!(!retried);
+            retried = true;
+        }
+        if split {
+            main = main.div_ceil(2);
         }
     }
+
+    let mut running = Bucket::<P>::ZERO;
+    let mut sum = Bucket::<P>::ZERO;
+    for g in (0..main).rev() {
+        if let Some(p) = cur[cur_off[g]..cur_off[g + 1]].first() {
+            running += loose_affine::<P>(p);
+        }
+        sum += &running;
+    }
+    for g in (main..cur_off.len() - 1).rev() {
+        let mut odd = Bucket::<P>::ZERO;
+        for p in &cur[cur_off[g]..cur_off[g + 1]] {
+            odd += loose_affine::<P>(p);
+        }
+        sum.double_in_place();
+        sum -= &odd;
+    }
+    (sum, running)
 }
 
 /// The level loop. The first level reads the caller's slices and later levels alternate between
@@ -374,53 +504,44 @@ fn reduce_levels<P: SWCurveConfig>(
             b,
             b_off,
             pending,
+            ..
         } = &mut *scratch;
-        let (src, src_off, dest, dest_off): (&[Point<_>], &[usize], &mut Vec<Point<_>>, &mut Vec<usize>) =
-            match cur {
-                0 => (points, offsets, a, a_off),   // only during the first iteration
-                1 => (&a[..], &a_off[..], b, b_off),
-                _ => (&b[..], &b_off[..], a, a_off),
-            };
+        let src_off: &[usize] = match cur {
+            0 => offsets,
+            1 => a_off,
+            _ => b_off,
+        };
 
         // Done if no bucket has a size greater than 1
         if !src_off.windows(2).any(|r| r[1] - r[0] > 1) {
             break;
         }
 
-        dest.clear();
-        dest.reserve(src.len().div_ceil(2) + src_off.len());
-        dest_off.clear();
-        dest_off.reserve(src_off.len());
-        dest_off.push(0);
-        pending.clear();
-        pending.reserve(src.len().div_ceil(2));
-
-        for range in src_off.windows(2) {
-            // Take each bucket and take pairs of points from each bucket
-            let bucket = &src[range[0]..range[1]];
-            for pair in bucket.chunks_exact(2) {
-                let (l, r) = (pair[0], pair[1]);
-                let (num, den) = if current_level_retried && l.x == r.x {
-                    if l.y != r.y || l.y.is_zero() {
-                        // If inverses or 2-torsion, then sum is the 0, so ignore both.
-                        continue;
-                    }
-                    let l_x_sqr = l.x.square();
-                    // (3*l_x^2 + a, 2*y)
-                    (l_x_sqr.double() + l_x_sqr + P::COEFF_A, l.y.double())
-                } else {
-                    (r.y - l.y, r.x - l.x)
-                };
-                let slot = dest.len();
-                dest.push(l);
-                pending.push(slot, l.x + r.x, num, den);
-            }
-            // If bucket has odd number of point, process the last point in next iteration
-            if bucket.len() % 2 == 1 {
-                dest.push(bucket[bucket.len() - 1]);
-            }
-            dest_off.push(dest.len());
-        }
+        // The first level reads the caller's canonical points, later ones the loose scratch.
+        let dest = match cur {
+            0 => {
+                pair_level::<P>(
+                    |i| Point {
+                        x: Loose::from(points[i].x),
+                        y: Loose::from(points[i].y),
+                    },
+                    offsets,
+                    a,
+                    a_off,
+                    pending,
+                    current_level_retried,
+                );
+                a
+            },
+            1 => {
+                pair_level::<P>(|i| a[i], a_off, b, b_off, pending, current_level_retried);
+                b
+            },
+            _ => {
+                pair_level::<P>(|i| b[i], b_off, a, a_off, pending, current_level_retried);
+                a
+            },
+        };
 
         // Add the current level pending points
         if batch_add::<P>(pending, dest, parallelize).is_none() {
@@ -432,6 +553,60 @@ fn reduce_levels<P: SWCurveConfig>(
         cur = if cur == 1 { 2 } else { 1 };
     }
     cur
+}
+
+/// Pairs neighbors within every bucket of the source level, read through `src`. The left operand
+/// goes to `dest` and the pair's addition to `pending`, and a bucket's odd last point is carried
+/// over. With `retried`, equal x-coordinates become a doubling or drop out as an inverse pair.
+fn pair_level<P: SWCurveConfig>(
+    src: impl Fn(usize) -> Point<Loose<P::BaseField>>,
+    src_off: &[usize],
+    dest: &mut Vec<Point<Loose<P::BaseField>>>,
+    dest_off: &mut Vec<usize>,
+    pending: &mut Pending<Loose<P::BaseField>>,
+    retried: bool,
+) {
+    let len = src_off[src_off.len() - 1] - src_off[0];
+    dest.clear();
+    dest.reserve(len.div_ceil(2) + src_off.len());
+    dest_off.clear();
+    dest_off.reserve(src_off.len());
+    dest_off.push(0);
+    pending.clear();
+    pending.reserve(len.div_ceil(2));
+
+    for range in src_off.windows(2) {
+        // Take each bucket and take pairs of points from each bucket
+        let (lo, hi) = (range[0], range[1]);
+        let mut k = lo;
+        while k + 1 < hi {
+            let (l, r) = (src(k), src(k + 1));
+            k += 2;
+            let dx = r.x - &l.x;
+            let (num, den) = if retried && dx.is_zero() {
+                if !(r.y - &l.y).is_zero() || l.y.is_zero() {
+                    // If inverses or 2-torsion, then sum is the 0, so ignore both.
+                    continue;
+                }
+                let l_x_sqr = l.x.square();
+                // (3*l_x^2 + a, 2*y)
+                (
+                    l_x_sqr.double() + &l_x_sqr + &Loose::from(P::COEFF_A),
+                    l.y.double(),
+                )
+            } else {
+                (r.y - &l.y, dx)
+            };
+            let slot = dest.len();
+            dest.push(l);
+            pending.push(slot, l.x + &r.x, num, den);
+        }
+        // If bucket has odd number of point, process the last point in next iteration
+        if (hi - lo) % 2 == 1 {
+            dest.push(src(hi - 1));
+        }
+        dest_off.push(dest.len());
+    }
 }
 
 /// Records per parallel batch, so a level of `k` records becomes at most `k / PAR_CHUNK` tasks,
@@ -447,20 +622,21 @@ const PAR_CHUNK: usize = 512;
 /// unwritten, when a denominator is zero.
 fn add_pending<F: Field>(
     slots: &[usize],
-    x_sum: &[F],
-    num: &mut [F],
-    den: &[F],
-    out: &mut [Point<F>],
+    x_sum: &[Loose<F>],
+    num: &mut [Loose<F>],
+    den: &[Loose<F>],
+    out: &mut [Point<Loose<F>>],
     start: usize,
 ) -> Option<()> {
     const LANES: usize = ark_ff::BATCH_INVERSION_LANES;
     let n = slots.len();
+    let one = Loose::from(F::one());
     // Each lane starts from its own first denominator, which drops a multiply by one.
-    let mut acc = [F::one(); LANES];
+    let mut acc = [one; LANES];
     acc[..n.min(LANES)].copy_from_slice(&den[..n.min(LANES)]);
     for k in LANES..n {
-        num[k] *= acc[k % LANES];
-        acc[k % LANES] *= den[k];
+        num[k] *= &acc[k % LANES];
+        acc[k % LANES] *= &den[k];
     }
     // `lane_inv[l] = 1 / acc[l]`, from `prefix[l] = product of acc[..l]` and a suffix walked
     // downward.
@@ -468,33 +644,41 @@ fn add_pending<F: Field>(
     for a in &acc[1..] {
         total *= a;
     }
-    let mut suffix = total.inverse()?;
-    let mut prefix = [F::one(); LANES];
+    let mut suffix = Loose::from(total.reduce().inverse()?);
+    let mut prefix = [one; LANES];
     for l in 1..LANES {
-        prefix[l] = prefix[l - 1] * acc[l - 1];
+        prefix[l] = prefix[l - 1] * &acc[l - 1];
     }
-    let mut lane_inv = [F::one(); LANES];
+    let mut lane_inv = [one; LANES];
     for l in (1..LANES).rev() {
-        lane_inv[l] = prefix[l] * suffix;
-        suffix *= acc[l];
+        lane_inv[l] = prefix[l] * &suffix;
+        suffix *= &acc[l];
     }
     lane_inv[0] = suffix;
 
     for k in (0..n).rev() {
         let l = k % LANES;
-        let lambda = num[k] * lane_inv[l];
-        lane_inv[l] *= den[k];
+        let mut lambda = num[k];
+        lambda *= &lane_inv[l];
+        lane_inv[l] *= &den[k];
         let i = slots[k] - start;
         let left = out[i];
-        let x = lambda.square() - x_sum[k];
-        let y = lambda * (left.x - x) - left.y;
+        let mut x = lambda.square();
+        x -= &x_sum[k];
+        let mut y = left.x;
+        y -= &x;
+        y *= &lambda;
+        y -= &left.y;
         out[i] = Point { x, y };
     }
     Some(())
 }
 
 /// Affine `base` as a [`Point`], its `y` negated when `negate`.
-pub(crate) fn signed_point<P: SWCurveConfig>(base: &Affine<P>, negate: bool) -> Point<P::BaseField> {
+pub(crate) fn signed_point<P: SWCurveConfig>(
+    base: &Affine<P>,
+    negate: bool,
+) -> Point<P::BaseField> {
     Point {
         x: base.x,
         y: if negate { -base.y } else { base.y },
@@ -511,7 +695,14 @@ pub(crate) fn counting_sort<P: SWCurveConfig>(
     entry: impl Fn(usize) -> (i64, Affine<P>),
 ) -> (Vec<usize>, Vec<Point<P::BaseField>>) {
     let (mut offsets, mut positions, mut points) = (Vec::new(), Vec::new(), Vec::new());
-    counting_sort_into::<P>(num_buckets, len, entry, &mut offsets, &mut positions, &mut points);
+    counting_sort_into::<P>(
+        num_buckets,
+        len,
+        entry,
+        &mut offsets,
+        &mut positions,
+        &mut points,
+    );
     (offsets, points)
 }
 
@@ -558,8 +749,8 @@ fn counting_sort_into<P: SWCurveConfig>(
 /// nothing written, when any denominator is zero, which tells the caller to redo the level with
 /// the exceptional cases handled.
 fn batch_add<P: SWCurveConfig>(
-    pending: &mut Pending<P::BaseField>,
-    out: &mut [Point<P::BaseField>],
+    pending: &mut Pending<Loose<P::BaseField>>,
+    out: &mut [Point<Loose<P::BaseField>>],
     parallelize: bool,
 ) -> Option<()> {
     #[cfg(not(feature = "parallel"))]
@@ -568,7 +759,7 @@ fn batch_add<P: SWCurveConfig>(
     #[cfg(feature = "parallel")]
     if parallelize && pending.out.len() >= 2 * PAR_CHUNK {
         // Checked up front, since a chunk that finds a zero cannot undo the others' writes.
-        if pending.den.iter().any(Zero::is_zero) {
+        if pending.den.iter().any(Loose::is_zero) {
             return None;
         }
         par_batch_add::<P>(pending, out);
@@ -588,8 +779,8 @@ fn batch_add<P: SWCurveConfig>(
 /// every other chunk's, and the left operand each record reads is the slot it writes.
 #[cfg(feature = "parallel")]
 fn par_batch_add<P: SWCurveConfig>(
-    pending: &mut Pending<P::BaseField>,
-    out: &mut [Point<P::BaseField>],
+    pending: &mut Pending<Loose<P::BaseField>>,
+    out: &mut [Point<Loose<P::BaseField>>],
 ) {
     let n = pending.out.len();
     // At least `PAR_CHUNK` records per chunk, and no more chunks than threads, which bounds the
@@ -634,20 +825,120 @@ fn par_batch_add<P: SWCurveConfig>(
     });
 }
 
-/// [`reduce_tree`] over borrowed input, staging every level in `scratch`. Returns the reduced
-/// level, at most one point per bucket, which lives in `scratch` (or is the input when no bucket
-/// held two points).
+/// Reduces every bucket of `points`, delimited by `offsets`, to at most one point, by pairing
+/// neighbors level by level, each level one batch inversion, staging every level in `scratch`. The
+/// first pass assumes distinct x-coordinates, which is what makes the denominator a plain
+/// `r.x - l.x`. A zero denominator means some pair collided, and the level is redone with
+/// doublings and inverse pairs handled. The retry cannot itself hit a zero denominator over a
+/// prime field of characteristic > 2, so this never fails for the curves it serves. Returns the
+/// input when no bucket held two points, else the [`Loose`] level in `scratch`.
 pub(crate) fn reduce_tree_with<'a, P: SWCurveConfig>(
     points: &'a [Point<P::BaseField>],
     offsets: &'a [usize],
     parallelize: bool,
     scratch: &'a mut ReduceScratch<P::BaseField>,
-) -> (&'a [Point<P::BaseField>], &'a [usize]) {
+) -> (Level<'a, P::BaseField>, &'a [usize]) {
     match reduce_levels::<P>(points, offsets, parallelize, scratch) {
-        0 => (points, offsets),
-        1 => (&scratch.a[..], &scratch.a_off[..]),
-        _ => (&scratch.b[..], &scratch.b_off[..]),
+        0 => (Either::Left(points), offsets),
+        1 => (Either::Right(&scratch.a[..]), &scratch.a_off[..]),
+        _ => (Either::Right(&scratch.b[..]), &scratch.b_off[..]),
     }
 }
 
+// The 4-limb `MontConfig` derive emits `cfg(feature = "asm")`, which this crate does not declare.
+#[cfg(test)]
+#[allow(unexpected_cfgs)]
+mod tests {
+    use super::*;
+    use crate::{CurveConfig, CurveGroup};
+    use ark_ff::{AdditiveGroup, Fp256, MontBackend, MontFp, UniformRand};
+    use ark_std::{format, rand::Rng, test_rng};
 
+    #[derive(ark_ff::MontConfig)]
+    #[modulus = "28948022309329048855892746252171976963363056481941560715954676764349967630337"]
+    #[generator = "5"]
+    pub(crate) struct FqConfig;
+    type Fq = Fp256<MontBackend<FqConfig, 4>>;
+
+    #[derive(ark_ff::MontConfig)]
+    #[modulus = "28948022309329048855892746252171976963363056481941647379679742748393362948097"]
+    #[generator = "5"]
+    pub(crate) struct FrConfig;
+    type Fr = Fp256<MontBackend<FrConfig, 4>>;
+
+    /// Pallas, `y^2 = x^3 + 5`, whose base field takes the [`Loose`] kernels.
+    pub(crate) struct Pallas;
+
+    impl CurveConfig for Pallas {
+        type BaseField = Fq;
+        type ScalarField = Fr;
+        const COFACTOR: &'static [u64] = &[1];
+        const COFACTOR_INV: Fr = Fr::ONE;
+    }
+
+    impl SWCurveConfig for Pallas {
+        const COEFF_A: Fq = Fq::ZERO;
+        const COEFF_B: Fq = MontFp!("5");
+        const GENERATOR: Affine<Self> = Affine::new_unchecked(MontFp!("-1"), MontFp!("2"));
+        type ZeroFlag = ();
+    }
+
+    type G = Projective<Pallas>;
+
+    /// Both outputs of [`affine_bucket_sums`] against [`running_bucket_sums`], and the weighted sum
+    /// against `\sum_i (i + 1) B_i` for short levels, over levels with empty buckets, repeated
+    /// points and cancelling points. One scratch serves every level.
+    #[test]
+    fn affine_bucket_sums_match_running_sums() {
+        let rng = &mut test_rng();
+        let pool: Vec<Affine<Pallas>> = (0..3).map(|_| G::rand(rng).into_affine()).collect();
+        let mut scratch = WeighScratch::default();
+        for len in (1..=300).chain([511, 512, 513, 1024, 2048, 4097]) {
+            for density in [0u32, 1, 2, 3] {
+                let buckets: Vec<Affine<Pallas>> = (0..len)
+                    .map(|_| match (density, rng.gen_range(0..8u32)) {
+                        // Density 0 is random distinct points with an eighth of the buckets
+                        // empty, density 1 is mostly empty.
+                        (0, 1..) | (1, 0) => G::rand(rng).into_affine(),
+                        (0, 0) | (1, _) => Affine::zero(),
+                        // Few distinct points, so pairs and tree levels hit doublings.
+                        (2, k) => pool[k as usize % 3],
+                        // A point, its negation and the identity, so sums cancel.
+                        (_, k) => match k % 3 {
+                            0 => pool[0],
+                            1 => -pool[0],
+                            _ => Affine::zero(),
+                        },
+                    })
+                    .collect();
+                let mut points = Vec::new();
+                let mut offsets = vec![0];
+                for b in &buckets {
+                    if !b.is_zero() {
+                        points.push(Point { x: b.x, y: b.y });
+                    }
+                    offsets.push(points.len());
+                }
+                let level = Either::Left(&points[..]);
+                let (weighted, plain) = running_bucket_sums::<Pallas>(level, &offsets);
+                let (affine_weighted, affine_plain) =
+                    affine_bucket_sums::<Pallas>(level, &offsets, &mut scratch);
+                let what = format!("len {len} density {density}");
+                assert_eq!(
+                    G::from(affine_weighted),
+                    G::from(weighted),
+                    "weighted, {what}"
+                );
+                assert_eq!(G::from(affine_plain), G::from(plain), "plain, {what}");
+                if len <= 64 {
+                    let naive: G = buckets
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| *b * Fr::from(i as u64 + 1))
+                        .sum();
+                    assert_eq!(G::from(weighted), naive, "naive, {what}");
+                }
+            }
+        }
+    }
+}

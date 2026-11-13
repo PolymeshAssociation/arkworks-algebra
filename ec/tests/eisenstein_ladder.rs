@@ -77,13 +77,13 @@ fn decomposing_scalar<P: GLVConfig, R: Rng + ?Sized>(rng: &mut R) -> P::ScalarFi
 
 #[test]
 fn batch_matches_per_point() {
-
     fn check<P: GLVConfig>() {
         let mut rng = test_rng();
         for &n in &[1usize, 8, 31, 32, 33, 100] {
             let k = decomposing_scalar::<P, _>(&mut rng);
-            let mut points =
-                (0..n).map(|_| Projective::<P>::rand(&mut rng)).collect::<Vec<_>>();
+            let mut points = (0..n)
+                .map(|_| Projective::<P>::rand(&mut rng))
+                .collect::<Vec<_>>();
             check_if_tables_work(&points, k);
 
             // Zero point works.
@@ -197,7 +197,10 @@ fn lattice_vector_schedule_for<P: GLVConfig>() {
     let rows = [(coeffs[0], coeffs[1]), (coeffs[2], coeffs[3])];
     let mut found = None;
     'search: for ((_, a), (_, b)) in rows {
-        let (a, b) = (P::ScalarField::from_bigint(a).unwrap(), P::ScalarField::from_bigint(b).unwrap());
+        let (a, b) = (
+            P::ScalarField::from_bigint(a).unwrap(),
+            P::ScalarField::from_bigint(b).unwrap(),
+        );
         for sa in [true, false] {
             for sb in [true, false] {
                 let va = if sa { a } else { -a };
@@ -212,15 +215,25 @@ fn lattice_vector_schedule_for<P: GLVConfig>() {
         }
     }
     let d = found.unwrap_or_else(|| panic!("{curve}: no lattice row fits the recoding"));
-    assert!(d.len() > 2, "{curve}: lattice vector recodes to {} digits", d.len());
+    assert!(
+        d.len() > 2,
+        "{curve}: lattice vector recodes to {} digits",
+        d.len()
+    );
 
     let mut rng = test_rng();
-    let points = (0..40).map(|_| Projective::<P>::rand(&mut rng)).collect::<Vec<_>>();
+    let points = (0..40)
+        .map(|_| Projective::<P>::rand(&mut rng))
+        .collect::<Vec<_>>();
     let tables = Table::<P>::batch(&points);
     let batch = Table::mul_decomposed_batch(&tables, &d);
     for (i, (table, b)) in tables.iter().zip(&batch).enumerate() {
         assert!(b.is_zero(), "{curve}: table {i} batch is not the identity");
-        assert_eq!(*b, table.mul_decomposed(&d), "{curve}: table {i} batch vs per-point");
+        assert_eq!(
+            *b,
+            table.mul_decomposed(&d),
+            "{curve}: table {i} batch vs per-point"
+        );
     }
 }
 
@@ -238,9 +251,14 @@ fn table_batch_falls_back_on_exceptional_points() {
     type Fq = <P as ark_ec::CurveConfig>::BaseField;
     let mut rng = test_rng();
     let two = Fq::from(2u64);
-    let torsion = [Affine::<P>::new_unchecked(Fq::zero(), two), Affine::<P>::new_unchecked(Fq::zero(), -two)];
+    let torsion = [
+        Affine::<P>::new_unchecked(Fq::zero(), two),
+        Affine::<P>::new_unchecked(Fq::zero(), -two),
+    ];
     assert!(torsion.iter().all(|t| t.is_on_curve()));
-    let mut points = (0..6).map(|_| Projective::<P>::rand(&mut rng)).collect::<Vec<_>>();
+    let mut points = (0..6)
+        .map(|_| Projective::<P>::rand(&mut rng))
+        .collect::<Vec<_>>();
     points.insert(2, torsion[0].into_group());
     points.insert(5, Projective::<P>::zero());
     points.push(torsion[1].into_group());
@@ -252,12 +270,20 @@ fn table_batch_falls_back_on_exceptional_points() {
         ("batch_from_affine", Table::<P>::batch_from_affine(&affine)),
     ] {
         for (i, (t, e)) in tables.iter().zip(&expected).enumerate() {
-            assert_eq!(t.is_identity(), e.is_identity(), "{label}: table {i} identity");
+            assert_eq!(
+                t.is_identity(),
+                e.is_identity(),
+                "{label}: table {i} identity"
+            );
             if e.is_identity() {
                 continue;
             }
             for code in 1..=48u8 {
-                assert_eq!(t.digit_point(code), e.digit_point(code), "{label}: table {i}, digit {code}");
+                assert_eq!(
+                    t.digit_point(code),
+                    e.digit_point(code),
+                    "{label}: table {i}, digit {code}"
+                );
             }
         }
     }

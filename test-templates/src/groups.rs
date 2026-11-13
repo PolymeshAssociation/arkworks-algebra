@@ -307,6 +307,25 @@ macro_rules! __test_group {
         }
 
         #[test]
+        fn test_sw_rescaled_addition() {
+            let rng = &mut ark_std::test_rng();
+            for _ in 0..ITERATIONS {
+                let p = <$group>::rand(rng);
+                let r = <$group>::rand(rng);
+                let l = BaseField::rand(rng);
+                if l.is_zero() {
+                    continue;
+                }
+                let l2 = l.square();
+                let rescale = |a: $group| <$group>::new_unchecked(a.x * l2, a.y * l2 * l, a.z * l);
+                let (q, r_rescaled) = (rescale(p), rescale(r));
+                assert_eq!(p + q, p.double(), "P + rescaled P");
+                assert!((p - q).is_zero(), "P - rescaled P");
+                assert_eq!(p + r_rescaled, p + r, "P + rescaled R");
+            }
+        }
+
+        #[test]
         fn test_sw_properties() {
             use ark_ec::models::short_weierstrass::Bucket;
             let mut rng = &mut ark_std::test_rng();
@@ -514,9 +533,9 @@ macro_rules! test_compact_serialization {
     ($affine: ty; $compressed_size: expr; $uncompressed_size: expr) => {
         #[test]
         fn compact_serialization() {
-            use ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
-            use ark_std::{test_rng, vec, UniformRand};
             use ark_ec::AffineRepr;
+            use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+            use ark_std::{test_rng, vec, UniformRand};
 
             let mut rng = test_rng();
 
@@ -556,4 +575,3 @@ macro_rules! test_compact_serialization {
         }
     };
 }
-

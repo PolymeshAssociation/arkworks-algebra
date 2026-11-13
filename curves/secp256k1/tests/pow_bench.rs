@@ -24,7 +24,9 @@ fn dense_exponent() {
     let weight: u32 = exp.as_ref().iter().map(|l| l.count_ones()).sum();
 
     let bases: Vec<Fq> = (0..200).map(|_| Fq::rand(rng)).collect();
-    assert!(bases.iter().all(|a| a.pow(exp) == pow_binary(a, exp.as_ref())));
+    assert!(bases
+        .iter()
+        .all(|a| a.pow(exp) == pow_binary(a, exp.as_ref())));
 
     let mut ratios = Vec::with_capacity(REPS);
     let (mut t_new, mut t_old) = (0.0f64, 0.0f64);

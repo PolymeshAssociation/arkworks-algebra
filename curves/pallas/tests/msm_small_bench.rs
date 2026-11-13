@@ -115,12 +115,7 @@ fn into_bigint_conversion(n: usize) {
     let rng = &mut test_rng();
     let scalars: Vec<Fr> = (0..n).map(|_| Fr::rand(rng)).collect();
     let rounds = (1 << 16) / n + 1;
-    let serial = |_: ()| {
-        scalars
-            .iter()
-            .map(|s| s.into_bigint())
-            .collect::<Vec<_>>()
-    };
+    let serial = |_: ()| scalars.iter().map(|s| s.into_bigint()).collect::<Vec<_>>();
     let mut times = Vec::with_capacity(REPS);
     for _ in 0..REPS {
         let t = Instant::now();

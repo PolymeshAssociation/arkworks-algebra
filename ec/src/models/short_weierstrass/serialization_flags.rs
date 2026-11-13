@@ -100,7 +100,7 @@ impl SingleBitSWFlags {
         // Since this doesnt change the serialization
         Self::YIsPositive
     }
-    
+
     #[inline]
     pub fn from_y_coordinate(y: impl Field) -> Self {
         if y <= -y {

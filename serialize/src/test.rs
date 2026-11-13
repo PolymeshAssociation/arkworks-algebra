@@ -304,13 +304,20 @@ fn test_hashmap() {
     let mut pairs: Vec<(u64, Vec<u8>)> = map.into_iter().collect();
     pairs.sort();
     let mut map_bytes = vec![];
-    pairs.iter().cloned().collect::<HashMap<_, _>>().serialize_compressed(&mut map_bytes).unwrap();
+    pairs
+        .iter()
+        .cloned()
+        .collect::<HashMap<_, _>>()
+        .serialize_compressed(&mut map_bytes)
+        .unwrap();
     assert_eq!(map_bytes[0], 2 << 2);
     assert_eq!(map_bytes.len(), pairs.serialized_size(Compress::Yes));
 
     // A huge claimed length with no entries fails to decode instead of preallocating.
     let mut huge = vec![];
-    crate::impls::compact::CompactU64(1 << 60).serialize_compressed(&mut huge).unwrap();
+    crate::impls::compact::CompactU64(1 << 60)
+        .serialize_compressed(&mut huge)
+        .unwrap();
     assert!(HashMap::<u64, u64>::deserialize_compressed(&huge[..]).is_err());
 }
 

@@ -268,3 +268,30 @@ fn sparse_products_karatsuba_forms_match_full_multiplication() {
         assert_eq!(a, f.c0 * Fq6::new(z, l[0], l[1]), "mul_by_12");
     }
 }
+
+#[test]
+fn test_fq2_sqrt_against_complex_method() {
+    let mut rng = ark_std::test_rng();
+    let check = |a: Fq2| {
+        let root = a.sqrt();
+        let reference = a.sqrt_complex_method();
+        assert_eq!(root.is_some(), reference.is_some());
+        if let (Some(root), Some(reference)) = (root, reference) {
+            assert_eq!(root.square(), a);
+            assert!(root == reference || root == -reference);
+        }
+    };
+    check(Fq2::zero());
+    check(Fq2::one());
+    check(-Fq2::one());
+    for _ in 0..200 {
+        let a = Fq2::rand(&mut rng);
+        let x = Fq::rand(&mut rng);
+        check(a);
+        check(a.square());
+        check(Fq2::new(x, Fq::zero()));
+        check(Fq2::new(Fq::zero(), x));
+        check(Fq2::new(x.square(), Fq::zero()));
+        check(Fq2::new(-x.square(), Fq::zero()));
+    }
+}

@@ -1,6 +1,6 @@
-use crate::{Projective, Affine};
+use crate::{Affine, Projective};
 use ark_algebra_test_templates::*;
-use ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 test_group!(g1; Projective; sw);
 test_group!(g1_glv; Projective; glv);
@@ -21,7 +21,10 @@ fn swu_sqrt_or_zeta_sqrt_matches_two_roots() {
 
     let zeta = <SwuIsoConfig as SWUConfig>::ZETA;
     assert_eq!(ZETA_TRACE_POWER, zeta.pow(Fq::TRACE_MINUS_ONE_DIV_TWO));
-    assert_eq!(ZETA_OVER_ROOT_SQRT.square() * Fq::TWO_ADIC_ROOT_OF_UNITY, zeta);
+    assert_eq!(
+        ZETA_OVER_ROOT_SQRT.square() * Fq::TWO_ADIC_ROOT_OF_UNITY,
+        zeta
+    );
     let mut rng = test_rng();
     let inputs = [Fq::from(0u64), Fq::from(1u64), -Fq::from(1u64), zeta]
         .into_iter()

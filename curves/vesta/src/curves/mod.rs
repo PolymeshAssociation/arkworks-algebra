@@ -1,12 +1,16 @@
 use crate::{fq::Fq, fr::Fr};
-use ark_ec::{models::CurveConfig, scalar_mul::glv::{try_glv_msm_bigint_full_width, try_glv_msm_small, GLVConfig, GLVFastDecomp}, short_weierstrass::{self as sw, SWCurveConfig, SWSerializationXNonZero}};
+use ark_ec::{
+    models::CurveConfig,
+    scalar_mul::glv::{try_glv_msm_bigint_full_width, try_glv_msm_small, GLVConfig, GLVFastDecomp},
+    short_weierstrass::{self as sw, SWCurveConfig, SWSerializationXNonZero},
+};
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
 use ark_serialize::{Compress, SerializationError, Validate};
 use ark_std::io::{Read, Write};
 
+mod swu_iso;
 #[cfg(test)]
 mod tests;
-mod swu_iso;
 
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 pub struct VestaConfig;
@@ -62,7 +66,10 @@ impl SWCurveConfig for VestaConfig {
     }
 
     #[inline]
-    fn try_msm_small(bases: &[sw::Affine<Self>], scalars: &[Self::ScalarField]) -> Option<sw::Projective<Self>> {
+    fn try_msm_small(
+        bases: &[sw::Affine<Self>],
+        scalars: &[Self::ScalarField],
+    ) -> Option<sw::Projective<Self>> {
         try_glv_msm_small::<Self>(bases, scalars)
     }
 
@@ -73,7 +80,7 @@ impl SWCurveConfig for VestaConfig {
     ) -> Option<sw::Projective<Self>> {
         try_glv_msm_bigint_full_width::<Self>(bases, bigints)
     }
-    
+
     #[inline]
     fn serialize_with_mode<W: Write>(
         item: &Affine,
@@ -168,6 +175,9 @@ pub const G_GENERATOR_Y: Fq = MontFp!("2");
 impl ark_ec::hashing::curve_maps::wb::WBConfig for VestaConfig {
     type IsogenousCurve = swu_iso::SwuIsoConfig;
 
-    const ISOGENY_MAP: ark_ec::hashing::curve_maps::wb::IsogenyMap<'static, Self::IsogenousCurve, Self> =
-        swu_iso::ISOGENY_MAP_TO_VESTA;
+    const ISOGENY_MAP: ark_ec::hashing::curve_maps::wb::IsogenyMap<
+        'static,
+        Self::IsogenousCurve,
+        Self,
+    > = swu_iso::ISOGENY_MAP_TO_VESTA;
 }

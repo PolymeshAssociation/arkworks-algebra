@@ -1,12 +1,12 @@
+use ark_ff::Zero;
 use ark_serialize::{
     CanonicalDeserialize, CanonicalDeserializeWithFlags, CanonicalSerialize,
     CanonicalSerializeWithFlags, Compress, SerializationError, Valid, Validate,
 };
 use ark_std::io::{Read, Write};
-use ark_ff::Zero;
 
-use crate::AffineRepr;
 use super::{Affine, SWCurveConfig, SingleBitSWFlags};
+use crate::AffineRepr;
 
 /// Marker trait for short Weierstrass curves whose prime-order subgroup has no point with
 /// `x = 0`. Such curves serialize with `SingleBitSWFlags` instead of `SWFlags`, encoding the
@@ -16,7 +16,7 @@ use super::{Affine, SWCurveConfig, SingleBitSWFlags};
 pub trait SWSerializationXNonZero: SWCurveConfig {}
 
 /// Serializes an affine point using `SingleBitSWFlags`.
-/// 
+///
 /// If uncompressed, serializes both x and y coordinates as well as a bit for whether it is
 /// infinity. If compressed, serializes x coordinate with 1 bit to encode whether y is
 /// positive or negative. `x = 0` encodes infinity; a finite point with `x = 0` returns
@@ -47,7 +47,7 @@ pub fn serialize_with_single_bit_flags<C: SWSerializationXNonZero, W: Write>(
 }
 
 /// Deserializes an affine point using `SingleBitSWFlags`.
-/// 
+///
 /// If `validate` is `Yes`, calls `check()` to make sure the element is valid. Infinity is accepted
 /// only in its canonical all-zero form, which has the sign bit unset. `x = 0` with the sign bit
 /// set, or with a nonzero `y` when uncompressed, returns `SerializationError::InvalidData` whatever
@@ -113,6 +113,8 @@ pub fn serialized_size_with_single_bit_flags<C: SWSerializationXNonZero>(
     let zero = C::BaseField::zero();
     match compress {
         Compress::Yes => zero.serialized_size_with_flags::<SingleBitSWFlags>(),
-        Compress::No => zero.compressed_size() + zero.serialized_size_with_flags::<SingleBitSWFlags>(),
+        Compress::No => {
+            zero.compressed_size() + zero.serialized_size_with_flags::<SingleBitSWFlags>()
+        },
     }
 }

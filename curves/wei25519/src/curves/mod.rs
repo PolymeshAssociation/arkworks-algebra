@@ -1,15 +1,18 @@
-use ark_ec::{models::CurveConfig, short_weierstrass::{self as sw, SWCurveConfig, SWSerializationXNonZero}};
+use crate::{Fq, Fr};
+use ark_ec::hashing::curve_maps::swu::SWUConfig;
+use ark_ec::{
+    models::CurveConfig,
+    short_weierstrass::{self as sw, SWCurveConfig, SWSerializationXNonZero},
+};
 use ark_ff::MontFp;
 use ark_serialize::{Compress, SerializationError, Validate};
 use ark_std::io::{Read, Write};
-use ark_ec::hashing::curve_maps::swu::SWUConfig;
-use crate::{Fq, Fr};
 
 #[cfg(test)]
 mod tests;
 
 /// Wei25519 equation: y^2 = x^3 + A*x + B
-/// Reference: https://datatracker.ietf.org/doc/html/draft-ietf-lwig-curve-representations-19
+/// Reference: <https://datatracker.ietf.org/doc/html/draft-ietf-lwig-curve-representations-19>
 /// This is a short Weierstrass form of curve25519 with the same base and scalar fields.
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 pub struct Wei25519Config;
@@ -32,10 +35,12 @@ pub type Projective = sw::Projective<Wei25519Config>;
 
 impl SWCurveConfig for Wei25519Config {
     /// COEFF_A = 19298681539552699237261830834781317975544997444273427339909597334573241639236
-    const COEFF_A: Fq = MontFp!("19298681539552699237261830834781317975544997444273427339909597334573241639236");
+    const COEFF_A: Fq =
+        MontFp!("19298681539552699237261830834781317975544997444273427339909597334573241639236");
 
     /// COEFF_B = 55751746669818908907645289078257140818241103727901012315294400837956729358436
-    const COEFF_B: Fq = MontFp!("55751746669818908907645289078257140818241103727901012315294400837956729358436");
+    const COEFF_B: Fq =
+        MontFp!("55751746669818908907645289078257140818241103727901012315294400837956729358436");
 
     /// AFFINE_GENERATOR_COEFFS = (G_GENERATOR_X, G_GENERATOR_Y)
     const GENERATOR: Affine = Affine::new_unchecked(G_GENERATOR_X, G_GENERATOR_Y);
@@ -77,7 +82,9 @@ impl SWUConfig for Wei25519Config {
 }
 
 /// G_GENERATOR_X = 19298681539552699237261830834781317975544997444273427339909597334652188435546
-pub const G_GENERATOR_X: Fq = MontFp!("19298681539552699237261830834781317975544997444273427339909597334652188435546");
+pub const G_GENERATOR_X: Fq =
+    MontFp!("19298681539552699237261830834781317975544997444273427339909597334652188435546");
 
 /// G_GENERATOR_Y = 14781619447589544791020593568409986887264606134616475288964881837755586237401
-pub const G_GENERATOR_Y: Fq = MontFp!("14781619447589544791020593568409986887264606134616475288964881837755586237401");
+pub const G_GENERATOR_Y: Fq =
+    MontFp!("14781619447589544791020593568409986887264606134616475288964881837755586237401");

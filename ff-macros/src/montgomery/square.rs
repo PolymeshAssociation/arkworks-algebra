@@ -1,10 +1,13 @@
 use quote::quote;
 
+/// `mulx_gate` as for [`super::mul::mul_assign_impl`]. `None` emits the body for
+/// `MontConfig::square_in_place_portable`.
 pub(super) fn square_in_place_impl(
     can_use_no_carry_mul_opt: bool,
     num_limbs: usize,
     modulus_limbs: &[u64],
     modulus_has_spare_bit: bool,
+    mulx_gate: Option<&proc_macro2::TokenStream>,
 ) -> proc_macro2::TokenStream {
     let mut body = proc_macro2::TokenStream::new();
     let mut default = proc_macro2::TokenStream::new();
@@ -65,39 +68,16 @@ pub(super) fn square_in_place_impl(
         quote!({
             *a *= *a;
         })
-    } else if (2..=6).contains(&num_limbs) && can_use_no_carry_mul_opt {
+    } else if let Some(gate) =
+        mulx_gate.filter(|_| (2..=6).contains(&num_limbs) && can_use_no_carry_mul_opt)
+    {
         body.extend(quote!({
-            if cfg!(all(
-                feature = "asm",
-                target_feature = "bmi2",
-                target_feature = "adx",
-                target_arch = "x86_64"
-            )) {
-                #[cfg(
-                    all(
-                        feature = "asm",
-                        target_feature = "bmi2",
-                        target_feature = "adx",
-                        target_arch = "x86_64"
-                    )
-                )]
-                {
-                    ark_ff::x86_64_asm_square!(#num_limbs, (a.0).0);
-                }
-            } else {
-                #[cfg(
-                    not(all(
-                        feature = "asm",
-                        target_feature = "bmi2",
-                        target_feature = "adx",
-                        target_arch = "x86_64"
-                    ))
-                )]
-                {
-                    #default
-                }
+            if #gate {
+                Self::mulx_square_in_place(a);
+                return;
             }
         }));
+        body.extend(quote!( #default ));
         body.extend(quote!(__subtract_modulus(a);));
         body
     } else {

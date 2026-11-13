@@ -47,7 +47,9 @@ fn single_inversion() -> f64 {
     let mut times = Vec::with_capacity(REPS);
     for _ in 0..REPS {
         let t = Instant::now();
-        let acc = values.iter().fold(Fq::one(), |acc, a| acc + a.inverse().unwrap());
+        let acc = values
+            .iter()
+            .fold(Fq::one(), |acc, a| acc + a.inverse().unwrap());
         times.push(t.elapsed().as_secs_f64() / values.len() as f64);
         assert!(!acc.is_zero());
     }

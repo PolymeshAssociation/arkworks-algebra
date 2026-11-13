@@ -588,6 +588,87 @@ macro_rules! __test_field {
             assert!(<$field>::zero().bea_inverse().is_none());
         }
 
+        /// Every assembly kernel must produce the same canonical element as the portable path:
+        /// multiply and square against `mul_portable` and `square_portable`, addition,
+        /// subtraction and doubling against `BigUint` arithmetic on the Montgomery
+        /// representations. Nodes whose builds select different kernels then agree.
+        #[test]
+        pub fn test_backend_identity() {
+            use ark_ff::{AdditiveGroup, BigInteger};
+            use $crate::num_bigint::BigUint;
+            let mut rng = test_rng();
+            let mut edge = vec![
+                <$field>::zero(),
+                <$field>::one(),
+                -<$field>::one(),
+                <$field>::new_unchecked(<$field>::R),
+                <$field>::new_unchecked(<$field>::R2),
+            ];
+            let mut m = <$field>::MODULUS;
+            m.sub_with_borrow(&<$field as PrimeField>::BigInt::from(1u64));
+            edge.push(<$field>::new_unchecked(m));
+
+            let p: BigUint = <$field>::MODULUS.into();
+            let big = |x: &$field| -> BigUint { x.0.into() };
+            let check_additive = |a: &$field, b: &$field| {
+                assert_eq!(big(&(*a + b)), (big(a) + big(b)) % &p, "add mismatch at {a} + {b}");
+                assert_eq!(big(&(*a - b)), (big(a) + &p - big(b)) % &p, "sub mismatch at {a} - {b}");
+                assert_eq!(big(&a.double()), (big(a) << 1u32) % &p, "double mismatch at {a}");
+            };
+
+            // Every edge value against every other, both orders.
+            for a in &edge {
+                for b in &edge {
+                    assert_eq!(*a * *b, a.mul_portable(b), "mul mismatch at {a} * {b}");
+                    check_additive(a, b);
+                }
+                assert_eq!(a.square(), a.square_portable(), "square mismatch at {a}");
+            }
+
+            // Edge values against random ones, and random pairs.
+            for _ in 0..ITERATIONS {
+                let r = <$field>::rand(&mut rng);
+                for a in &edge {
+                    assert_eq!(*a * r, a.mul_portable(&r), "mul mismatch at {a} * {r}");
+                    assert_eq!(r * *a, r.mul_portable(a), "mul mismatch at {r} * {a}");
+                    check_additive(a, &r);
+                    check_additive(&r, a);
+                }
+                let s = <$field>::rand(&mut rng);
+                assert_eq!(r * s, r.mul_portable(&s), "mul mismatch at {r} * {s}");
+                assert_eq!(r.square(), r.square_portable(), "square mismatch at {r}");
+                // Squaring must also agree with multiplying a value by itself.
+                assert_eq!(r.square(), r.mul_portable(&r), "square/mul disagree at {r}");
+                check_additive(&r, &s);
+            }
+
+            // Fused two-term products, canonical and loose, and the deferred inner product,
+            // against sums of portable products.
+            let portable_dot = |a: &[$field], b: &[$field]| {
+                a.iter().zip(b).fold(<$field>::ZERO, |s, (x, y)| s + x.mul_portable(y))
+            };
+            let pick = |i: usize, rng: &mut _| {
+                if i % 3 == 0 {
+                    edge[i % edge.len()]
+                } else {
+                    <$field>::rand(rng)
+                }
+            };
+            for i in 0..ITERATIONS {
+                let a = [pick(i, &mut rng), pick(i + 1, &mut rng)];
+                let b = [pick(i + 2, &mut rng), pick(i + 4, &mut rng)];
+                let expected = portable_dot(&a, &b);
+                assert_eq!(<$field>::sum_of_products(&a, &b), expected, "sum_of_products mismatch at {a:?} . {b:?}");
+                let loose = ark_ff::Loose::sum_of_two_products(&a, &[b[0].into(), b[1].into()]);
+                assert_eq!(loose.reduce(), expected, "loose sum_of_two_products mismatch at {a:?} . {b:?}");
+            }
+            for n in [1usize, 31, 32, 33, 100, 1000] {
+                let a: Vec<$field> = (0..n).map(|i| pick(i, &mut rng)).collect();
+                let b: Vec<$field> = (0..n).map(|i| pick(i + 1, &mut rng)).collect();
+                assert_eq!(<$field>::inner_product(&a, &b), portable_dot(&a, &b), "inner_product mismatch at n = {n}");
+            }
+        }
+
         #[test]
         pub fn test_montgomery_config() {
             use ark_ff::{FpConfig, BigInteger};

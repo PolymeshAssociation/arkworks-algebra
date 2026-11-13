@@ -145,10 +145,18 @@ fn step_half((negative, magnitude): Half, d: i8) -> Half {
     let p = magnitude >> 1;
     let q = i128::from(d >> 1);
     let r = i128::from(d & 1);
-    debug_assert_eq!((magnitude & 1) as i128, r, "digit parity must match the value");
+    debug_assert_eq!(
+        (magnitude & 1) as i128,
+        r,
+        "digit parity must match the value"
+    );
     // `p - s` for a positive value, `-(p + s)` for a negative one.
     let s = if negative { q + r } else { q };
-    let (grow, shrink) = if negative { (s >= 0, s < 0) } else { (s <= 0, s > 0) };
+    let (grow, shrink) = if negative {
+        (s >= 0, s < 0)
+    } else {
+        (s <= 0, s > 0)
+    };
     let small = s.unsigned_abs();
     if grow {
         (negative, p + small)
@@ -277,8 +285,7 @@ impl<P: GLVConfig> Decomposed<P> {
         Some(Self {
             digits,
             len,
-            ladder_safe_by_norm: scalar_nonzero
-                && 2 * half_bits < P::ScalarField::MODULUS_BIT_SIZE,
+            ladder_safe_by_norm: scalar_nonzero && 2 * half_bits < P::ScalarField::MODULUS_BIT_SIZE,
             phantom: PhantomData,
         })
     }
@@ -438,25 +445,65 @@ impl<P: GLVConfig> Table<P> {
 
         let phi_p = p.iter().map(endo).collect::<Vec<_>>();
         let mut d1 = vec![Affine::<P>::zero(); len];
-        free = affine_add_sub_pairs::<P>(&p, &phi_p, &mut spare, &mut d1, &mut den, &mut inv_scratch, free);
+        free = affine_add_sub_pairs::<P>(
+            &p,
+            &phi_p,
+            &mut spare,
+            &mut d1,
+            &mut den,
+            &mut inv_scratch,
+            free,
+        );
 
         let d1_endo = d1.iter().map(endo).collect::<Vec<_>>();
         let mut b = vec![Affine::<P>::zero(); len];
-        free = affine_add_sub_pairs::<P>(&d1, &d1_endo, &mut spare, &mut b, &mut den, &mut inv_scratch, free);
+        free = affine_add_sub_pairs::<P>(
+            &d1,
+            &d1_endo,
+            &mut spare,
+            &mut b,
+            &mut den,
+            &mut inv_scratch,
+            free,
+        );
 
         let b_endo = b.iter().map(endo).collect::<Vec<_>>();
         let m3 = b_endo.iter().map(endo).collect::<Vec<_>>();
         let mut t3a = vec![Affine::<P>::zero(); len];
         let mut t3b = vec![Affine::<P>::zero(); len];
-        free = affine_add_sub_pairs::<P>(&phi_p, &m3, &mut t3a, &mut t3b, &mut den, &mut inv_scratch, free);
+        free = affine_add_sub_pairs::<P>(
+            &phi_p,
+            &m3,
+            &mut t3a,
+            &mut t3b,
+            &mut den,
+            &mut inv_scratch,
+            free,
+        );
 
         let r3 = b_endo.iter().map(|q| -*q).collect::<Vec<_>>();
         let mut t4a = vec![Affine::<P>::zero(); len];
         let mut t4b = vec![Affine::<P>::zero(); len];
-        free = affine_add_sub_pairs::<P>(&phi_p, &r3, &mut t4a, &mut t4b, &mut den, &mut inv_scratch, free);
+        free = affine_add_sub_pairs::<P>(
+            &phi_p,
+            &r3,
+            &mut t4a,
+            &mut t4b,
+            &mut den,
+            &mut inv_scratch,
+            free,
+        );
 
         let mut t19 = vec![Affine::<P>::zero(); len];
-        affine_add_sub_pairs::<P>(&phi_p, &t4b, &mut t19, &mut spare, &mut den, &mut inv_scratch, free);
+        affine_add_sub_pairs::<P>(
+            &phi_p,
+            &t4b,
+            &mut t19,
+            &mut spare,
+            &mut den,
+            &mut inv_scratch,
+            free,
+        );
 
         for (lane, index) in non_zero_point_indices.into_iter().enumerate() {
             tables[index] = Self::from_window_points(&[
@@ -505,14 +552,14 @@ impl<P: GLVConfig> Table<P> {
         let t4b = phi_p - r3; // 3 + 4\omega
         let t19 = phi_p + t4b; // 3 + 5\omega
         [
-            *p,                        // \Delta_0 = 1
-            d1,                        // \Delta_1 = 1 - \omega
-            endo(&t4a),                // \Delta_2 = 2 - \omega = \omega(-3 - 2\omega)
-            -endo(&t3b),               // \Delta_3 = 1 - 2\omega = -\omega(3 + \omega)
-            -m3,                       // \Delta_4 = 3
-            -t3a,                      // \Delta_5 = 3 - \omega
-            endo(&endo(&t4b)),         // \Delta_6 = 1 - 3\omega = \omega^2(3 + 4\omega)
-            endo(&endo(&t19)),         // \Delta_7 = 2 - 3\omega = \omega^2(3 + 5\omega)
+            *p,                // \Delta_0 = 1
+            d1,                // \Delta_1 = 1 - \omega
+            endo(&t4a),        // \Delta_2 = 2 - \omega = \omega(-3 - 2\omega)
+            -endo(&t3b),       // \Delta_3 = 1 - 2\omega = -\omega(3 + \omega)
+            -m3,               // \Delta_4 = 3
+            -t3a,              // \Delta_5 = 3 - \omega
+            endo(&endo(&t4b)), // \Delta_6 = 1 - 3\omega = \omega^2(3 + 4\omega)
+            endo(&endo(&t19)), // \Delta_7 = 2 - 3\omega = \omega^2(3 + 5\omega)
         ]
     }
 
@@ -635,15 +682,17 @@ impl<P: GLVConfig> Table<P> {
             return tables.iter().map(|t| t.mul_decomposed(k)).collect();
         }
         let (xs, ys, exceptional) = batch_affine_ladder_raw(&regular, k);
-        let mut products = regular.into_iter().zip(xs.into_iter().zip(ys)).zip(exceptional).map(
-            |((t, (x, y)), exceptional)| {
+        let mut products = regular
+            .into_iter()
+            .zip(xs.into_iter().zip(ys))
+            .zip(exceptional)
+            .map(|((t, (x, y)), exceptional)| {
                 if exceptional {
                     t.mul_decomposed(k)
                 } else {
                     Affine::<P>::new_unchecked(x, y).into_group()
                 }
-            },
-        );
+            });
         tables
             .iter()
             .map(|t| {
@@ -718,7 +767,10 @@ fn projective_add_sub_pairs<P: GLVConfig>(
         let l = l.into_group();
         proj.extend_from_slice(&[l + r, l - r]);
     }
-    for (i, pair) in Projective::normalize_batch(&proj).chunks_exact(2).enumerate() {
+    for (i, pair) in Projective::normalize_batch(&proj)
+        .chunks_exact(2)
+        .enumerate()
+    {
         sums[i] = pair[0];
         diffs[i] = pair[1];
     }
@@ -999,11 +1051,7 @@ mod tests {
             let idx = (((a & 7) << 3) | (b & 7)) as usize;
             assert!(seen[idx].is_none(), "class {idx} hit twice");
             seen[idx] = Some((a as i8, b as i8, code));
-            assert_eq!(
-                JOINT_DIGITS[idx],
-                (a as i8, b as i8, code),
-                "class {idx}"
-            );
+            assert_eq!(JOINT_DIGITS[idx], (a as i8, b as i8, code), "class {idx}");
         }
         for (idx, entry) in JOINT_DIGITS.iter().enumerate() {
             let even = (idx >> 3) % 2 == 0 && (idx & 7) % 2 == 0;
@@ -1025,10 +1073,7 @@ mod tests {
         let mut cases: Vec<(Half, Half)> = Vec::new();
         for a in -20i128..=20 {
             for b in -20i128..=20 {
-                cases.push((
-                    (a < 0, a.unsigned_abs()),
-                    (b < 0, b.unsigned_abs()),
-                ));
+                cases.push(((a < 0, a.unsigned_abs()), (b < 0, b.unsigned_abs())));
             }
         }
         for _ in 0..4000 {
@@ -1087,8 +1132,11 @@ mod tests {
     /// A nonzero digit leaves a multiple of 8, so the next two positions are zero.
     #[test]
     fn nonzero_digits_are_spaced() {
-        let (digits, len) =
-            joint_digits((false, u128::from(u64::MAX) << 60), (true, 1234567890123456789)).unwrap();
+        let (digits, len) = joint_digits(
+            (false, u128::from(u64::MAX) << 60),
+            (true, 1234567890123456789),
+        )
+        .unwrap();
         for i in 0..len {
             if digits[i] != 0 {
                 assert!(i + 1 >= len || digits[i + 1] == 0, "position {i}");

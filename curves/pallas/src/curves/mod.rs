@@ -1,13 +1,17 @@
-use ark_ec::{models::CurveConfig, scalar_mul::glv::{try_glv_msm_bigint_full_width, try_glv_msm_small, GLVConfig, GLVFastDecomp}, short_weierstrass::{self as sw, SWCurveConfig, SWSerializationXNonZero}};
+use crate::{fq::Fq, fr::Fr};
+use ark_ec::hashing::curve_maps::wb::{IsogenyMap, WBConfig};
+use ark_ec::{
+    models::CurveConfig,
+    scalar_mul::glv::{try_glv_msm_bigint_full_width, try_glv_msm_small, GLVConfig, GLVFastDecomp},
+    short_weierstrass::{self as sw, SWCurveConfig, SWSerializationXNonZero},
+};
 use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
 use ark_serialize::{Compress, SerializationError, Validate};
-use ark_std::io::{Write, Read};
-use ark_ec::hashing::curve_maps::wb::{IsogenyMap, WBConfig};
-use crate::{fq::Fq, fr::Fr};
+use ark_std::io::{Read, Write};
 
+mod swu_iso;
 #[cfg(test)]
 mod tests;
-mod swu_iso;
 
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 pub struct PallasConfig;

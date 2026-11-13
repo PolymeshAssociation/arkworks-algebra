@@ -1,4 +1,5 @@
 use crate::{g1, Fq, Fr};
+use ark_ec::hashing::curve_maps::swu::sqrt_ratio_3mod4;
 use ark_ec::{
     hashing::curve_maps::{swu::SWUConfig, wb::IsogenyMap},
     models::{
@@ -6,7 +7,6 @@ use ark_ec::{
         CurveConfig,
     },
 };
-use ark_ec::hashing::curve_maps::swu::sqrt_ratio_3mod4;
 use ark_ff::MontFp;
 
 type G1Affine = Affine<SwuIsoConfig>;

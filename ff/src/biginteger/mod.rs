@@ -367,8 +367,9 @@ impl<const N: usize> BigInteger for BigInt<N> {
 
     #[inline]
     fn mul2(&mut self) -> bool {
+        // Safe intrinsic on current toolchains, `unsafe` on older ones.
         #[cfg(target_arch = "x86_64")]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, unused_unsafe)]
         {
             let mut carry = 0;
 

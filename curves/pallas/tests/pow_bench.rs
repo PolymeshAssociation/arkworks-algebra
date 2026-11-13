@@ -53,7 +53,11 @@ fn crossover(bits: usize) {
 
     let bases: Vec<Fq> = (0..200).map(|_| Fq::rand(rng)).collect();
     let mut out = String::new();
-    for (label, exp) in [("ones", &ones), ("random", &random), ("top bit only", &sparse)] {
+    for (label, exp) in [
+        ("ones", &ones),
+        ("random", &random),
+        ("top bit only", &sparse),
+    ] {
         // The paths must agree before either is timed.
         assert!(bases
             .iter()
@@ -81,7 +85,8 @@ fn crossover(bits: usize) {
         // `Field::pow` would actually pick here, which should match the faster measured time. The
         // median over reps rejects timing outliers.
         let weight: u32 = exp.iter().map(|l| l.count_ones()).sum();
-        out += &format!(
+        out +=
+            &format!(
             " | {label} (weight {weight}, dispatch {}) binary {:5.2} us, window {:5.2} us, {:.2}x",
             if ark_ff::use_pow_windowed(exp) { "window" } else { "binary" },
             t_old / REPS as f64 * 1e6,
@@ -98,7 +103,11 @@ fn sqrt_exponent() {
     let exp = Fq::TRACE_MINUS_ONE_DIV_TWO;
     let bits = ark_ff::significant_bits(exp.as_ref());
     let weight: u32 = exp.as_ref().iter().map(|l| l.count_ones()).sum();
-    let dispatch = if ark_ff::use_pow_windowed(exp.as_ref()) { "window" } else { "binary" };
+    let dispatch = if ark_ff::use_pow_windowed(exp.as_ref()) {
+        "window"
+    } else {
+        "binary"
+    };
     let bases: Vec<Fq> = (0..200).map(|_| Fq::rand(rng)).collect();
     let mut ratios = Vec::with_capacity(REPS);
     let (mut t_new, mut t_old) = (0.0f64, 0.0f64);

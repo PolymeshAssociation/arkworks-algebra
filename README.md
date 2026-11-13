@@ -59,19 +59,26 @@ cargo +nightly bench
 
 ## Assembly backend for field arithmetic
 
-The `ark-ff` crate contains (off-by-default) optimized assembly implementations of field arithmetic that rely on the `adcxq`, `adoxq` and `mulxq` instructions. These are available on most `x86_64` platforms (Broadwell onwards for Intel and Ryzen onwards for AMD). Using this backend can lead to a 30-70% speedup in finite field and elliptic curve arithmetic. To build with this backend enabled, run the following command:
+The `ark-ff` crate's off-by-default `asm` feature enables assembly field arithmetic:
 
-```bash
-RUSTFLAGS="-C target-feature=+bmi2,+adx" cargo [test/build/bench] --features asm
-```
+- On `x86_64`, Montgomery multiplication and squaring and the 4-limb deferred inner-product accumulator with the `mulx`, `adcx` and `adox` instructions (BMI2 and ADX: Broadwell onwards for Intel, Zen onwards for AMD). Pasta-shape fields keep the portable multiplication. A run-time CPUID check selects these kernels, so a binary built with `asm` still runs on older CPUs, which take the portable path.
+- On `aarch64`, kernels for Pasta-shape moduli (Pallas and Vesta) and the deferred inner-product accumulator.
 
-To enable this in the `Cargo.toml` of your own projects, enable the `asm` feature flag:
+Every kernel returns the same canonical result as the portable path.
 
 ```toml
-ark-ff = { version = "0.4", features = [ "asm" ] }
+ark-ff = { version = "0.5", features = [ "asm" ] }
 ```
 
-Note that using this backend requires Rust 1.59+ for stable inline assembly support.
+### BMI2 and ADX at compile time on x86-64
+
+Building with `-C target-feature=+bmi2,+adx` folds the CPUID check to `true` and lets LLVM emit `mulx` in the Rust code around the kernels. Such a binary faults with an illegal instruction on a CPU without BMI2 and ADX, so builds in this repository do not enable the flags by default. [`.cargo/bmi2-adx.toml`](.cargo/bmi2-adx.toml) holds them for an explicit opt-in:
+
+```bash
+cargo --config .cargo/bmi2-adx.toml test -p ark-ff --features asm
+```
+
+A set `RUSTFLAGS` takes precedence over the file. Downstream crates opt in with the same flags in their own `RUSTFLAGS` or Cargo config.
 
 ## License
 

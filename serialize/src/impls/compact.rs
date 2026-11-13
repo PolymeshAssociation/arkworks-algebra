@@ -1,6 +1,8 @@
+use crate::{
+    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
+};
 use ark_std::io::{Read, Write};
 use parity_scale_codec::{Compact, Decode, Encode, Error as ScaleError, Input, Output};
-use crate::{CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CompactU64(pub u64);
@@ -116,7 +118,10 @@ mod tests {
         (16384, &[0x02, 0x00, 0x01, 0x00]),
         (1073741823, &[0xfe, 0xff, 0xff, 0xff]),
         (1073741824, &[0x03, 0x00, 0x00, 0x00, 0x40]),
-        (u64::MAX, &[0x13, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+        (
+            u64::MAX,
+            &[0x13, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+        ),
     ];
 
     #[test]
@@ -150,8 +155,8 @@ mod tests {
             CompactU64(*value)
                 .serialize_with_mode(&mut bytes, Compress::Yes)
                 .unwrap();
-            let read =
-                CompactU64::deserialize_with_mode(&bytes[..], Compress::Yes, Validate::Yes).unwrap();
+            let read = CompactU64::deserialize_with_mode(&bytes[..], Compress::Yes, Validate::Yes)
+                .unwrap();
             assert_eq!(read.0, *value);
         }
     }

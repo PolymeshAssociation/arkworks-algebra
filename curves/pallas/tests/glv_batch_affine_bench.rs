@@ -7,7 +7,9 @@
 
 use ark_ec::{
     scalar_mul::{
-        sw_pippenger::{msm_batch_affine_bigint, msm_batch_affine_glv_bigint, BATCH_AFFINE_MIN_POINTS},
+        sw_pippenger::{
+            msm_batch_affine_bigint, msm_batch_affine_glv_bigint, BATCH_AFFINE_MIN_POINTS,
+        },
         variable_base::msm_bigint_wnaf,
     },
     CurveGroup,
@@ -46,7 +48,9 @@ fn full_width(bases: &[GAffine], bigints: &[BigInt]) -> G {
 fn glv_batch_affine_vs_full_width() {
     let sizes = env_list(
         "MSM_SIZES",
-        &[64, 96, 128, 192, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536],
+        &[
+            64, 96, 128, 192, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+        ],
     );
     let threads = if cfg!(feature = "parallel") {
         env_list("MSM_THREADS", &[1, 4, 8, 16])
@@ -68,7 +72,11 @@ fn glv_batch_affine_vs_full_width() {
             .unwrap();
         println!(
             "{} threads {t}",
-            if cfg!(feature = "parallel") { "parallel" } else { "serial" }
+            if cfg!(feature = "parallel") {
+                "parallel"
+            } else {
+                "serial"
+            }
         );
         for &n in &sizes {
             pool.install(|| compare(&bases[..n], &bigints, n));
@@ -90,7 +98,8 @@ fn compare(bases: &[GAffine], bigints: &[Vec<BigInt>], n: usize) {
         let time = |glv: bool| {
             let t = Instant::now();
             if glv {
-                let _ = core::hint::black_box(msm_batch_affine_glv_bigint::<PallasConfig>(bases, k));
+                let _ =
+                    core::hint::black_box(msm_batch_affine_glv_bigint::<PallasConfig>(bases, k));
             } else {
                 let _ = core::hint::black_box(full_width(bases, k));
             }

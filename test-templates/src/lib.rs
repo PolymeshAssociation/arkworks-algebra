@@ -1,4 +1,6 @@
 #[macro_use]
+pub mod bench;
+#[macro_use]
 pub mod groups;
 #[macro_use]
 pub mod fields;

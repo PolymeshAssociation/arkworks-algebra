@@ -173,6 +173,81 @@ jobs:
                     "
         if: matrix.rust == 'nightly'
 
+  # Both assembly jobs run the test profile, whose debug assertions check that every kernel input
+  # is canonical; `--release` would drop them.
+  test-x86-asm:
+    name: Test x86-64 assembly kernels
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Confirm the runner has BMI2 and ADX
+        run: |
+          grep -owE 'bmi2|adx' /proc/cpuinfo | sort -u
+          grep -qE '\badx\b' /proc/cpuinfo || { echo "runner lacks ADX"; exit 1; }
+          grep -qE '\bbmi2\b' /proc/cpuinfo || { echo "runner lacks BMI2"; exit 1; }
+
+      - name: Confirm the kernels are live through the CPUID check
+        run: ARK_FF_REQUIRE_ASM=runtime cargo test -p ark-ff --features asm --lib asm_backend_is_active -- --nocapture
+
+      - name: Field tests with the kernels live
+        run: |
+          cargo test -p ark-ff --features asm
+          cargo test -p ark-test-curves --all-features
+
+      - name: Curve tests with the kernels live
+        run: |
+          for d in pallas vesta secp256k1 secq256k1 bn254 bls12_381; do
+            cargo test --manifest-path "curves/$d/Cargo.toml" --features asm
+          done
+
+      - name: Confirm the kernels are live with BMI2 and ADX at compile time
+        run: ARK_FF_REQUIRE_ASM=compile-time cargo --config .cargo/bmi2-adx.toml test -p ark-ff --features asm --lib asm_backend_is_active -- --nocapture
+
+      - name: Field and curve tests with BMI2 and ADX at compile time
+        run: |
+          cargo --config .cargo/bmi2-adx.toml test -p ark-ff --features asm
+          for d in pallas vesta bn254 bls12_381; do
+            cargo --config .cargo/bmi2-adx.toml test --manifest-path "curves/$d/Cargo.toml" --features asm
+          done
+
+      - name: Field tests on the portable path
+        run: |
+          cargo test -p ark-ff
+          cargo test -p ark-test-curves --features parallel,bls12_381_curve,ed_on_bls12_381,mnt4_753_curve,mnt6_753,bn384_small_two_adicity_curve,secp256k1
+
+  test-aarch64-asm:
+    name: Test AArch64 assembly kernels
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Confirm the kernels are live
+        run: ARK_FF_REQUIRE_ASM=1 cargo test -p ark-ff --features asm --lib asm_backend_is_active -- --nocapture
+
+      - name: Field tests with the kernels live
+        run: cargo test -p ark-ff --features asm
+
+      - name: Curve tests with the kernels live
+        run: |
+          for d in pallas vesta secp256k1 bn254 bls12_381; do
+            cargo test --manifest-path "curves/$d/Cargo.toml" --features asm
+          done
+
+      # Without `asm`, 4-limb inner products also take the blocked accumulator.
+      - name: Field and Pasta tests on the portable path
+        run: |
+          cargo test -p ark-ff
+          cargo test --manifest-path curves/pallas/Cargo.toml
+
   directories: # Job that list subdirectories
     name: List directories for parallelizing tests
     runs-on: ubuntu-latest
@@ -377,6 +452,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      # The host-function crates default to `std`, so they are built separately without it.
       - name: check
         uses: actions-rs/cargo@v1
         with:
@@ -385,6 +461,10 @@ jobs:
                   --exclude ark-algebra-test-templates \
                   --exclude ark-algebra-bench-templates \
                   --exclude ark-poly-benches \
+                  --exclude ark-host-msm \
+                  --exclude ark-host-msm-impl \
+                  --exclude ark-host-hash-to-curve \
+                  --exclude ark-host-hash-to-curve-impl \
                   --target aarch64-unknown-none"
 
       - name: build
@@ -395,4 +475,19 @@ jobs:
                   --exclude ark-algebra-test-templates \
                   --exclude ark-algebra-bench-templates \
                   --exclude ark-poly-benches \
+                  --exclude ark-host-msm \
+                  --exclude ark-host-msm-impl \
+                  --exclude ark-host-hash-to-curve \
+                  --exclude ark-host-hash-to-curve-impl \
+                  --target aarch64-unknown-none"
+
+      - name: build host-function crates without std
+        uses: actions-rs/cargo@v1
+        with:
+            command: build
+            args: "--no-default-features \
+                  --package ark-host-msm \
+                  --package ark-host-msm-impl \
+                  --package ark-host-hash-to-curve \
+                  --package ark-host-hash-to-curve-impl \
                   --target aarch64-unknown-none"

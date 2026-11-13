@@ -366,8 +366,78 @@ impl<P: QuadExtConfig> Field for QuadExtField<P> {
     }
 
     fn sqrt(&self) -> Option<Self> {
-        // Square root based on the complex method. See
-        // https://eprint.iacr.org/2012/685.pdf (page 15, algorithm 8)
+        if P::BaseField::extension_degree() == 1
+            && P::BasePrimeField::MODULUS.as_ref()[0] & 3 == 3
+            && P::NONRESIDUE == -P::BaseField::ONE
+        {
+            self.sqrt_minus_one_nonresidue()
+        } else {
+            self.sqrt_complex_method()
+        }
+    }
+
+    fn sqrt_in_place(&mut self) -> Option<&mut Self> {
+        (*self).sqrt().map(|sqrt| {
+            *self = sqrt;
+            self
+        })
+    }
+
+    fn mul_by_base_prime_field(&self, elem: &Self::BasePrimeField) -> Self {
+        let mut result = *self;
+        result.c0 = result.c0.mul_by_base_prime_field(elem);
+        result.c1 = result.c1.mul_by_base_prime_field(elem);
+        result
+    }
+}
+
+impl<P: QuadExtConfig> QuadExtField<P> {
+    /// Square root over a prime base field with `p = 3 mod 4` and `u^2 = -1`, in two base-field
+    /// exponentiations and no inversion. For `self = a0 + a1 u` the root `x0 + x1 u` satisfies
+    /// `x0^2 - x1^2 = a0` and `2 x0 x1 = a1`. `t = (a0^2 + a1^2)^((p + 1) / 4)` is a square root
+    /// of the norm exactly when `self` is a square, and the derivation below assumes that. With
+    /// `z = (a0 + t) / 2`, exactly one of `z` and `(a0 - t) / 2` is a square when `a1 != 0`, since
+    /// their product `-a1^2 / 4` is not. `s = z^((p - 3) / 4)` and `c = s z` give `s c = z^((p - 1) / 2)`. If
+    /// `s c = 1` then `c^2 = z`, `s = 1 / c` and the root is `(c, a1 s / 2)`. Otherwise
+    /// `c^2 = -z = x1^2` for the other root of the norm, `s = -1 / c` and the root is
+    /// `(-a1 s / 2, c)`. When `a1 = 0`, `z = a0` gives `c` or `\pm c u`, the same root as
+    /// [`Self::sqrt_complex_method`]; otherwise the two may differ in sign. A non-square input,
+    /// whose `t` squares to minus the norm, fails the final check. Algorithm 8, the complex method, of Adj, Rodriguez-Henriquez,
+    /// "Square Root Computation over Even Extension Fields" (<https://eprint.iacr.org/2012/685>),
+    /// for `q = 3 mod 4`, arranged without the inversion as in Zakura
+    /// [`Fp2::sqrt`](https://github.com/zakura-core/common/blob/ef8c5415/crates/bls12_381/src/fp2.rs#L275-L321).
+    fn sqrt_minus_one_nonresidue(&self) -> Option<Self> {
+        // (p - 3) / 4 = floor(p / 4) and (p + 1) / 4 = floor(p / 4) + 1.
+        let mut exp_minus = P::BasePrimeField::MODULUS;
+        exp_minus.div2();
+        exp_minus.div2();
+        let mut exp_plus = exp_minus;
+        exp_plus.add_with_carry(&1u64.into());
+        // (p + 1) / 2 = 1 / 2.
+        let mut two_inv = exp_plus;
+        two_inv.mul2();
+        let two_inv = P::BaseField::from_base_prime_field(P::BasePrimeField::from(two_inv));
+
+        let (a0, a1) = (self.c0, self.c1);
+        let t = (a0.square() + a1.square()).pow(exp_plus);
+        let z = if a1.is_zero() { a0 } else { (a0 + t) * two_inv };
+        let s = z.pow(exp_minus);
+        let c = s * z;
+        let other = a1 * s * two_inv;
+        let sqrt = if (s * c).is_one() {
+            Self::new(c, other)
+        } else if a1.is_zero() {
+            // `(-a0)^((p + 1) / 4) = (-1)^((p + 1) / 4) c`, the root `sqrt_complex_method` takes.
+            Self::new(P::BaseField::ZERO, if exp_plus.is_odd() { -c } else { c })
+        } else {
+            Self::new(-other, c)
+        };
+        (sqrt.square() == *self).then_some(sqrt)
+    }
+
+    /// Square root by the complex method for any quadratic extension. See
+    /// <https://eprint.iacr.org/2012/685.pdf> (page 15, algorithm 8).
+    pub fn sqrt_complex_method(&self) -> Option<Self> {
         if self.c1.is_zero() {
             // for c = c0 + c1 * x, we have c1 = 0
             // sqrt(c) == sqrt(c0) is an element of Fp2, i.e. sqrt(c0) = a = a0 + a1 * x for some a0, a1 in Fp
@@ -423,20 +493,6 @@ impl<P: QuadExtConfig> Field for QuadExtField<P> {
                 None
             }
         })
-    }
-
-    fn sqrt_in_place(&mut self) -> Option<&mut Self> {
-        (*self).sqrt().map(|sqrt| {
-            *self = sqrt;
-            self
-        })
-    }
-
-    fn mul_by_base_prime_field(&self, elem: &Self::BasePrimeField) -> Self {
-        let mut result = *self;
-        result.c0 = result.c0.mul_by_base_prime_field(elem);
-        result.c1 = result.c1.mul_by_base_prime_field(elem);
-        result
     }
 }
 

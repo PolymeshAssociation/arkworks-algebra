@@ -62,8 +62,7 @@ fn fixed_base_msm_vs_variable() {
     for log in logs {
         // The fixed part of the verifier MSM is 2*padded_n + 2.
         let n = (1usize << log) + 2;
-        let bases =
-            G::normalize_batch(&(0..n).map(|_| G::rand(rng)).collect::<Vec<_>>());
+        let bases = G::normalize_batch(&(0..n).map(|_| G::rand(rng)).collect::<Vec<_>>());
         let scalars = (0..n).map(|_| Fr::rand(rng)).collect::<Vec<_>>();
         let bigints = scalars.iter().map(|s| s.into_bigint()).collect::<Vec<_>>();
         let reps = if log >= 15 { 9 } else { 15 };

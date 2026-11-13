@@ -81,31 +81,44 @@ impl GLVConfig for Config {
         MontFp!("60197513588986302554485582024885075108884032450952339817679072026166228089408");
 
     const SCALAR_DECOMP_COEFFS: [(bool, <Self::ScalarField as ark_ff::PrimeField>::BigInt); 4] = [
-        (false, ark_ff::BigInt!("303414439467246543595250775667605759171")),
-        (true, ark_ff::BigInt!("64502973549206556628585045361533709078")),
-        (false, ark_ff::BigInt!("64502973549206556628585045361533709078")),
-        (false, ark_ff::BigInt!("367917413016453100223835821029139468249")),
+        (
+            false,
+            ark_ff::BigInt!("303414439467246543595250775667605759171"),
+        ),
+        (
+            true,
+            ark_ff::BigInt!("64502973549206556628585045361533709078"),
+        ),
+        (
+            false,
+            ark_ff::BigInt!("64502973549206556628585045361533709078"),
+        ),
+        (
+            false,
+            ark_ff::BigInt!("367917413016453100223835821029139468249"),
+        ),
     ];
 
-    const FAST_DECOMP: Option<ark_ec::scalar_mul::glv::GLVFastDecomp<Self::ScalarField>> = Some(ark_ec::scalar_mul::glv::GLVFastDecomp {
-        g1: &[
-            0x0000000114ca5518,
-            0x0000000000000000,
-            0x57c1108d9d44cfd9,
-            0x14ca50f7a8e2f3f6,
-            0x0000000000000001,
-        ],
-        g2: &[
-            0x000000003086d2db,
-            0x0000000000000000,
-            0xe86c90e49284eb16,
-            0x3086d221a7d46bcd,
-            0x0000000000000000,
-        ],
-        a12: MontFp!("64502973549206556628585045361533709078"),
-        a22: MontFp!("367917413016453100223835821029139468249"),
-        negate_k2: true,
-    });
+    const FAST_DECOMP: Option<ark_ec::scalar_mul::glv::GLVFastDecomp<Self::ScalarField>> =
+        Some(ark_ec::scalar_mul::glv::GLVFastDecomp {
+            g1: &[
+                0x0000000114ca5518,
+                0x0000000000000000,
+                0x57c1108d9d44cfd9,
+                0x14ca50f7a8e2f3f6,
+                0x0000000000000001,
+            ],
+            g2: &[
+                0x000000003086d2db,
+                0x0000000000000000,
+                0xe86c90e49284eb16,
+                0x3086d221a7d46bcd,
+                0x0000000000000000,
+            ],
+            a12: MontFp!("64502973549206556628585045361533709078"),
+            a22: MontFp!("367917413016453100223835821029139468249"),
+            negate_k2: true,
+        });
 
     fn endomorphism(p: &Projective) -> Projective {
         let mut res = *p;

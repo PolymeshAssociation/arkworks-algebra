@@ -43,15 +43,23 @@ fn compare<P: SWCurveConfig>(name: &str, sizes: &[u32], c: &[usize]) {
     println!("\n== {name}  (threads={threads}; ratio = variable-base / fixed-base, >1 = fixed faster) ==");
     for &size in sizes {
         let n = 1usize << size;
-        let bases =
-            Projective::<P>::normalize_batch(&(0..n).map(|_| Projective::<P>::rand(rng)).collect::<Vec<_>>());
+        let bases = Projective::<P>::normalize_batch(
+            &(0..n)
+                .map(|_| Projective::<P>::rand(rng))
+                .collect::<Vec<_>>(),
+        );
         let scalars: Vec<P::ScalarField> = (0..n).map(|_| P::ScalarField::rand(rng)).collect();
         let big: Vec<_> = scalars.iter().map(|s| s.into_bigint()).collect();
         let reps = if size >= 16 { 11 } else { 25 };
 
         let new_c = FixedBaseMSM::<P>::new(&bases).window();
-        let fw = min_time::<P>(reps, || Projective::<P>::msm_bigint_full_width(&bases, &big));
-        println!("  n=2^{size} ({n} bases)   variable-base {:.3} ms   new()->c={new_c}", fw * 1e3);
+        let fw = min_time::<P>(reps, || {
+            Projective::<P>::msm_bigint_full_width(&bases, &big)
+        });
+        println!(
+            "  n=2^{size} ({n} bases)   variable-base {:.3} ms   new()->c={new_c}",
+            fw * 1e3
+        );
         for &c_i in c {
             let t = Instant::now();
             let pc = FixedBaseMSM::<P>::new_given_window_size(&bases, c_i);

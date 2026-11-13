@@ -1,9 +1,7 @@
 //! Run with:
 //! `cargo test --release --manifest-path curves/pallas/Cargo.toml --test sqrt_bench -- --ignored --nocapture`
 
-use ark_ff::{
-    FftField, PrimeField, SqrtPrecomputation,
-};
+use ark_ff::{FftField, PrimeField, SqrtPrecomputation};
 use ark_std::test_rng;
 use std::time::Instant;
 
@@ -24,7 +22,12 @@ fn bench<F: PrimeField + FftField>(name: &str) {
     let sarkar = sarkar_owned.as_ref().expect("Sarkar precomp installed");
 
     // A reference Tonelli-Shanks precomputation for the same field.
-    let trace: &'static [u64] = Box::leak(F::TRACE_MINUS_ONE_DIV_TWO.as_ref().to_vec().into_boxed_slice());
+    let trace: &'static [u64] = Box::leak(
+        F::TRACE_MINUS_ONE_DIV_TWO
+            .as_ref()
+            .to_vec()
+            .into_boxed_slice(),
+    );
     let ts: SqrtPrecomputation<F> = SqrtPrecomputation::TonelliShanks {
         two_adicity: F::TWO_ADICITY,
         quadratic_nonresidue_to_trace: F::TWO_ADIC_ROOT_OF_UNITY,

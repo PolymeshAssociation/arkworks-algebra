@@ -50,12 +50,10 @@ pub trait HashToCurveConfig: SWCurveConfig {
 
     /// Hash `message` to a curve point, using `dst` as the domain separation tag.
     fn hash_to_curve(dst: &[u8], message: &[u8]) -> Affine<Self> {
-        MapToCurveBasedHasher::<Projective<Self>, Self::FieldHasher, Self::Map>::new(
-            dst,
-        )
-        .expect("hasher construction does not fail")
-        .hash(message)
-        .expect("SWU, WB and SVDW maps do not fail")
+        MapToCurveBasedHasher::<Projective<Self>, Self::FieldHasher, Self::Map>::new(dst)
+            .expect("hasher construction does not fail")
+            .hash(message)
+            .expect("SWU, WB and SVDW maps do not fail")
     }
 
     /// Hash `msg_prefix || j.to_le_bytes()` for each `j` in `gens_offset..gens_offset + gens_count`,
@@ -160,7 +158,9 @@ fn batch_hash_to_curve_local<C: HashToCurveConfig>(
     #[cfg(not(feature = "parallel"))]
     let gens = {
         let mut state = new_state();
-        (gens_offset..gens_end).map(|j| hash_one(&mut state, j)).collect()
+        (gens_offset..gens_end)
+            .map(|j| hash_one(&mut state, j))
+            .collect()
     };
 
     gens
@@ -262,9 +262,18 @@ mod tests {
     /// `B_blinding`, then the first 4 `BulletproofGens` label `b"test"` party 0 `G` and `H` bases.
     /// Values are from curve-trees `bulletproofs` before the move.
     fn check_known_answers<C: HashToCurveConfig>(expected: [&str; 12]) {
-        assert_eq!(C::hash_to_curve(b"test-dst", b"msg-1"), point::<C>(expected[0]));
-        assert_eq!(C::hash_to_curve(b"test-dst", b"msg-2"), point::<C>(expected[1]));
-        assert_eq!(C::hash_to_curve(b"PedersenGens", b"test-B"), point::<C>(expected[2]));
+        assert_eq!(
+            C::hash_to_curve(b"test-dst", b"msg-1"),
+            point::<C>(expected[0])
+        );
+        assert_eq!(
+            C::hash_to_curve(b"test-dst", b"msg-2"),
+            point::<C>(expected[1])
+        );
+        assert_eq!(
+            C::hash_to_curve(b"PedersenGens", b"test-B"),
+            point::<C>(expected[2])
+        );
         assert_eq!(
             C::hash_to_curve(b"PedersenGens", b"test-B_blinding"),
             point::<C>(expected[3])
@@ -445,7 +454,10 @@ mod tests {
         req.serialize_uncompressed(&mut derived).unwrap();
         let mut manual = Vec::new();
         b"dst".to_vec().serialize_uncompressed(&mut manual).unwrap();
-        b"prefix".to_vec().serialize_uncompressed(&mut manual).unwrap();
+        b"prefix"
+            .to_vec()
+            .serialize_uncompressed(&mut manual)
+            .unwrap();
         7u32.serialize_uncompressed(&mut manual).unwrap();
         9u32.serialize_uncompressed(&mut manual).unwrap();
         assert_eq!(derived, manual);

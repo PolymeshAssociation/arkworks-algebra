@@ -38,6 +38,9 @@ pub use cyclotomic::*;
 mod sqrt;
 pub use sqrt::*;
 
+mod loose;
+pub use loose::{Loose, LooseToken};
+
 #[cfg(feature = "parallel")]
 use ark_std::cmp::max;
 #[cfg(feature = "parallel")]
@@ -303,6 +306,67 @@ pub trait Field:
         sum
     }
 
+    /// `self += other` in the loose representation behind [`Loose`]. A loose value is an integer
+    /// congruent to the value but bounded by twice the modulus instead of the modulus. The defaults keep every value
+    /// canonical, which the bound admits. Prime fields of the Pasta shape override the `loose_*`
+    /// methods. Only [`Loose`] constructs the [`LooseToken`] the hooks take, so loose values reach
+    /// them through [`Loose`] alone.
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_add_assign(&mut self, other: &Self, _: LooseToken) {
+        *self += other;
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_sub_assign(&mut self, other: &Self, _: LooseToken) {
+        *self -= other;
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_double_in_place(&mut self, _: LooseToken) {
+        self.double_in_place();
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_neg_in_place(&mut self, _: LooseToken) {
+        self.neg_in_place();
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_mul_assign(&mut self, other: &Self, _: LooseToken) {
+        *self *= other;
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_square_in_place(&mut self, _: LooseToken) {
+        self.square_in_place();
+    }
+
+    /// The canonical representative of a loose value.
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_reduce(&self, _: LooseToken) -> Self {
+        *self
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_is_zero(&self, _: LooseToken) -> bool {
+        self.is_zero()
+    }
+
+    /// `a[0] * b[0] + a[1] * b[1]` for canonical `a` and loose `b`, loose.
+    #[doc(hidden)]
+    #[inline(always)]
+    fn loose_sum_of_two_products(a: &[Self; 2], b: &[Self; 2], _: LooseToken) -> Self {
+        Self::sum_of_products(a, b)
+    }
+
     /// Returns `sum([a_i * b_i])` for slices of equal length. Unlike [`Self::sum_of_products`],
     /// whose length is a const generic, this is the long-sum path.
     #[inline]
@@ -410,19 +474,21 @@ fn digit(exp: &[u64], start: usize, len: usize) -> usize {
     ((exp[start / 64] >> (start % 64)) as usize) & ((1 << len) - 1)
 }
 
-/// `base^exp` by binary square-and-multiply.
+/// `base^exp` by binary square-and-multiply, with loose intermediate values.
 pub fn pow_binary<F: Field>(base: &F, exp: &[u64]) -> F {
-    let mut res = F::one();
+    let base = Loose::from(*base);
+    let mut res = Loose::from(F::one());
     for i in crate::BitIteratorBE::without_leading_zeros(exp) {
         res.square_in_place();
         if i {
-            res *= base;
+            res *= &base;
         }
     }
-    res
+    res.reduce()
 }
 
-/// `base^exp` by a 4-bit fixed window, most significant window first.
+/// `base^exp` by a 4-bit fixed window, most significant window first, with loose intermediate
+/// values.
 /// [Handbook of Applied Cryptography](https://cacr.uwaterloo.ca/hac/about/chap14.pdf),
 /// Algorithm 14.82, left-to-right k-ary exponentiation,
 pub fn pow_windowed<F: Field>(base: &F, exp: &[u64]) -> F {
@@ -447,7 +513,7 @@ pub fn pow_windowed<F: Field>(base: &F, exp: &[u64]) -> F {
         r => r,
     };
     let mut i = bits - top;
-    let mut res = table[digit(exp, i, top)];
+    let mut res = Loose::from(table[digit(exp, i, top)]);
     while i > 0 {
         i -= W;
         for _ in 0..W {
@@ -455,10 +521,10 @@ pub fn pow_windowed<F: Field>(base: &F, exp: &[u64]) -> F {
         }
         let digit = digit(exp, i, W);
         if digit != 0 {
-            res *= &table[digit];
+            res *= &Loose::from(table[digit]);
         }
     }
-    res
+    res.reduce()
 }
 
 // Given a vector of field elements {v_i}, compute the vector {v_i^(-1)}

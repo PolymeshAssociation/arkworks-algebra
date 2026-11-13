@@ -20,8 +20,8 @@ use educe::Educe;
 use zeroize::Zeroize;
 
 use super::{bucket::Bucket, Projective, SWCurveConfig, SWFlags, ZeroFlag};
-use crate::AffineRepr;
 use crate::short_weierstrass::SingleBitSWFlags;
+use crate::AffineRepr;
 
 /// Affine coordinates for a point on an elliptic curve in short Weierstrass
 /// form, over the base field `P::BaseField`.
@@ -439,8 +439,8 @@ impl<P: SWCurveConfig> Valid for Affine<P> {
     {
         #[cfg(feature = "parallel")]
         {
-            use rayon::prelude::*;
             use crate::models::short_weierstrass::group::MIN_PARALLEL_POINTS;
+            use rayon::prelude::*;
             // Reuse normalize_batch's floor
             let pts = batch.collect::<Vec<_>>();
             if pts.len() < MIN_PARALLEL_POINTS {
