@@ -68,23 +68,49 @@ pub(crate) fn mont_config_helper(
         }
     };
     let modulus = quote::quote! { BigInt([ #( #modulus_limbs ),* ]) };
+    // Four-limb moduli test `ark_ff::fields::is_pasta_shape` in the emitted code, which folds at
+    // compile time, so the shape has one definition.
+    let pasta_shape = quote::quote! { ark_ff::fields::is_pasta_shape(&Self::MODULUS.0) };
 
     let add_with_carry = add_with_carry_impl(limbs);
     let sub_with_borrow = sub_with_borrow_impl(limbs);
     let subtract_modulus = subtract_modulus_impl(&modulus, limbs);
     let add_assign = add_assign_impl(modulus_has_spare_bit);
     let double_in_place = double_in_place_impl(modulus_has_spare_bit);
+    // Pasta-shape fields skip the x86-64 MULX/ADX kernel. The portable path with loose arithmetic
+    // is faster for them.
+    let mulx_gate = if limbs == 4 {
+        quote::quote! { !#pasta_shape && ark_ff::mulx_kernel_active() }
+    } else {
+        quote::quote! { ark_ff::mulx_kernel_active() }
+    };
     let mul_assign = mul_assign_impl(
         can_use_no_carry_mul_opt,
         limbs,
         &modulus_limbs,
         modulus_has_spare_bit,
+        Some(&mulx_gate),
     );
     let square_in_place = square_in_place_impl(
         can_use_no_carry_mul_opt,
         limbs,
         &modulus_limbs,
         modulus_has_spare_bit,
+        Some(&mulx_gate),
+    );
+    let mul_assign_portable = mul_assign_impl(
+        can_use_no_carry_mul_opt,
+        limbs,
+        &modulus_limbs,
+        modulus_has_spare_bit,
+        None,
+    );
+    let square_in_place_portable = square_in_place_impl(
+        can_use_no_carry_mul_opt,
+        limbs,
+        &modulus_limbs,
+        modulus_has_spare_bit,
+        None,
     );
     let sum_of_products = sum_of_products_impl(limbs, &modulus_limbs);
     // Masked for fields wider than 4 limbs, as in `subtract_modulus_impl`. After Zakura #484
@@ -130,6 +156,36 @@ pub(crate) fn mont_config_helper(
         (quote::quote! {}, quote::quote! {})
     };
 
+    // Pasta-shape moduli take ark-ff's `pasta_*` assembly kernels when they are compiled in,
+    // including the fused kernel for two-term sums of products.
+    let pasta_gate = quote::quote! { ark_ff::fields::pasta_asm_compiled() && #pasta_shape };
+    let pasta = |call: proc_macro2::TokenStream| {
+        if limbs == 4 {
+            quote::quote! {
+                if #pasta_gate {
+                    #call;
+                    return;
+                }
+            }
+        } else {
+            quote::quote! {}
+        }
+    };
+    let pasta_add = pasta(quote::quote! { ark_ff::fields::pasta_add_assign::<Self>(a, b) });
+    let pasta_sub = pasta(quote::quote! { ark_ff::fields::pasta_sub_assign::<Self>(a, b) });
+    let pasta_double = pasta(quote::quote! { ark_ff::fields::pasta_double_in_place::<Self>(a) });
+    let pasta_mul = pasta(quote::quote! { ark_ff::fields::pasta_mul_assign::<Self>(a, b) });
+    let pasta_square = pasta(quote::quote! { ark_ff::fields::pasta_square_in_place::<Self>(a) });
+    let pasta_sum_of_products = if limbs == 4 {
+        quote::quote! {
+            if M == 2 && #pasta_gate {
+                return ark_ff::fields::pasta_sum_of_two_products::<Self>(&a[..], &b[..]);
+            }
+        }
+    } else {
+        quote::quote! {}
+    };
+
     let mixed_radix = if let Some(large_subgroup_generator) = large_subgroup_generator {
         quote::quote! {
             const SMALL_SUBGROUP_BASE: Option<u32> = Some(#small_subgroup_base);
@@ -173,16 +229,19 @@ pub(crate) fn mont_config_helper(
 
                 #[inline(always)]
                 fn add_assign(a: &mut F, b: &F) {
+                    #pasta_add
                     #add_assign
                 }
 
                 #[inline(always)]
                 fn sub_assign(a: &mut F, b: &F) {
+                    #pasta_sub
                     #sub_assign
                 }
 
                 #[inline(always)]
                 fn double_in_place(a: &mut F) {
+                    #pasta_double
                     #double_in_place
                 }
 
@@ -199,18 +258,31 @@ pub(crate) fn mont_config_helper(
                 #[inline(always)]
                 fn mul_assign(a: &mut F, b: &F) {
                     #wasm_mul
+                    #pasta_mul
                     #mul_assign
+                }
+
+                #[inline(always)]
+                fn mul_assign_portable(a: &mut F, b: &F) {
+                    #mul_assign_portable
                 }
                 #[inline(always)]
                 fn square_in_place(a: &mut F) {
                     #wasm_square
+                    #pasta_square
                     #square_in_place
+                }
+
+                #[inline(always)]
+                fn square_in_place_portable(a: &mut F) {
+                    #square_in_place_portable
                 }
 
                 fn sum_of_products<const M: usize>(
                     a: &[F; M],
                     b: &[F; M],
                 ) -> F {
+                    #pasta_sum_of_products
                     #sum_of_products
                 }
             }
